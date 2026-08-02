@@ -4,18 +4,36 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from console.api import routes
 from console.auth import ros
 from console.checker.scheduler import scheduler_loop
-from console.core.config import WEB_DIR, settings
+from console.core.config import WEB_DIR, console_mount_path, settings
 from console.core.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _index_html() -> str:
+    """index.html 的 {{MOUNT}} 換成實際掛載路徑。
+
+    為什麼由後端注入，而不是讓前端從 `location.pathname` 推導：掛在 ROS 的
+    `/security` 底下時，瀏覽器最終停在**沒有尾斜線**的 `/security`
+    （Next.js 預設的 trailingSlash: false 會把 `/security/` 導回去），
+    於是 `./static/app.css` 解析成 `/static/app.css` —— 打到 ROS，
+    整頁沒有樣式也沒有 JS，而且沒有任何錯誤訊息指向原因。
+
+    lru_cache：掛載路徑在 process 生命週期內固定（來自 CONSOLE_BASE_URL，
+    而 config 的 getter 全部 lru_cache，改 .env 一律要重啟）。
+    """
+    return (WEB_DIR / "index.html").read_text(encoding="utf-8") \
+        .replace("{{MOUNT}}", console_mount_path())
 
 
 @asynccontextmanager
@@ -69,8 +87,7 @@ async def index(request: Request):
         except ros.RosUnavailable:
             # ROS 不可用時仍載入 SPA，由前端顯示明確的錯誤（而非把人丟到登入頁繞圈）
             logger.warning("ROS 驗證不可用，改由前端呈現錯誤")
-    # API 前綴由前端從載入路徑自動推導（見 web/index.html），不需後端注入
-    return FileResponse(WEB_DIR / "index.html")
+    return HTMLResponse(_index_html())
 
 
 @app.get("/healthz")

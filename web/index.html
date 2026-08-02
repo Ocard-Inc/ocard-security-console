@@ -4,19 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ocard Security Log Console</title>
-<!-- 掛在 ROS 同網域的子路徑（/security）時，API 必須帶上該前綴，否則會打到
-     ROS 自己的路由。前綴直接從載入路徑推導 —— 頁面是從哪個路徑進來的，
-     API 就往哪個路徑打，本機與 proxy 部署都不必改設定。
-     （路由用 hash，所以 pathname 永遠就是掛載點本身。） -->
-<script>window.__MOUNT__ = location.pathname.replace(/\/+$/, "");</script>
-<link rel="stylesheet" href="./static/ds/colors_and_type.css">
+<!-- {{MOUNT}} 由 api/app.py 在回應時以 config.console_mount_path() 取代
+     （本機沒設 CONSOLE_BASE_URL 時是空字串，所有路徑退回 /static/…、/api/…）。
+
+     這裡刻意**不用相對路徑** `./static/…`，也不從 location.pathname 推導：
+     掛在 ROS 的 /security 底下時，反向 proxy 是否補尾斜線不在我們控制範圍內
+     —— Next.js 預設的 trailingSlash: false 還會主動把 `/security/` 導回
+     `/security`。少了尾斜線，`./static/app.css` 會解析成 `/static/app.css`，
+     打到 ROS 而不是主控台，整頁沒有樣式也沒有 JS，而且不會有任何錯誤指向原因。
+
+     CONSOLE_BASE_URL 本來就是掛載點的唯一真相（登入完的回跳路徑也從它推導），
+     所以由後端注入不會多一個可能與現實不符的設定。 -->
+<script>window.__MOUNT__ = "{{MOUNT}}";</script>
+<link rel="stylesheet" href="{{MOUNT}}/static/ds/colors_and_type.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <!-- ApexCharts 的樣式沒有內建在 JS 裡（實測 min.js 不含 CSS 規則），必須自己載。
      順序：先 vendor 再自家樣式，這樣 app.css / charts.css 的覆寫不用靠 !important。 -->
-<link rel="stylesheet" href="./static/vendor/apexcharts-6.7.0.css">
-<link rel="stylesheet" href="./static/app.css">
-<link rel="stylesheet" href="./static/charts/charts.css">
+<link rel="stylesheet" href="{{MOUNT}}/static/vendor/apexcharts-6.7.0.css">
+<link rel="stylesheet" href="{{MOUNT}}/static/app.css">
+<link rel="stylesheet" href="{{MOUNT}}/static/charts/charts.css">
 </head>
 <body>
 <div id="app"></div>
@@ -24,7 +31,7 @@
      所以用傳統 <script> 載 UMD 版本，再由 charts/apex.js 橋接成 ESM。
      絕對不可加 async：classic script 不加 async 時保證在 module script 之前執行，
      加了就會變成競態，只在慢速網路下壞掉。 -->
-<script src="./static/vendor/apexcharts-6.7.0.min.js"></script>
-<script type="module" src="./static/app.js"></script>
+<script src="{{MOUNT}}/static/vendor/apexcharts-6.7.0.min.js"></script>
+<script type="module" src="{{MOUNT}}/static/app.js"></script>
 </body>
 </html>
