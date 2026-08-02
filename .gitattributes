@@ -1,0 +1,18 @@
+# 開發在 Windows、執行在 Linux 容器與 COS VM。這裡列出的檔案**必須是 LF**，
+# 不是風格偏好而是會壞掉：
+#
+# - `scripts/provision_gcp.sh` 以 heredoc 產生 VM 的 startup script。CRLF 會讓
+#   VM 上的 `#!/bin/bash\r` 變成無效的 interpreter，磁碟不會被格式化，
+#   哨兵檔不存在，容器就永遠 crash-loop —— 而錯誤訊息（`\r: command not found`）
+#   出現在 serial console，不會出現在任何人會看的地方。
+# - Dockerfile 的 `\` 續行後面接 `\r` 會讓那一行提早結束。
+# - `docker/entrypoint.py` 由 `python` 直接執行，CRLF 本身無害，但它與上面兩者
+#   是同一條部署路徑，一起釘住比較不容易漏。
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+.dockerignore text eol=lf
+cloudbuild.yaml text eol=lf
+docker/*.py   text eol=lf
+
+# 反過來：PowerShell 腳本留 CRLF（Windows 原生執行）
+*.ps1         text eol=crlf
