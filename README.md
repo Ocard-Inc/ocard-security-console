@@ -116,31 +116,18 @@ uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse 與 MyS
 
 身分由 **Ocard ROS**（統一登入入口）決定，主控台自己不做登入。掛在 ROS 同網域的
 子路徑（`/security`）時，瀏覽器會把 ROS 的 session cookie 一併送來，主控台轉發給
-ROS 的 `/api/auth/me` 換取身分與 feature。
+ROS 的 `/api/auth/me` 換取身分。
 
-**現階段不分級**：ROS 勾了 `security.console` 就有完整權限，沒勾就進不來。
-
-分級機制仍在程式裡（Viewer / Analyst / Admin）。要啟用時在 ROS 的
-`lib/features.ts` 加回 `security.analyst`、`security.admin` 兩個 key，
-再把 `config/settings.yaml` 的 `ros.role_mode` 從 `full` 切成 `tiered`，
-程式不必改：
-
-| ROS feature | tiered 模式的角色 |
-|---|---|
-| `security.console` | Viewer — 總覽、事件、快速查詢、資料健康、稽查模式 |
-| `security.analyst` | Analyst — ＋Log Explorer、遮罩明細、判定、匯出 |
-| `security.admin` | Admin — ＋唯讀 SQL、規則與 Allowlist、操作稽核 |
-
-稽查若問到「權限是否分離」（一般人不該能開唯讀 SQL、匯出明細），屆時再切
-tiered 才答得出來。
+**沒有角色分級**：ROS 的角色勾了 `security.console` 就能用全部功能，沒勾就進不來。
+畫面上顯示的「角色」是 ROS 那邊的角色名（管理員、資訊主管…），不是主控台自己
+發明的等級。ROS 的 super-admin 自動擁有所有 feature，不必額外指派。
 
 三種狀況在畫面上刻意分開：**未登入**（導向 ROS 登入頁）、**已登入但無權限**
 （顯示無權限頁與登入中的 email）、**ROS 不可用**（回 503，不放行也不誤導使用者
-去重新登入）。權限一律在伺服器端檢查，不是只把選單藏起來。
+去重新登入）。
 
 設定與 reverse proxy 見 [`docs/deploy-with-ros.md`](docs/deploy-with-ros.md)。
-`config/settings.yaml` 的 `ros.base_url` 留空時退回 `X-Dev-Role` header 切換，
-**僅供本機開發** —— 正式環境不填等於沒有登入保護。
+`config/settings.yaml` 的 `ros.base_url` 留空時**沒有任何登入保護**，僅供離線 demo。
 
 ## 尚未實作（後續階段）
 

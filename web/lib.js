@@ -1,10 +1,9 @@
 // 共用工具：API 呼叫與格式化。
 // 圖表已移到 web/charts/（ApexCharts 6.7.0），這裡不再放繪圖程式碼。
 
-// 身分由 Ocard ROS 的 session cookie 決定（見後端 auth/ros.py）。
-// devRole 只在後端未設定 ros.base_url 的本機模式下有作用。
+// 身分由 Ocard ROS 的 session cookie 決定（見後端 auth/ros.py），沒有角色分級。
+// user 只在後端未設定 ros.base_url 的離線模式下當作假身分。
 export const state = {
-  role: 'admin',
   user: 'dev@olis.com.tw',
   authSource: 'dev',
 };
@@ -17,10 +16,7 @@ function describe(detail, status) {
 
 export async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  if (state.authSource === 'dev') {
-    headers['X-Dev-Role'] = state.role;
-    headers['X-Dev-User'] = state.user;
-  }
+  if (state.authSource === 'dev') headers['X-Dev-User'] = state.user;
   // __MOUNT__ 由後端注入（掛在 ROS /security 子路徑時為 "/security"）。
   // 少了它，API 會打到 ROS 自己的路由上。
   const root = window.__MOUNT__ || '';

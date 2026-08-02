@@ -8,7 +8,8 @@ export default {
   components: { BrandBreakdown },
   data: () => ({
     data: null, loading: true, error: null, rules: [],
-    f: { severity: '', status: '', rule_id: '', source: '', keyword: '', hours: 168 },
+    // unjudged 是布林：false 代表「不過濾」，所以送出時要跳過（見 load()）
+    f: { severity: '', status: '', rule_id: '', source: '', keyword: '', unjudged: false, hours: 168 },
     drawer: null, SEV_LABEL, SOURCE_LABEL,
   }),
   methods: {
@@ -16,7 +17,7 @@ export default {
     async load() {
       this.loading = true; this.error = null;
       const q = Object.entries(this.f)
-        .filter(([, v]) => v !== '' && v !== null)
+        .filter(([, v]) => v !== '' && v !== null && v !== false)
         .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
       try {
         this.data = await api('/events?' + q);
@@ -24,7 +25,8 @@ export default {
       this.loading = false;
     },
     clearFilters() {
-      this.f = { severity: '', status: '', rule_id: '', source: '', keyword: '', hours: 168 };
+      this.f = { severity: '', status: '', rule_id: '', source: '', keyword: '',
+                 unjudged: false, hours: 168 };
       this.load();
     },
     activeChips() {
@@ -34,9 +36,13 @@ export default {
       if (this.f.rule_id) chips.push({ key: 'rule_id', text: '規則 = ' + this.f.rule_id });
       if (this.f.source) chips.push({ key: 'source', text: '來源 = ' + SOURCE_LABEL[this.f.source] });
       if (this.f.keyword) chips.push({ key: 'keyword', text: '關鍵字 = ' + this.f.keyword });
+      if (this.f.unjudged) chips.push({ key: 'unjudged', text: '只看待判定' });
       return chips;
     },
-    removeChip(key) { this.f[key] = ''; this.load(); },
+    removeChip(key) {
+      this.f[key] = key === 'unjudged' ? false : '';
+      this.load();
+    },
     async preview(evtNo) {
       this.drawer = { loading: true, evt_no: evtNo };
       try {
@@ -46,6 +52,8 @@ export default {
   },
   async mounted() {
     if (this.initialFilter?.severity) this.f.severity = this.initialFilter.severity;
+    // 首頁「待判定」橫幅帶過來的
+    if (this.initialFilter?.unjudged) this.f.unjudged = true;
     this.load();
     try { this.rules = (await api('/rules')).rules; } catch { /* 規則清單非必要 */ }
   },

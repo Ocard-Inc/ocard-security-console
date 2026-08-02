@@ -9,12 +9,9 @@ ROS 的 session cookie 一併送過來 —— 我們原樣轉發給 ROS 的 `/ap
 在 Python 端自行解密要複製 NextAuth 的 HKDF 細節，且會隨 NextAuth 改版而壞。
 轉發給 ROS 則永遠與 ROS 的認知一致，撤銷權限也即時生效。
 
-權限來自 ROS 的動態 RBAC（lib/features.ts）：
-    security.console  → Viewer   進入主控台
-    security.analyst  → Analyst  ＋Log Explorer、遮罩明細、判定、匯出
-    security.admin    → Admin    ＋唯讀 SQL、規則與 Allowlist、操作稽核
-沒有任何 security.* 的登入者會看到「無權限」頁，不是登入頁 —— 這兩件事必須
-在畫面上明確區分。
+授權來自 ROS 的動態 RBAC（lib/features.ts）的單一 feature `security.console`：
+勾了就能用主控台的全部功能，沒勾的登入者會看到「無權限」頁，不是登入頁 ——
+這兩件事必須在畫面上明確區分，否則使用者會一直重複登入卻進不來。
 """
 from __future__ import annotations
 
@@ -68,12 +65,6 @@ def base_url() -> str:
 def enabled() -> bool:
     """未設定 ros.base_url 時停用 ROS 驗證，走開發模式的 header 角色切換。"""
     return bool(base_url()) and bool(_cfg().get("enabled", True))
-
-
-def role_mode() -> str:
-    """full = 進得來就是完整權限；tiered = 依 feature 分 Viewer/Analyst/Admin。"""
-    mode = str(_cfg().get("role_mode", "full")).lower()
-    return mode if mode in ("full", "tiered") else "full"
 
 
 def login_url(next_path: str = "/") -> str:

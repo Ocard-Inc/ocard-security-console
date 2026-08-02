@@ -31,29 +31,43 @@ def request_trend(minutes: int = 60, bucket_minutes: int = 10) -> dict:
         series[name] = {timewin.fmt(r["b"].to_pydatetime()): int(r["c"])
                         for _, r in df.iterrows()}
 
+    # 四條線各自對應的基線 metric key。四個都已由 calibrate.py 算好存在 SQLite，
+    # 以前只讀了 api 與 login_success，另外兩個白算的 —— 首頁的小倍數圖要四個都有，
+    # 每個面板才能對照自己的同時段基線（而不只是把一張圖切成四張）。
+    baseline_keys = {
+        "api": "table_10m:api",
+        "backend": "table_10m:backend",
+        "login_success": "login_success_10m",
+        "login_failed": "login_failed_10m",
+    }
+    # baseline.get() 每次都是一趟 SQLite。7 天視窗 × 4 條線 = 4,032 次呼叫，
+    # 但相異鍵最多 4 × 24 × 2 = 192 個，memoize 起來。
+    base_cache: dict[tuple[str, int, str], object] = {}
+
+    def base_of(name: str, at: datetime):
+        dc = baseline.day_class_of(at)
+        key = (name, at.hour, dc)
+        if key not in base_cache:
+            base_cache[key] = baseline.get(baseline_keys[name], hour=at.hour, day_class=dc)
+        return base_cache[key]
+
     buckets: list[dict] = []
     cursor = start
     while cursor < end:
         label = timewin.fmt(cursor)
-        base_api = baseline.get("table_10m:api", hour=cursor.hour,
-                                day_class=baseline.day_class_of(cursor))
-        base_login = baseline.get("login_success_10m", hour=cursor.hour,
-                                  day_class=baseline.day_class_of(cursor))
-        api_v = series["api"].get(label, 0)
-        buckets.append({
-            "bucket": label,
-            "label": cursor.strftime("%H:%M"),
-            "api": api_v,
-            "backend": series["backend"].get(label, 0),
-            "login_success": series["login_success"].get(label, 0),
-            "login_failed": series["login_failed"].get(label, 0),
-            "api_median": round(base_api.median) if base_api else None,
-            "api_p95": round(base_api.p95) if base_api else None,
-            "api_multiple": (round(api_v / base_api.median, 2)
-                             if base_api and base_api.median else None),
-            "login_median": round(base_login.median) if base_login else None,
-            "login_p95": round(base_login.p95) if base_login else None,
-        })
+        row = {"bucket": label, "label": cursor.strftime("%H:%M")}
+        for name in baseline_keys:
+            value = series[name].get(label, 0)
+            base = base_of(name, cursor)
+            row[name] = value
+            row[f"{name}_median"] = round(base.median) if base else None
+            row[f"{name}_p95"] = round(base.p95) if base else None
+            row[f"{name}_multiple"] = (round(value / base.median, 2)
+                                       if base and base.median else None)
+        # 舊欄位名，前端表格檢視與 lib.js 仍在用，保留以免破壞既有呼叫端
+        row["login_median"] = row["login_success_median"]
+        row["login_p95"] = row["login_success_p95"]
+        buckets.append(row)
         cursor += timedelta(minutes=bucket_minutes)
 
     return {"start": params["start"], "end": params["end"],

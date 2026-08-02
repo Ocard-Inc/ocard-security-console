@@ -9,16 +9,18 @@ import Quick from './pages/quick.js';
 import Health from './pages/health.js';
 import AuditMode from './pages/audit-mode.js';
 
+// 沒有角色分級：進得來的人看到的選單完全一樣。
+// hidden 的項目仍可用網址直接開（hash 路由），只是不放進左側選單。
 const NAV = [
-  { key: 'overview', label: '資安總覽', icon: '◎', perm: 'view_overview' },
-  { key: 'events', label: '異常事件', icon: '▲', perm: 'view_events' },
-  { key: 'explorer', label: 'Log Explorer', icon: '⌕', perm: 'use_explorer' },
-  { key: 'quick', label: '快速查詢', icon: '≡', perm: 'view_quick' },
-  { key: 'auditmode', label: '稽查模式', icon: '✓', perm: 'view_auditmode' },
-  { key: 'health', label: '資料健康', icon: '♡', perm: 'view_health' },
-  { key: 'rules', label: '規則與 Allowlist', icon: '⚙', perm: 'manage_rules' },
-  { key: 'sql', label: 'SQL Console', icon: '>_', perm: 'use_sql_console' },
-  { key: 'auditlog', label: '操作稽核', icon: '⊙', perm: 'view_audit_log' },
+  { key: 'overview', label: '資安總覽', icon: '◎' },
+  { key: 'events', label: '異常事件', icon: '▲' },
+  { key: 'explorer', label: 'Log Explorer', icon: '⌕' },
+  { key: 'quick', label: '快速查詢', icon: '≡' },
+  { key: 'auditmode', label: '稽查模式', icon: '✓', hidden: true },
+  { key: 'health', label: '資料健康', icon: '♡' },
+  { key: 'rules', label: '規則與 Allowlist', icon: '⚙' },
+  { key: 'sql', label: 'SQL Console', icon: '>_' },
+  { key: 'auditlog', label: '操作稽核', icon: '⊙' },
 ];
 
 const TITLES = {
@@ -61,15 +63,19 @@ const App = {
   }),
   computed: {
     navItems() {
-      if (!this.session) return [];
-      return NAV.filter(n => this.session.permissions.includes(n.perm));
+      return this.session ? NAV.filter(n => !n.hidden) : [];
     },
     minutes() {
-      if (this.range === 'today') return minutesSinceTaipeiMidnight();
+      if (this.range === 'today') {
+        // 讀一下 reloadToken，讓這個 computed 在每次重新整理時失效重算 ——
+        // 否則「今天」的分鐘數會停在剛切換過去的那一刻，隨著時間過去愈來愈短。
+        void this.reloadToken;
+        return minutesSinceTaipeiMidnight();
+      }
       return RANGES.find(r => r[0] === this.range)?.[2] || 60;
     },
     title() { return TITLES[this.page] || ''; },
-    canJudge() { return this.session?.permissions.includes('judge_event'); },
+    canJudge() { return !!this.session; },
     pending() { return ['rules', 'sql', 'auditlog'].includes(this.page); },
   },
   methods: {
@@ -79,7 +85,6 @@ const App = {
         this.session = await api('/session');
         state.authSource = this.session.auth_source;
         this.authError = null;
-        if (!this.navItems.some(n => n.key === this.page)) this.page = 'overview';
       } catch (e) {
         // not_logged_in 已由 lib.js 導向 ROS 登入頁，這裡只處理其餘兩種
         if (e.code === 'no_security_access' || e.code === 'ros_unavailable') {
@@ -88,11 +93,6 @@ const App = {
           this.authError = { code: 'unknown', message: e.message };
         }
       }
-    },
-    async setRole(role) {
-      state.role = role;
-      await this.loadSession();
-      this.sessionKey++;
     },
     goto(page, filter) {
       this.page = page; this.evtNo = null;
@@ -172,28 +172,20 @@ const App = {
         <span class="nav-icon">{{ n.icon }}</span><span>{{ n.label }}</span>
       </div>
     </div>
+    <!-- 身分全部來自 ROS 的登入 session，沒有角色切換 -->
     <div class="nav-foot">
-      <div style="color:#E4E7EC">{{ session.email }}</div>
-      <div style="color:var(--text-2)">
-        {{ session.role_label }}
-        <template v-if="session.ros_role_name"> · ROS {{ session.ros_role_name }}</template>
+      <div style="color:#fff;font-weight:500">{{ session.name }}</div>
+      <div style="color:var(--text-2);word-break:break-all">{{ session.email }}</div>
+      <div style="color:#98A2B3;margin-top:2px">{{ session.role_label }}</div>
+      <div v-if="session.auth_source === 'dev'"
+           style="color:#B54708;font-size:10px;margin-top:8px;line-height:1.5">
+        未接 ROS 的離線模式，沒有登入保護
       </div>
-      <!-- 角色切換只在未接 ROS 的本機模式出現；正式環境角色由 ROS 決定 -->
-      <template v-if="session.auth_source === 'dev'">
-        <div style="display:flex;gap:4px;margin-top:8px">
-          <button v-for="r in ['viewer','analyst','admin']" :key="r"
-                  @click="setRole(r)"
-                  style="flex:1;padding:3px 0;border-radius:5px;font-size:10.5px;border:1px solid"
-                  :style="session.role===r ? {background:'var(--ocard-yellow,#FFEA00)',color:'#333',borderColor:'var(--ocard-yellow,#FFEA00)'}
-                                           : {background:'transparent',color:'#98A2B3',borderColor:'#344054'}">
-            {{ r === 'viewer' ? 'Viewer' : (r === 'analyst' ? 'Analyst' : 'Admin') }}
-          </button>
-        </div>
-        <div style="color:#B54708;font-size:10px;margin-top:6px">
-          未接 ROS：角色可自由切換，僅供本機開發</div>
-      </template>
-      <a v-else-if="session.logout_url" :href="session.logout_url"
-         style="display:inline-block;margin-top:8px;font-size:11px;color:#98A2B3">登出</a>
+      <div v-else style="display:flex;gap:10px;margin-top:8px;font-size:11px">
+        <a :href="session.ros_url" target="_blank" rel="noopener"
+           style="color:#98A2B3">回 ROS</a>
+        <a :href="session.logout_url" style="color:#98A2B3">登出</a>
+      </div>
     </div>
   </div>
 
@@ -202,7 +194,9 @@ const App = {
       <h1>{{ title }}</h1>
       <span class="chip-prod">{{ session.env_label }}</span>
       <div class="header-right">
-        <select v-model="range" @change="refresh">
+        <!-- 不要加 @change="refresh"：range 變了 minutes 就變，頁面自己 watch minutes，
+             再 bump 一次 reloadToken 只會讓同一個昂貴查詢送兩遍。 -->
+        <select v-model="range">
           <option v-for="r in RANGES" :key="r[0]" :value="r[0]">{{ r[1] }}</option>
         </select>
         <span>{{ session.timezone }}</span>

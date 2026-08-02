@@ -1,10 +1,9 @@
 // 資安總覽（設計稿 7 節）：狀態摘要 → 即時趨勢 → 需要注意 + 資料來源健康 → 風險排名
-import { api, num, mult, multColor, clockTime, duration, SEV_LABEL } from '../lib.js';
+import { api, num, mult, multColor, clockTime, duration, shortTime, SEV_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
-import ChartLegend from '../charts/ChartLegend.js';
 import { token } from '../charts/tokens.js';
-import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
+import { timeSeriesOptions } from '../charts/time-series.js';
 import { horizontalBarOptions, barHeight, multipleFill } from '../charts/bar.js';
 
 const SEV_META = {
@@ -21,86 +20,89 @@ const RANK_TABS = [
   { key: 'failed_actors', label: '高失敗來源', col: '來源 fingerprint' },
 ];
 
-// 序列順序即圖例順序。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
-// 登入失敗的 dashed 是紅綠色盲下的必要第二編碼，不是裝飾，不可拿掉。
-const SERIES = [
+// 四個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
+//
+// 為什麼是四個面板而不是一張圖：四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），
+// 單一 y 軸下小的那幾條永遠被壓在底部；雙軸是最容易誤導人的做法，不能用。
+// 每個面板自己一個 y 軸，再各自對照自己的 28 天同時段基線 ——
+// 這正好是本專案的核心命題（門檻 = 基線 × 倍數）。
+const PANELS = [
   { key: 'api', label: 'API request', tokenName: '--chart-api' },
-  { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
   { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
-  { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail', dashed: true },
+  { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
+  { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
 ];
+
+// 同一個 group 的圖表會同步準星：滑鼠移到任一面板，四個面板的準星一起動，
+// tooltip 則各自顯示自己那條線的值。
+const TREND_GROUP = 'ov-trend';
 
 export default {
   props: ['minutes', 'reloadToken'],
   emits: ['open-event', 'goto'],
-  components: { BrandBreakdown, ApexChart, ChartLegend },
+  components: { BrandBreakdown, ApexChart },
   data: () => ({
     data: null, reloading: false, error: null, showTable: false, showRankTable: false, rankTab: 0,
-    SEV_META, RANK_TABS, SERIES, SEV_LABEL,
+    SEV_META, RANK_TABS, PANELS, SEV_LABEL,
   }),
   computed: {
     buckets() { return this.data?.trend.buckets || []; },
-    hasBaseline() {
-      return this.buckets.some(b => b.api_median != null && b.api_p95 != null);
-    },
-    trendSeries() {
+
+    /**
+     * 四個小倍數面板的資料。每個面板兩條序列：資料線 + 同時段 median 虛線。
+     *
+     * 刻意「只畫 median 參考線、不畫 median–P95 帶」：P95 的上緣比實際流量高一個量級
+     * （實測 P95 8,323 vs API 776），畫成帶會把面板的 y 軸撐到 8,800、資料線只佔 9% 高，
+     * 換成小倍數也沒解決壓扁問題。只畫 median 的話軸頂 1,400、資料線佔 55%，
+     * 一眼看得出「低於正常」。P95 沒有消失 —— 它在面板標頭與 tooltip 裡都是精確數字。
+     * （事件詳細頁仍保留 rangeArea 帶：那裡是單一序列，帶就是重點。）
+     */
+    panels() {
       const rows = this.buckets;
-      const lines = SERIES.map(s => ({
-        name: s.label, type: 'line',
-        data: rows.map(r => ({ x: r.label, y: r[s.key] })),
-      }));
-      // 基準帶排在最前面 = 畫在最底層
-      return this.hasBaseline
-        ? [...baselineSeries(rows, { medianKey: 'api_median', p95Key: 'api_p95' }), ...lines]
-        : lines;
-    },
-    trendOptions() {
-      const band = token('--chart-band');
-      const baseline = token('--chart-baseline');
-      const seriesColors = SERIES.map(s => token(s.tokenName));
-      const withBand = this.hasBaseline;
-      return timeSeriesOptions({
-        rowsRef: this._rows,
-        type: withBand ? 'rangeArea' : 'line',
-        colors: withBand ? [band, baseline, ...seriesColors] : seriesColors,
-        // index 0 是帶（不畫線）、1 是 median 參考線，其後才是四條資料線
-        strokeWidth: withBand ? [0, 1, 2, 2, 2, 2] : [2, 2, 2, 2],
-        dashArray: withBand ? [0, 4, 0, 0, 0, 4] : [0, 0, 0, 4],
-        showMarkers: this.buckets.length <= 40,
-        tooltipRows: row => [
-          ...SERIES.map(s => ({
-            name: s.label, value: num(row[s.key]),
-            color: token(s.tokenName), dashed: s.dashed,
-          })),
-          withBand
-            ? { name: '同時段 median', value: num(row.api_median), color: baseline, muted: true }
-            : null,
-          withBand
-            ? { name: '同時段 P95', value: num(row.api_p95), color: baseline, muted: true }
-            : null,
-        ],
-        tooltipNote: row => row.api_multiple != null
-          ? `API request 為同時段 median 的 ${row.api_multiple.toFixed(1)}×` : null,
+      const baselineColor = token('--chart-baseline');
+      return PANELS.map(p => {
+        const color = token(p.tokenName);
+        const hasBase = rows.some(r => r[`${p.key}_median`] != null);
+        const series = [
+          { name: p.label, type: 'line', data: rows.map(r => ({ x: r.label, y: r[p.key] })) },
+        ];
+        if (hasBase) {
+          series.push({
+            name: '同時段 median', type: 'line',
+            data: rows.map(r => ({ x: r.label, y: r[`${p.key}_median`] ?? null })),
+          });
+        }
+        return {
+          ...p, color, hasBase, series,
+          meta: this.panelMeta(p.key),
+          options: timeSeriesOptions({
+            rowsRef: this._rows,
+            id: 'ov-' + p.key,
+            group: TREND_GROUP,
+            compact: true,
+            colors: hasBase ? [color, baselineColor] : [color],
+            strokeWidth: hasBase ? [2, 1] : [2],
+            dashArray: hasBase ? [0, 4] : [0],
+            showMarkers: rows.length <= 40,
+            tooltipRows: row => [
+              { name: p.label, value: num(row[p.key]), color },
+              hasBase
+                ? { name: '同時段 median', value: num(row[`${p.key}_median`]),
+                    color: baselineColor, muted: true }
+                : null,
+              hasBase
+                ? { name: '同時段 P95', value: num(row[`${p.key}_p95`]),
+                    color: baselineColor, muted: true }
+                : null,
+            ],
+            tooltipNote: row => row[`${p.key}_multiple`] != null
+              ? `為同時段 median 的 ${row[`${p.key}_multiple`].toFixed(1)}×` : null,
+          }),
+        };
       });
     },
     trendSignature() {
-      return `ov-trend|${this.minutes}|${this.data?.trend.bucket_minutes}|${this.hasBaseline}`;
-    },
-    legendItems() {
-      const items = SERIES.map(s => ({
-        label: s.label, color: token(s.tokenName), dashed: s.dashed,
-        meta: this.seriesMeta(s.key),
-      }));
-      // 基準帶通常比實際流量高一個量級，是它把 y 軸撐開、把四條線壓在底部。
-      // 因此也要能關掉 —— 帶與中位數線是兩個序列，但在圖例上算一項。
-      if (this.hasBaseline) {
-        items.push({
-          label: 'API 同時段基線', color: token('--chart-baseline'), band: true,
-          series: ['同時段 median–P95', '同時段 median'],
-          meta: '（median–P95 範圍）',
-        });
-      }
-      return items;
+      return `ov-trend|${this.minutes}|${this.data?.trend.bucket_minutes}`;
     },
 
     rankOptions() {
@@ -163,9 +165,17 @@ export default {
       return this.data && !this.data.severity_cards.some(
         c => (c.severity === 'P0' || c.severity === 'P1') && c.count > 0);
     },
+    pending() {
+      return this.data?.pending_judgement || { total: 0, by_severity: {}, events: [] };
+    },
+    pendingBreakdown() {
+      const by = this.pending.by_severity || {};
+      const parts = ['P0', 'P1', 'P2', 'P3'].filter(s => by[s]).map(s => `${s} ${by[s]} 件`);
+      return parts.length ? '分別是 ' + parts.join('、') + '。' : '';
+    },
   },
   methods: {
-    num, mult, multColor, clockTime, duration,
+    num, mult, multColor, clockTime, duration, shortTime,
     // 安靜重載：只有「還沒有任何資料」才顯示骨架，之後一律沿用上一版畫面並降低不透明度。
     // 30 秒自動更新若換骨架會整頁閃、版面跳動，圖表也會失去 hover 狀態。
     async load() {
@@ -180,14 +190,20 @@ export default {
       } catch (e) { this.error = e.message; }
       this.reloading = false;
     },
-    seriesMeta(key) {
+    /**
+     * 面板標頭的數字。P95 只出現在這裡與 tooltip —— 它不畫進圖裡（見 panels() 的說明）。
+     * 用 HTML 標頭而不是 ApexCharts 的 title，才帶得動這串即時數字。
+     */
+    panelMeta(key) {
       const b = this.latestBucket;
-      if (!b) return '';
-      if (key === 'api' && b.api_median)
-        return `（目前 ${num(b.api)} / median ${num(b.api_median)} / P95 ${num(b.api_p95)} · ${mult(b.api_multiple)}）`;
-      if (key === 'login_success' && b.login_median)
-        return `（${num(b.login_success)} / median ${num(b.login_median)} / P95 ${num(b.login_p95)}）`;
-      return `（目前 ${num(b[key])}）`;
+      if (!b) return { current: '—', baseline: '', multiple: null };
+      const median = b[`${key}_median`];
+      const p95 = b[`${key}_p95`];
+      return {
+        current: num(b[key]),
+        baseline: median != null ? `median ${num(median)} · P95 ${num(p95)}` : '無同時段基線',
+        multiple: b[`${key}_multiple`],
+      };
     },
   },
   created() {
@@ -229,8 +245,20 @@ export default {
       <strong>資料延遲</strong>　{{ data.freshness.banner }}
       <a @click="$emit('goto','health')" style="float:right">查看資料健康 →</a>
     </div>
-    <div v-if="noP0P1 && !data.freshness.banner && data.monitor.label === '正常'" class="banner banner-ok">
-      目前沒有達到 P0／P1 門檻的事件。最近一次檢查完成於
+    <!-- 「已結束但從未判定」的積壓。事件自動結束只代表數值回到門檻以下，不代表有人查過。
+         這個橫幅必須壓過下面那句綠色的「沒有達到門檻」，否則就是在給假的安心感。 -->
+    <div v-if="pending.total" class="banner banner-warn">
+      <strong>有 {{ pending.total }} 件事件已結束但從未判定</strong>
+      <template v-if="pending.oldest">（最早自 {{ shortTime(pending.oldest) }}）</template>
+      <a @click="$emit('goto','events',{unjudged:true})" style="float:right">前往判定 →</a>
+      <div style="font-size:12.5px;line-height:1.7;margin-top:4px">
+        事件會在數值回到門檻以下時自動結束 —— 那只代表「現在沒在發生」，
+        不代表「已經查清楚」。{{ pendingBreakdown }}
+      </div>
+    </div>
+    <div v-if="noP0P1 && !pending.total && !data.freshness.banner && data.monitor.label === '正常'"
+         class="banner banner-ok">
+      目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
       {{ clockTime(data.last_five_min_check) }}，四個 ClickHouse 資料來源均正常更新。
     </div>
     <div v-if="data.monitor.label !== '正常' && data.monitor.label !== '部分延遲'"
@@ -278,16 +306,29 @@ export default {
       </div>
 
       <template v-if="!showTable">
-        <ApexChart ref="trendChart" :series="trendSeries" :options="trendOptions"
-                   :signature="trendSignature" :height="260" :reloading="reloading"
-                   aria-label="四個資料來源的 request 趨勢與 API 同時段基線；詳細數值請切換表格檢視" />
-        <ChartLegend :items="legendItems" toggleable style="margin-top:8px"
-                     @toggle="$event.forEach(n => $refs.trendChart.toggleSeries(n))" />
-        <div class="muted" style="font-size:11px;margin-top:6px">
-          <template v-if="hasBaseline">
-            淡藍帶 = API 同時段 median–P95 範圍 · 灰虛線 = 同時段 median（皆為逐時間桶）·
-          </template>
-          點圖例可暫時隱藏該序列。基線與 API 的量級通常遠大於其餘三條，關掉後 y 軸會重新縮放。
+        <!-- 2×2 小倍數：四條線量級差 1000 倍，同一個 y 軸畫不下（雙軸則會誤導）。
+             每個面板自己一個軸、自己一條同時段 median 虛線；chart.group 讓四個面板
+             的準星同步，滑鼠移一張、四張一起動。 -->
+        <div class="panel-grid">
+          <div v-for="p in panels" :key="p.key" class="panel">
+            <div class="panel-head">
+              <span class="panel-key" :style="{color: p.color}"></span>
+              <span class="panel-title">{{ p.label }}</span>
+              <span class="panel-value">{{ p.meta.current }}</span>
+              <span v-if="p.meta.multiple !== null" class="panel-mult"
+                    :style="{color: multColor(p.meta.multiple)}">{{ mult(p.meta.multiple) }}</span>
+            </div>
+            <div class="panel-base">{{ p.meta.baseline }}</div>
+            <ApexChart :series="p.series" :options="p.options"
+                       :signature="trendSignature + '|' + p.key" :height="118"
+                       :reloading="reloading"
+                       :aria-label="p.label + ' 趨勢與同時段 median；詳細數值請切換表格檢視'" />
+          </div>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px">
+          灰虛線 = 該序列自己的 28 天同時段 median（逐時間桶）。P95 在標頭與 hover 的
+          tooltip 裡 —— 它比實際流量高一個量級，畫進圖裡會把線壓扁到看不見。
+          四個面板的縱軸各自獨立，不可跨面板比較高度。
         </div>
       </template>
 
@@ -338,8 +379,30 @@ export default {
             </div>
           </div>
         </div>
-        <div v-else class="muted" style="font-size:13px;padding:20px 0">
-          目前沒有未處理的 P0／P1／P2 事件。監測仍持續執行中；「沒有事件」不等於「系統安全」。
+        <div v-else class="muted" style="font-size:13px;padding:14px 0">
+          目前沒有<strong>進行中</strong>的 P0／P1／P2 事件。監測仍持續執行中；
+          「沒有事件」不等於「系統安全」。
+        </div>
+
+        <!-- 已結束但沒人判定的事件。上面的 attention 只查 status='active'，
+             這些事件一旦自動結束就會從首頁消失 —— 這一區就是為了不讓它們消失。 -->
+        <div v-if="pending.events.length" style="margin-top:14px">
+          <div style="display:flex;align-items:center;margin-bottom:8px">
+            <div style="font-weight:700;font-size:13px">待判定（已結束，尚未有人確認）</div>
+            <a @click="$emit('goto','events',{unjudged:true})"
+               style="margin-left:auto;font-size:12px">全部 {{ pending.total }} 件 →</a>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div v-for="e in pending.events" :key="e.evt_no" @click="$emit('open-event', e.evt_no)"
+                 style="display:flex;gap:10px;align-items:center;padding:8px 10px;background:#FCFCFD;border:1px solid var(--line-soft);border-radius:7px;cursor:pointer;font-size:12.5px">
+              <span :class="'sev sev-'+e.severity" style="font-size:10.5px;padding:2px 6px">{{ e.severity }}</span>
+              <span style="font-weight:500">{{ e.rule_id }} {{ e.rule_name }}</span>
+              <span class="mono muted" style="font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ e.entity_label }}</span>
+              <span class="muted" style="margin-left:auto;flex:none;font-size:11.5px">
+                {{ shortTime(e.first_seen) }} · 持續 {{ duration(e.first_seen, e.last_seen) }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 

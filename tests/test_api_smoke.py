@@ -2,32 +2,15 @@
 from __future__ import annotations
 
 
-def test_session_default_admin(client):
+def test_session_reports_identity(client):
+    """沒有角色分級：session 回的是身分，不是等級。"""
     r = client.get("/api/session")
     assert r.status_code == 200
     body = r.json()
-    assert body["role"] == "admin"
-    assert "use_sql_console" in body["permissions"]
-
-
-def test_session_viewer_lacks_admin_permissions(client):
-    r = client.get("/api/session", headers={"X-Dev-Role": "viewer"})
-    body = r.json()
-    assert body["role_label"] == "Security Viewer"
-    assert "use_sql_console" not in body["permissions"]
-    assert "use_explorer" not in body["permissions"]
-    assert "view_overview" in body["permissions"]
-
-
-def test_explorer_forbidden_for_viewer(client):
-    r = client.post("/api/explorer", headers={"X-Dev-Role": "viewer"},
-                    json={"source": "api", "start": "2026-08-01 00:00:00",
-                          "end": "2026-08-01 01:00:00"})
-    assert r.status_code == 403
-    # 權限相關的 detail 是結構化物件（前端要靠 code 分辨要顯示哪一種畫面）
-    detail = r.json()["detail"]
-    assert detail["code"] == "insufficient_role"
-    assert "無法使用" in detail["message"]
+    assert body["email"]
+    assert body["role_label"]          # ROS 的角色名（離線模式為「開發模式」）
+    assert body["auth_source"] in ("ros", "dev")
+    assert "permissions" not in body, "已移除角色分級，不該再回權限清單"
 
 
 def test_explorer_rejects_bad_range(client):
@@ -111,7 +94,7 @@ def test_sparklines_shape(client):
     assert body["severity_note"]
 
 
-def test_sparklines_allowed_for_viewer(client):
-    """統計卡在總覽與資料健康兩頁都要用到，權限門檻與 view_health 相同。"""
-    r = client.get("/api/sparklines", headers={"X-Dev-Role": "viewer"})
+def test_sparklines_available(client):
+    """統計卡在總覽與資料健康兩頁都要用到。"""
+    r = client.get("/api/sparklines")
     assert r.status_code == 200

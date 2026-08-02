@@ -1,93 +1,36 @@
-"""角色與權限守衛（server-side 強制，不依賴前端隱藏）。
+"""身分與存取控制（server-side 強制，不依賴前端隱藏）。
 
-身分來自 Ocard ROS 的登入 session（見 auth/ros.py）。ROS 的動態 RBAC feature
-決定本主控台的角色，由設定檔的 `ros.role_mode` 決定怎麼對應：
+身分來自 Ocard ROS 的登入 session（見 auth/ros.py）。**沒有角色分級** ——
+ROS 的角色勾了 `security.console` 就能用主控台的全部功能，沒勾就進不來。
 
-    full（現況）  有 security.console → Admin，進得來就是完整權限
-    tiered        security.console / analyst / admin → Viewer / Analyst / Admin
+顯示給使用者看的「角色」是 ROS 那邊的角色名稱（管理員、資訊主管…），
+不是主控台自己發明的等級。
 
-分級的機制一直都在，只是現階段設定成 full。要改成分級時在 ROS 加回
-security.analyst / security.admin 兩個 feature key，再把 role_mode 切成
-tiered 即可，不必改程式。
-
-未設定 `ros.base_url` 時（本機開發、ROS 尚未部署）退回 X-Dev-Role header 切換，
-方便單機演示；正式環境務必設定 ros.base_url，否則任何人都能自稱 Admin。
+未設定 `ros.base_url` 時退回 X-Dev-User header（僅供離線 demo；
+沒有登入保護，正式環境務必設定 ros.base_url）。
 """
 from __future__ import annotations
-
-from enum import IntEnum
 
 from fastapi import Depends, Header, HTTPException, Request
 
 from console.auth import ros
 
-
-class Role(IntEnum):
-    VIEWER = 0
-    ANALYST = 1
-    ADMIN = 2
-
-
-ROLE_LABELS = {
-    Role.VIEWER: "Security Viewer",
-    Role.ANALYST: "Security Analyst",
-    Role.ADMIN: "Security Admin",
-}
-
-_BY_NAME = {"viewer": Role.VIEWER, "analyst": Role.ANALYST, "admin": Role.ADMIN}
-
-# ROS feature key → 本主控台角色（取最高者）
-FEATURE_ROLE = {
-    "security.console": Role.VIEWER,
-    "security.analyst": Role.ANALYST,
-    "security.admin": Role.ADMIN,
-}
-
-# 需要的最低角色
-PERMISSIONS = {
-    "view_overview": Role.VIEWER,
-    "view_events": Role.VIEWER,
-    "view_quick": Role.VIEWER,
-    "view_health": Role.VIEWER,
-    "view_auditmode": Role.VIEWER,
-    "use_explorer": Role.ANALYST,
-    "view_masked_detail": Role.ANALYST,
-    "manage_cases": Role.ANALYST,
-    "judge_event": Role.ANALYST,
-    "export_evidence": Role.ANALYST,
-    "use_sql_console": Role.ADMIN,
-    "manage_rules": Role.ADMIN,
-    "manage_allowlist": Role.ADMIN,
-    "view_audit_log": Role.ADMIN,
-    "raw_drilldown": Role.ADMIN,
-}
+# 進入主控台所需的 ROS feature。有它就有全部功能。
+REQUIRED_FEATURE = "security.console"
 
 
 class CurrentUser:
-    def __init__(self, email: str, role: Role, *, name: str = "",
-                 source: str = "ros", ros_role_name: str | None = None) -> None:
+    def __init__(self, email: str, *, name: str = "", source: str = "ros",
+                 ros_role_name: str | None = None) -> None:
         self.email = email
-        self.role = role
         self.name = name or email.split("@")[0]
         self.source = source              # ros / dev
         self.ros_role_name = ros_role_name
 
     @property
-    def role_name(self) -> str:
-        return self.role.name.lower()
-
-    @property
     def role_label(self) -> str:
-        return ROLE_LABELS[self.role]
-
-    def can(self, permission: str) -> bool:
-        required = PERMISSIONS.get(permission)
-        if required is None:
-            raise KeyError(f"未定義的權限 {permission!r}")
-        return self.role >= required
-
-    def allowed_permissions(self) -> list[str]:
-        return [p for p in PERMISSIONS if self.can(p)]
+        """畫面上顯示的身分。以 ROS 的角色名為準，沒有就退回泛稱。"""
+        return self.ros_role_name or ("開發模式" if self.source == "dev" else "已授權使用者")
 
 
 class NotLoggedIn(HTTPException):
@@ -106,44 +49,30 @@ class NotLoggedIn(HTTPException):
 
 
 class NoSecurityAccess(HTTPException):
-    """已登入但沒有任何 security.* feature —— 顯示無權限頁，不是登入頁。"""
+    """已登入但沒有 security.console —— 顯示無權限頁，不是登入頁。"""
 
     def __init__(self, email: str) -> None:
         super().__init__(status_code=403, detail={
             "code": "no_security_access",
             "message": "你尚未取得資安監控權限。",
             "email": email,
-            "hint": "請聯繫 Security Admin 於 ROS 的「設定 → 角色」為你的角色"
-                    "勾選「資安監控」功能後再試。",
+            "hint": "請聯繫 Security Admin 於 ROS 的「設定 → 角色權限」為你的角色"
+                    "勾選「資安監控」後再試。",
         })
 
 
-def role_from_features(features: tuple[str, ...] | list[str],
-                       mode: str | None = None) -> Role | None:
-    """取 feature 對應的角色；完全沒有 security.* 時回 None（＝不得進入）。
-
-    mode=full 時只要有任一 security.* 就給 Admin；tiered 則取最高的那一級。
-    """
-    roles = [r for key, r in FEATURE_ROLE.items() if key in features]
-    if not roles:
-        return None
-    resolved = mode or ros.role_mode()
-    return Role.ADMIN if resolved == "full" else max(roles)
+def has_access(features: tuple[str, ...] | list[str]) -> bool:
+    return REQUIRED_FEATURE in features
 
 
 def current_user(
     request: Request,
-    x_dev_role: str = Header(default="admin", alias="X-Dev-Role"),
     x_dev_user: str = Header(default="dev@olis.com.tw", alias="X-Dev-User"),
 ) -> CurrentUser:
     """FastAPI dependency：ROS session 優先，未設定 ROS 時退回 dev header。"""
     if not ros.enabled():
-        role = _BY_NAME.get(x_dev_role.lower())
-        if role is None:
-            raise HTTPException(status_code=400, detail=f"未知角色 {x_dev_role!r}")
-        return CurrentUser(email=x_dev_user, role=role, source="dev")
+        return CurrentUser(email=x_dev_user, source="dev")
 
-    next_path = request.url.path
     try:
         user = ros.resolve_user(dict(request.cookies))
     except ros.RosUnavailable as exc:
@@ -154,25 +83,20 @@ def current_user(
         }) from exc
 
     if user is None:
-        raise NotLoggedIn(next_path)
-    if not user.active:
+        raise NotLoggedIn(request.url.path)
+    if not user.active or not has_access(user.features):
         raise NoSecurityAccess(user.email)
-
-    role = role_from_features(user.features)
-    if role is None:
-        raise NoSecurityAccess(user.email)
-    return CurrentUser(email=user.email, role=role, name=user.name,
+    return CurrentUser(email=user.email, name=user.name,
                        source="ros", ros_role_name=user.role_name)
 
 
 def guard(user: CurrentUser, permission: str) -> None:
-    """在 route 內呼叫；權限不足回 403（前端顯示「權限不足」頁）。"""
-    if not user.can(permission):
-        raise HTTPException(status_code=403, detail={
-            "code": "insufficient_role",
-            "message": f"你目前的角色（{user.role_label}）無法使用此功能。"
-                       "需要 Security Admin 於 ROS 為你調整權限。",
-        })
+    """保留呼叫點以標示「這個端點屬於哪個功能」，目前不再分級。
+
+    能通過 current_user 的人就有全部功能；真正的關卡是 ROS 的
+    security.console。之後若要分級，改這裡即可。
+    """
+    return None
 
 
 CurrentUserDep = Depends(current_user)

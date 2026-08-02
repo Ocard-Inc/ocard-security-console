@@ -8,28 +8,23 @@ app:
   base_url: http://127.0.0.1:8600
 
 ros:
-  # Ocard ROS 是統一登入入口。設定 base_url 後，本主控台一律以 ROS 的
-  # session 驗證身分（轉發 cookie 給 ROS 的 /api/auth/me），並依 ROS 的
-  # security.* feature 決定角色。
+  # Ocard ROS 是統一登入入口。本主控台不自己做登入：轉發瀏覽器送來的
+  # ROS session cookie 給 /api/auth/me 換取身分，再看有沒有
+  # security.console 這個 feature 決定放不放行。
   #
-  # 留空 = 停用 ROS 驗證，退回 X-Dev-Role header 切換（僅供本機開發）。
-  # 正式環境必須填，否則任何人都能自稱 Admin。
-  base_url: ""            # 例：https://ros.ocard.co
+  # 沒有分級 —— 進得來就是完整功能。
+  #
+  # 留空 = 停用 ROS 驗證（無登入保護，只可用於離線 demo）。
+  base_url: http://localhost:3000     # 正式環境改成 https://ros.ocard.co
   enabled: true
-  # 本主控台掛在 ROS 同網域下的哪個路徑（reverse proxy 轉發過來的前綴）。
-  # 未登入導向 ROS 登入頁時，callbackUrl 會帶上這個前綴才能導回主控台。
-  mount_path: /security
+  # 未登入導向 ROS 登入頁時，callbackUrl 要帶的路徑（登入完回到哪）。
+  # 本機直接跑在 127.0.0.1:8600、沒有 reverse proxy 時留空；
+  # 正式部署掛在 ros.ocard.co/security 底下才填 /security。
+  # （前端的 API 前綴不看這個值，是從實際載入路徑自動推導的。）
+  mount_path: ""
   # 身分快取秒數。ROS 自己有 10 秒快取，這層是避免單一頁面載入時
   # 數個 API 各打一次 ROS；設短一點讓權限撤銷幾乎即時生效。
   cache_ttl_seconds: 30
-  # full   = 只要 ROS 勾了 security.console 就給完整權限（現階段）
-  # tiered = 依 security.console / analyst / admin 分成 Viewer / Analyst / Admin
-  #
-  # 要改成分級時：在 ROS 的 lib/features.ts 加回 security.analyst 與
-  # security.admin 兩個 key，再把這裡切成 tiered，程式不必改。
-  # 註：稽查會問「權限是否分離」（例如一般人不該能開唯讀 SQL、匯出明細），
-  # 屆時 tiered 才答得出來。
-  role_mode: full
 
 time:
   timezone: Asia/Taipei

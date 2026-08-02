@@ -1,5 +1,6 @@
-"""ROS 登入整合：feature → 角色映射、未登入、無權限、ROS 不可用。
+"""ROS 登入整合：授權判定、未登入、無權限、ROS 不可用。
 
+沒有角色分級 —— 有 security.console 就有全部功能，沒有就進不來。
 不打真的 ROS —— 以 requests.get 的 mock 模擬各種回應。
 """
 from __future__ import annotations
@@ -10,7 +11,7 @@ import pytest
 import requests
 
 from console.auth import ros
-from console.auth.roles import Role, role_from_features
+from console.auth.roles import has_access
 
 
 class FakeResponse:
@@ -29,7 +30,7 @@ def _me(features: list[str], *, email="someone@olis.com.tw", active=True) -> Fak
 
 
 BASE_CFG = {"base_url": "https://ros.example.com", "enabled": True,
-            "mount_path": "/security", "cache_ttl_seconds": 30, "role_mode": "full"}
+            "mount_path": "/security", "cache_ttl_seconds": 30}
 
 
 @pytest.fixture(autouse=True)
@@ -41,36 +42,12 @@ def _ros_enabled():
         ros.clear_cache()
 
 
-@pytest.fixture
-def tiered():
-    """切成分級模式（未來要分 Viewer/Analyst/Admin 時的設定）。"""
-    with patch.object(ros, "_cfg", return_value={**BASE_CFG, "role_mode": "tiered"}):
-        ros.clear_cache()
-        yield
-        ros.clear_cache()
+# ─────────────── 授權判定 ───────────────
 
-
-# ─────────────── feature → 角色映射 ───────────────
-
-def test_full_mode_grants_admin_to_anyone_with_console_feature():
-    """現況：進得來就是完整權限。"""
-    assert role_from_features(["security.console"]) is Role.ADMIN
-
-
-def test_tiered_mode_takes_highest(tiered):
-    """分級機制仍在，切換設定即可啟用。"""
-    assert role_from_features(["security.console"]) is Role.VIEWER
-    assert role_from_features(["security.console", "security.analyst"]) is Role.ANALYST
-    assert role_from_features(["security.analyst", "security.admin"]) is Role.ADMIN
-    # 只給 admin 沒給 console 也算 Admin（勾選 admin 的意圖已經很明確）
-    assert role_from_features(["security.admin"]) is Role.ADMIN
-
-
-def test_no_security_feature_is_denied_in_both_modes(tiered):
-    """沒有任何 security.* 一律擋下 —— full 模式也不能變成人人可進。"""
-    assert role_from_features(["nav.dashboards", "settings.roles"]) is None
-    assert role_from_features([]) is None
-    assert role_from_features(["nav.dashboards"], mode="full") is None
+def test_console_feature_is_the_only_gate():
+    assert has_access(["security.console"]) is True
+    assert has_access(["nav.dashboards", "settings.roles"]) is False
+    assert has_access([]) is False
 
 
 # ─────────────── ROS session 解析 ───────────────
@@ -155,38 +132,30 @@ def test_api_rejects_user_without_security_feature(client):
 
 def test_api_rejects_inactive_user(client):
     with patch.object(ros.requests, "get",
-                      return_value=_me(["security.admin"], active=False)):
+                      return_value=_me(["security.console"], active=False)):
         r = client.get("/api/session", cookies={"authjs.session-token": "abc"})
     assert r.status_code == 403
 
 
 def test_console_feature_grants_full_access(client):
-    """現況（role_mode=full）：勾了 security.console 就是完整權限。"""
+    """有 security.console 就能用全部功能，沒有分級。"""
     with patch.object(ros.requests, "get", return_value=_me(["security.console"])):
         r = client.get("/api/session", cookies={"authjs.session-token": "abc"})
         assert r.status_code == 200
         body = r.json()
-        assert body["role"] == "admin"
         assert body["auth_source"] == "ros"
-        for perm in ("view_overview", "use_explorer", "use_sql_console",
-                     "export_evidence", "view_audit_log"):
-            assert perm in body["permissions"], f"full 模式應包含 {perm}"
+        assert body["email"] == "someone@olis.com.tw"
+        # 顯示的是 ROS 的角色名，不是主控台自己發明的等級
+        assert body["role_label"] == "資安值班"
 
-
-def test_tiered_mode_restricts_viewer(client, tiered):
-    """切成 tiered 後，只有 security.console 的人不能用 Log Explorer。"""
-    with patch.object(ros.requests, "get", return_value=_me(["security.console"])):
-        r = client.get("/api/session", cookies={"authjs.session-token": "abc"})
-        assert r.json()["role"] == "viewer"
-        assert "use_explorer" not in r.json()["permissions"]
-
+        # 過去分級時 Viewer 會被擋在 Log Explorer 外，現在人人可用
         ros.clear_cache()
-        denied = client.post("/api/explorer",
-                             cookies={"authjs.session-token": "abc"},
-                             json={"source": "api", "start": "2026-08-01 00:00:00",
-                                   "end": "2026-08-01 01:00:00"})
-        assert denied.status_code == 403
-        assert denied.json()["detail"]["code"] == "insufficient_role"
+        allowed = client.post("/api/explorer",
+                              cookies={"authjs.session-token": "abc"},
+                              json={"source": "api", "analysis": "trend",
+                                    "start": "2026-08-01 12:00:00",
+                                    "end": "2026-08-01 13:00:00"})
+        assert allowed.status_code == 200, allowed.text
 
 
 def test_ros_unavailable_returns_503_not_401(client):

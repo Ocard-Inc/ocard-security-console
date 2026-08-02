@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ocard Security Log Console</title>
-<!-- __MOUNT__ 由後端注入（見 api/app.py）。主控台掛在 ROS 同網域的子路徑時，
-     所有 API 與靜態資源都必須帶上該前綴，否則會打到 ROS 自己的路由。 -->
-<script>window.__MOUNT__ = "";</script>
+<!-- 掛在 ROS 同網域的子路徑（/security）時，API 必須帶上該前綴，否則會打到
+     ROS 自己的路由。前綴直接從載入路徑推導 —— 頁面是從哪個路徑進來的，
+     API 就往哪個路徑打，本機與 proxy 部署都不必改設定。
+     （路由用 hash，所以 pathname 永遠就是掛載點本身。） -->
+<script>window.__MOUNT__ = location.pathname.replace(/\/+$/, "");</script>
 <link rel="stylesheet" href="./static/ds/colors_and_type.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">

@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from console.api import routes
@@ -59,7 +59,7 @@ async def cache_policy(request: Request, call_next):
 
 
 @app.get("/")
-async def index(request: Request) -> HTMLResponse:
+async def index(request: Request):
     """SPA 入口。未登入時直接 302 到 ROS 登入頁 —— 讓使用者看到的是登入畫面，
     而不是先閃一下空殼主控台再被前端踢走。"""
     if ros.enabled():
@@ -69,23 +69,8 @@ async def index(request: Request) -> HTMLResponse:
         except ros.RosUnavailable:
             # ROS 不可用時仍載入 SPA，由前端顯示明確的錯誤（而非把人丟到登入頁繞圈）
             logger.warning("ROS 驗證不可用，改由前端呈現錯誤")
-    return HTMLResponse(_index_html())
-
-
-def _index_html() -> str:
-    """把掛載前綴注入 index.html。
-
-    主控台掛在 ROS 同網域的子路徑（/security）時，前端打 `/api/...` 會落到
-    ROS 自己的路由上，必須帶前綴。前綴只有後端知道（來自設定檔），因此在
-    這裡注入而不是寫死在前端。
-    """
-    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-    # 只有接上 ROS（＝真的掛在它的子路徑下）才需要前綴；本機直接跑在
-    # 127.0.0.1:8600 時沒有 reverse proxy，加了前綴反而會 404。
-    mount = ""
-    if ros.enabled():
-        mount = str(settings().get("ros", {}).get("mount_path", "") or "").rstrip("/")
-    return html.replace('window.__MOUNT__ = "";', f'window.__MOUNT__ = "{mount}";')
+    # API 前綴由前端從載入路徑自動推導（見 web/index.html），不需後端注入
+    return FileResponse(WEB_DIR / "index.html")
 
 
 @app.get("/healthz")

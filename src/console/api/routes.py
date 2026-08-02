@@ -9,7 +9,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from console.auth import ros
-from console.auth.roles import CurrentUser, PERMISSIONS, current_user, guard
+from console.auth.roles import CurrentUser, current_user, guard
 from console.core import brands, timewin
 from console.core.ch import ChQueryError
 from console.core.config import settings
@@ -27,19 +27,18 @@ _SEV_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 @router.get("/session")
 async def session(user: CurrentUser = Depends(current_user)) -> dict:
+    """目前登入者。沒有角色分級 —— 進得來就有全部功能。"""
     return {
         "email": user.email,
         "name": user.name,
-        "role": user.role_name,
+        # 顯示 ROS 那邊的角色名稱（管理員、資訊主管…），不是主控台自己的等級
         "role_label": user.role_label,
-        "permissions": user.allowed_permissions(),
-        "all_permissions": sorted(PERMISSIONS),
         "env_label": settings()["app"]["env_label"],
         "timezone": settings()["time"]["timezone"],
-        # dev = 未接 ROS 的本機模式，前端據此顯示角色切換鈕與警示
+        # dev = 未接 ROS 的離線模式，前端據此顯示警示
         "auth_source": user.source,
-        "ros_role_name": user.ros_role_name,
         "logout_url": f"{ros.base_url()}/api/auth/signout" if ros.enabled() else None,
+        "ros_url": ros.base_url() if ros.enabled() else None,
     }
 
 
@@ -84,6 +83,22 @@ async def overview(
         " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END,"
         " metric_value DESC LIMIT 5")
 
+    # 「已結束但從未判定」的積壓。事件會因為數值回到門檻以下而自動 resolved，
+    # 但 attention 只查 status='active'，所以一旦自動結束就從首頁完全消失 ——
+    # 首頁於是顯示「沒有未處理事件」，即使沒有任何人看過它們。那是假的安心感，
+    # 跟本專案「沒有事件 ≠ 系統安全」的前提正好相反。
+    # 不設時間下限：這是待辦積壓不是時間視窗。純 SQLite，零 ClickHouse 成本。
+    pending_by_sev = {s: 0 for s in _SEV_ORDER}
+    for row in db.rows(
+            "SELECT severity, COUNT(*) AS n FROM events"
+            " WHERE judgement IS NULL GROUP BY severity"):
+        pending_by_sev[row["severity"]] = row["n"]
+    pending_rows = db.rows(
+        "SELECT * FROM events WHERE judgement IS NULL"
+        " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1"
+        " WHEN 'P2' THEN 2 ELSE 3 END, first_seen DESC LIMIT 5")
+    oldest = db.one("SELECT MIN(first_seen) AS m FROM events WHERE judgement IS NULL")
+
     hb = db.one("SELECT * FROM heartbeat WHERE key = 'five_min'")
     daily = db.one("SELECT * FROM heartbeat WHERE key = 'daily'")
     monitor_status = _monitor_status(hb, fresh)
@@ -98,6 +113,12 @@ async def overview(
         "last_daily_check": daily["last_ok"] if daily else None,
         "trend": trends.request_trend(minutes=minutes),
         "attention": [_event_public(e) for e in attention],
+        "pending_judgement": {
+            "total": sum(pending_by_sev.values()),
+            "by_severity": pending_by_sev,
+            "oldest": oldest["m"] if oldest else None,
+            "events": [_event_public(e) for e in pending_rows],
+        },
         "health": cards,
         "freshness": fresh,
         "rankings": trends.risk_rankings(minutes=min(minutes, RANKING_MAX_MINUTES)),
@@ -150,6 +171,7 @@ async def list_events(
     rule_id: str | None = None,
     source: str | None = None,
     keyword: str | None = None,
+    unjudged: bool = False,
     hours: int = Query(168, ge=1, le=24 * 90),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
@@ -164,6 +186,9 @@ async def list_events(
     if keyword:
         clauses.append("(entity_label LIKE ? OR rule_name LIKE ? OR evt_no LIKE ?)")
         params.extend([f"%{keyword}%"] * 3)
+    # 首頁「待判定」的連結來源：已結束但沒人看過的事件
+    if unjudged:
+        clauses.append("judgement IS NULL")
     rows = db.rows(
         f"SELECT * FROM events WHERE {' AND '.join(clauses)}"
         " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1"
