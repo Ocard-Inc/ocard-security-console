@@ -13,7 +13,7 @@ from console.auth.roles import CurrentUser, PERMISSIONS, current_user, guard
 from console.core import brands, timewin
 from console.core.ch import ChQueryError
 from console.core.config import settings
-from console.queries import explorer, health, quick_templates, trends
+from console.queries import explorer, health, quick_templates, sparklines, trends
 from console.rules.loader import load_rules
 from console.store import audit, db
 
@@ -45,9 +45,15 @@ async def session(user: CurrentUser = Depends(current_user)) -> dict:
 
 # ─────────────────────────── 資安總覽 ───────────────────────────
 
+# 排名查詢的視窗上限。趨勢查詢跨四張表在 7 天視窗只要 0.5 秒（月分區 + part 級
+# create_time 剪枝很有效），但 sources 排名要對 headers 做 JSONExtract，7 天要掃 19M 列
+# 花 3.2 秒 —— 佔整個 /overview 的大半。排名夾在 24 小時，前端據 window_minutes 誠實標示。
+RANKING_MAX_MINUTES = 1440
+
+
 @router.get("/overview")
 async def overview(
-    minutes: int = Query(60, ge=10, le=1440),
+    minutes: int = Query(60, ge=10, le=10080),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_overview")
@@ -94,7 +100,7 @@ async def overview(
         "attention": [_event_public(e) for e in attention],
         "health": cards,
         "freshness": fresh,
-        "rankings": trends.risk_rankings(minutes=minutes),
+        "rankings": trends.risk_rankings(minutes=min(minutes, RANKING_MAX_MINUTES)),
         "elapsed_ms": int((time.time() - started) * 1000),
     }
 
@@ -402,6 +408,14 @@ async def data_health(user: CurrentUser = Depends(current_user)) -> dict:
         "thresholds": settings()["freshness"],
         "heartbeat": {"five_min": hb, "daily": daily},
     }
+
+
+@router.get("/sparklines")
+async def data_sparklines(user: CurrentUser = Depends(current_user)) -> dict:
+    """統計卡的迷你趨勢線。刻意獨立於 /health —— source_health() 有三個呼叫端，
+    只有一個要這份資料（詳見 queries/sparklines.py 的模組說明）。"""
+    guard(user, "view_health")
+    return sparklines.source_sparklines()
 
 
 # ─────────────────────────── 規則 ───────────────────────────

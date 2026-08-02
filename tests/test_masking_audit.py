@@ -91,3 +91,17 @@ def test_attack_account_appears_only_as_fingerprint(client):
     assert top["count"] > 100000, "應查到攻擊量級的存取"
     assert top["actor_fp"].startswith("actor_"), "操作者必須以 fingerprint 呈現"
     assert "andrew_c" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_sparklines_response_is_masked(client):
+    """新端點依 CLAUDE.md 硬性要求納入掃描（目前只回計數與來源 key，但規則就是規則）。"""
+    r = client.get("/api/sparklines")
+    assert r.status_code == 200
+    _scan(r.text, "GET /api/sparklines")
+
+
+def test_overview_widest_window_is_masked(client):
+    """排名的 src_ fingerprint 現在會出現在長條圖軸標籤上，最寬視窗也要掃過。"""
+    r = client.get("/api/overview?minutes=10080")
+    assert r.status_code == 200
+    _scan(r.text, "GET /api/overview?minutes=10080")

@@ -64,6 +64,12 @@ brands:
   cache_ttl_seconds: 21600
   max_cached: 20000
 
+sparklines:
+  # 統計卡迷你趨勢線：四張表最近 N 小時的每小時筆數（一個 UNION ALL，實測 0.19 秒）。
+  # 前端每 30 秒輪詢，但每小時桶的邊界一小時才移動一次，120 秒過時完全看不出來。
+  hours: 24
+  cache_ttl_seconds: 120
+
 freshness:
   # 資料健康狀態閾值（分鐘）— 依設計稿 14.3
   ok: 5

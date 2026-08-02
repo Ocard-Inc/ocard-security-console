@@ -1,4 +1,5 @@
-// 共用工具：API 呼叫、格式化、圖表（純 SVG，不依賴外部繪圖庫載入時機）
+// 共用工具：API 呼叫與格式化。
+// 圖表已移到 web/charts/（ApexCharts 6.7.0），這裡不再放繪圖程式碼。
 
 // 身分由 Ocard ROS 的 session cookie 決定（見後端 auth/ros.py）。
 // devRole 只在後端未設定 ros.base_url 的本機模式下有作用。
@@ -79,44 +80,6 @@ export function duration(startStr, endStr) {
   if (mins < 60) return `${Math.round(mins)} 分鐘`;
   if (mins < 1440) return `${(mins / 60).toFixed(1)} 小時`;
   return `${(mins / 1440).toFixed(1)} 天`;
-}
-
-// 多線折線圖（含 median 虛線與 P95 帶）
-export function lineChart(buckets, seriesDefs, opts = {}) {
-  const W = 720, H = opts.height || 210, PAD_L = 44, PAD_R = 20, PAD_T = 22, PAD_B = 26;
-  if (!buckets.length) return { paths: [], xLabels: [], band: null, medianY: null, W, H };
-  const values = [];
-  seriesDefs.forEach(s => buckets.forEach(b => { if (b[s.key] != null) values.push(b[s.key]); }));
-  if (opts.medianKey) buckets.forEach(b => { if (b[opts.medianKey] != null) values.push(b[opts.medianKey]); });
-  if (opts.p95Key) buckets.forEach(b => { if (b[opts.p95Key] != null) values.push(b[opts.p95Key]); });
-  const maxV = Math.max(1, ...values);
-  const x = i => PAD_L + (i * (W - PAD_L - PAD_R)) / Math.max(1, buckets.length - 1);
-  const y = v => H - PAD_B - ((v || 0) / maxV) * (H - PAD_T - PAD_B);
-
-  const paths = seriesDefs.map(s => ({
-    ...s,
-    d: buckets.map((b, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(b[s.key]).toFixed(1)}`).join(' '),
-  }));
-  const xLabels = buckets.map((b, i) => ({ x: x(i), text: b.label }))
-    .filter((_, i) => i % Math.ceil(buckets.length / 6) === 0);
-
-  let band = null, medianY = null;
-  if (opts.p95Key && buckets[0][opts.p95Key] != null) {
-    const p95 = buckets[0][opts.p95Key], med = buckets[0][opts.medianKey] || 0;
-    band = { y: y(p95), height: Math.max(2, y(med) - y(p95)) };
-    medianY = y(med);
-  }
-  return { paths, xLabels, band, medianY, W, H, maxV, padL: PAD_L, padR: PAD_R };
-}
-
-export function sparkPath(values, w = 320, h = 60) {
-  if (!values.length) return '';
-  const maxV = Math.max(1, ...values);
-  return values.map((v, i) => {
-    const x = (i * w) / Math.max(1, values.length - 1);
-    const y = h - (v / maxV) * (h - 6) - 3;
-    return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
 }
 
 export function copyText(text) {

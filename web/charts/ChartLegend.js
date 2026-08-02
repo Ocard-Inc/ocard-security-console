@@ -7,16 +7,37 @@
 export default {
   name: 'ChartLegend',
   props: {
-    // [{ label, color, dashed?, meta? }]
+    // [{ label, color, dashed?, band?, meta?, series? }]
+    //   series：這個圖例項對應的 ApexCharts 序列名稱陣列（省略時等同 [label]）。
+    //           基準帶是「帶 + 中位數線」兩個序列，但在圖例上是一項。
     items: { type: Array, required: true },
+    // 可點擊切換顯示／隱藏。四條線量級差 100 倍、基準帶又比全部都高時，
+    // 關掉大的那些才看得到小的 —— 這是不用雙軸也能讀到小序列的正當做法。
+    toggleable: { type: Boolean, default: false },
+  },
+  emits: ['toggle'],
+  data: () => ({ off: [] }),
+  methods: {
+    onClick(item) {
+      if (!this.toggleable) return;
+      this.off = this.off.includes(item.label)
+        ? this.off.filter(l => l !== item.label)
+        : [...this.off, item.label];
+      this.$emit('toggle', item.series || [item.label]);
+    },
   },
   template: `
 <div class="chart-legend">
-  <span v-for="it in items" :key="it.label" class="chart-legend-item">
-    <span class="chart-legend-key" :class="{'is-dashed': it.dashed}"
+  <component v-for="it in items" :key="it.label"
+             :is="toggleable ? 'button' : 'span'"
+             class="chart-legend-item" :class="{'is-toggleable': toggleable, 'is-off': off.includes(it.label)}"
+             :type="toggleable ? 'button' : null"
+             :aria-pressed="toggleable ? String(!off.includes(it.label)) : null"
+             @click="onClick(it)">
+    <span class="chart-legend-key" :class="{'is-dashed': it.dashed, 'is-band': it.band}"
           :style="{color: it.color}"></span>
     <span>{{ it.label }}</span>
     <span v-if="it.meta" class="chart-legend-num">{{ it.meta }}</span>
-  </span>
+  </component>
 </div>`,
 };

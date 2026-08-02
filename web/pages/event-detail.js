@@ -60,7 +60,8 @@ export default {
     trendSignature() { return `evt|${this.evtNo}|${this.hasBaseline}`; },
     contextRows() {
       const c = this.e?.context || {};
-      const skip = new Set(['metric']);
+      // brand_top 已在上方「涉及品牌」以可展開的明細呈現，這裡再倒一次只是雜訊
+      const skip = new Set(['metric', 'brand_top']);
       return Object.entries(c).filter(([k]) => !skip.has(k));
     },
   },
@@ -88,7 +89,11 @@ export default {
       this.submitting = false;
     },
     formatValue(v) {
-      return typeof v === 'number' ? num(v) : String(v);
+      if (typeof v === 'number') return num(v);
+      // 陣列／物件走 String() 會變成 [object Object]；未來 context 多出結構化欄位
+      // 時寧可顯示 JSON，也不要顯示一串看不懂的東西
+      if (v !== null && typeof v === 'object') return JSON.stringify(v);
+      return String(v);
     },
   },
   created() { this._rows = { current: [] }; },

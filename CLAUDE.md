@@ -41,6 +41,7 @@ src/console/store/       db（SQLite WAL）、events（去重狀態機）、audi
 src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）
 src/console/api/         app（FastAPI + lifespan 排程）、routes
 web/                     Vue 3 ESM SPA，無建置流程
+web/charts/              ApexCharts 封裝：ApexChart 元件、色票 token、安全 tooltip、圖型設定工廠
 ```
 
 資料流：`scheduler_loop` →（catch-up）→ `tick.run_tick(window_end)` →
@@ -120,7 +121,41 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 改 `.env` 或 `config/settings.yaml` 一律要重啟 server。`MYSQL_*` 未設定時
 `mysql_config()` 回 None（品牌名稱只是輔助標示，缺它不該讓監測起不來）。
 
-前端無建置流程，`web/vendor/vue.esm-browser.prod.js` 為本地化 ESM；`app.py` 對
-`/static/` 與 `/` 加 `Cache-Control: no-store`，否則瀏覽器快取會讓改動不生效。
+前端無建置流程，`web/vendor/` 只放**未修改的上游檔案、版本寫在檔名裡**（升級 = 改名）。
+`app.py` 的 `cache_policy` 對 `/static/vendor/` 發 `immutable`（那些檔案內容永不就地變更），
+其餘 `/static/` 與 `/` 發 `no-store`，否則瀏覽器快取會讓改動不生效。**分支順序不可對調。**
 新增頁面需同時改 `web/app.js` 的 `NAV`、`TITLES`、components 與模板中的 `v-else-if` 分支。
-圖表是 `web/lib.js` 內的純 SVG 函式，專案已刻意移除 ECharts，不要再引入繪圖庫。
+
+## 圖表（`web/charts/`）
+
+用 ApexCharts 6.7.0。6.7.0 **沒有壓縮版 ESM**（`dist/apexcharts.esm.js` 是 1.86 MB 未壓縮），
+所以 `index.html` 用傳統 `<script>` 載 UMD 版本（**絕不可加 `async`**，會變競態），
+再由 `charts/apex.js` 橋接成 ESM。`apexcharts.css` 不含在 JS 裡，必須自己 `<link>`。
+
+硬性規則：
+
+- **只能經 `charts/ApexChart.js` 建立圖表**。它的契約是三個 prop：`series`（熱路徑，
+  只走 `updateSeries`）、`options`（**必須與資料數值無關**）、`signature`（options 的變更
+  指紋，只有它變才 `updateOptions`）。x 值放在 series 裡（`data:[{x,y}]`），
+  **不要用 `xaxis.categories`** —— 否則滾動視窗每 30 秒都會改到軸設定。
+  tooltip 要用到但沒進 series 的欄位，透過非響應式的 `this._rows = {current: rows}` 持有者傳遞。
+- **顏色只能來自 `app.css` `:root` 的 `--chart-*`，透過 `charts/tokens.js` 讀取**，
+  JS 裡不得出現色碼字面值。序列色已通過 dataviz validator 全配對檢查，
+  改色必須重跑（指令寫在 app.css 的註解裡）。登入失敗的虛線筆畫是紅綠色盲下的
+  必要第二編碼，不是裝飾。
+- **tooltip 內容一律用 `charts/tooltip.js`**（createElement + textContent 組 DOM 再序列化）。
+  ApexCharts 的 `tooltip.custom` 必須回傳 HTML 字串，而 endpoint 與品牌名稱來自
+  ClickHouse／MySQL —— 字串拼接就是 XSS。formatter 只能回傳純字串。
+- **時間軸固定 `category` + 後端格式化好的標籤字串，不要改成 `datetime`**：
+  `create_time` 是台北牆鐘時間，datetime 軸會用瀏覽器時區解析與格式化，
+  在 UTC 的機器上整條線平移 8 小時而且不會報錯。真的要改的話，唯一安全解法寫在
+  `charts/format.js` 的 `wallClockToUtcMs()` 註解裡。
+- **基準帶用 `rangeArea` 逐 bucket 繪製**。舊版 `lib.js` 只讀 `buckets[0]` 畫成一條平帶，
+  6 小時視窗下位置誤差達 25 倍。每個 bucket 都有自己的 `api_median`／`api_p95`。
+
+`web/app.js` 的 30 秒自動更新走 `reloadToken` **prop**，不是 `:key` —— 進 `:key` 會讓
+Vue 每半分鐘卸載重建整頁，圖表實例跟著被銷毀。`sessionKey` 才是給 `:key` 的
+（角色切換要重建）。重載期間沿用上一版畫面並降低不透明度，不換骨架、不跳版面。
+
+嚴重度卡（P0–P3）**無法**做 sparkline：`events` 表以 UPDATE 就地覆寫、沒有逐 tick 歷史。
+詳見 `queries/sparklines.py` 的模組說明。

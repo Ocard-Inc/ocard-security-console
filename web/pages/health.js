@@ -1,16 +1,41 @@
 // 資料健康（設計稿 14 節）：來源卡 + 狀態定義 + 監測心跳
 import { api, num, pct } from '../lib.js';
+import ApexChart from '../charts/ApexChart.js';
+import { token } from '../charts/tokens.js';
+import { sparklineOptions, sparkSummary } from '../charts/sparkline.js';
 
 export default {
-  data: () => ({ data: null, loading: true, error: null }),
+  props: ['reloadToken'],
+  components: { ApexChart },
+  data: () => ({ data: null, spark: null, loading: true, error: null }),
+  computed: {
+    sparkOptions() { return sparklineOptions(token('--chart-api')); },
+  },
   methods: {
     num, pct,
     async load() {
-      this.loading = true; this.error = null;
-      try { this.data = await api('/health'); }
-      catch (e) { this.error = e.message; }
+      this.loading = !this.data;
+      this.error = null;
+      try {
+        // sparkline 失敗不該讓整個健康頁掛掉 —— 它只是輔助資訊
+        const [h, s] = await Promise.all([
+          api('/health'),
+          api('/sparklines').catch(() => null),
+        ]);
+        this.data = h;
+        this.spark = s;
+      } catch (e) { this.error = e.message; }
       this.loading = false;
     },
+    sparkSeries(key) {
+      const pts = this.spark?.sources?.[key]?.points || [];
+      return [{ name: '每小時筆數', data: pts.map(p => ({ x: p.bucket, y: p.count })) }];
+    },
+    sparkTitle(key) {
+      const pts = this.spark?.sources?.[key]?.points || [];
+      return pts.length ? sparkSummary(pts) : '';
+    },
+    hasSpark(key) { return (this.spark?.sources?.[key]?.points || []).length > 0; },
     lagColor(c) {
       if (c.lag_minutes === null) return 'var(--danger)';
       const t = this.data.thresholds;
@@ -20,6 +45,7 @@ export default {
     },
   },
   mounted() { this.load(); },
+  watch: { reloadToken() { this.load(); } },
   template: `
 <div>
   <div v-if="loading" class="grid" style="grid-template-columns:repeat(3,1fr)">
@@ -37,6 +63,12 @@ export default {
                          color: c.status_color}">{{ c.status }}</span>
         </div>
         <div class="mono" style="font-size:11px;color:#98A2B3;margin-bottom:8px">{{ c.table }}</div>
+        <!-- 迷你趨勢線傳達的是「形狀」，精確數字在下方表格；因此不掛 tooltip，
+             改用 title 屬性給摘要，SVG 本身對輔助技術隱藏。 -->
+        <div v-if="hasSpark(c.key)" class="chart-spark" :title="sparkTitle(c.key)" aria-hidden="true">
+          <ApexChart :series="sparkSeries(c.key)" :options="sparkOptions"
+                     :signature="'spark|'+c.key" height="30" />
+        </div>
         <div v-if="c.error" class="banner banner-danger" style="margin:0;font-size:12px">{{ c.error }}</div>
         <table v-else>
           <tbody>

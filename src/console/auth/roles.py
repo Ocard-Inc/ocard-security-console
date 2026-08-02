@@ -94,6 +94,10 @@ class NotLoggedIn(HTTPException):
     """未登入 —— 前端需導向 ROS 登入頁。"""
 
     def __init__(self, next_path: str = "/") -> None:
+        # 登入完要回到畫面，不是回到 API 端點 —— 否則使用者登入後
+        # 看到的是一坨 JSON。API 路徑一律改回主控台首頁。
+        if next_path.startswith("/api"):
+            next_path = "/"
         super().__init__(status_code=401, detail={
             "code": "not_logged_in",
             "message": "尚未登入 Ocard ROS。",

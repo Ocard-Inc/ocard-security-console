@@ -40,6 +40,15 @@ export default {
     _merged() {
       return { ...this.options, chart: { ...this.options.chart, height: '100%' } };
     },
+    /**
+     * 顯示／隱藏一條序列（由 ChartLegend 觸發）。
+     * 四條線的量級差到 100 倍，單一 y 軸下小的那幾條會被壓在底部；
+     * 又不能改成雙軸（那是最容易誤導人的圖表做法），所以給讀者一個
+     * 「把 API 關掉、讓其餘三條重新縮放」的開關。
+     */
+    toggleSeries(name) {
+      if (this.chart && !this._dead) this.chart.toggleSeries(name);
+    },
   },
   mounted() {
     this.chart = new ApexCharts(this.$refs.host, { ...this._merged(), series: this.series });

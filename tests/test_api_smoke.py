@@ -71,3 +71,47 @@ def test_event_detail_404(client):
 def test_judge_requires_all_fields(client):
     r = client.post("/api/events/EVT-0001/judge", json={"judgement": "誤報"})
     assert r.status_code == 400
+
+
+# ── 圖表相關：時間範圍與 sparkline ────────────────────────────────────────
+
+def test_overview_accepts_seven_day_range(client):
+    """前端 RANGES 有「最近 7 天」（minutes=10080）；上限曾是 1440，會 422。"""
+    r = client.get("/api/overview?minutes=10080")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["trend"]["buckets"], "7 天視窗仍應有趨勢資料"
+    # 排名比趨勢貴得多（sources 的 JSONExtract 掃 19M 列），後端會夾在 24 小時
+    assert body["rankings"]["window_minutes"] == 1440
+
+
+def test_overview_ranking_window_matches_when_under_cap(client):
+    r = client.get("/api/overview?minutes=360")
+    assert r.status_code == 200
+    assert r.json()["rankings"]["window_minutes"] == 360
+
+
+def test_overview_rejects_over_cap(client):
+    r = client.get("/api/overview?minutes=20000")
+    assert r.status_code == 422
+
+
+def test_sparklines_shape(client):
+    r = client.get("/api/sparklines")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["hours"] == 24
+    assert set(body["sources"]) == {"admin", "backend", "api", "auth"}
+    for key, src in body["sources"].items():
+        # 零填過，前端可以直接依索引取用，不必處理缺口
+        assert len(src["points"]) == 24, f"{key} 應有 24 個點"
+        assert all(isinstance(p["count"], int) for p in src["points"])
+    # 嚴重度時間序列做不到（events 表就地覆寫、無逐 tick 歷史），必須誠實回 None
+    assert body["severity"] is None
+    assert body["severity_note"]
+
+
+def test_sparklines_allowed_for_viewer(client):
+    """統計卡在總覽與資料健康兩頁都要用到，權限門檻與 view_health 相同。"""
+    r = client.get("/api/sparklines", headers={"X-Dev-Role": "viewer"})
+    assert r.status_code == 200

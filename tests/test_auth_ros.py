@@ -137,6 +137,15 @@ def test_api_requires_login_when_ros_enabled(client):
     assert detail["login_url"].startswith("https://ros.example.com/login")
 
 
+def test_login_callback_never_points_at_an_api_path(client):
+    """登入完要回到主控台畫面，不是回到 API 端點（否則使用者會看到一坨 JSON）。"""
+    with patch.object(ros.requests, "get", return_value=FakeResponse(401)):
+        r = client.get("/api/overview", cookies={"authjs.session-token": "expired"})
+    login_url = r.json()["detail"]["login_url"]
+    assert "api" not in login_url.split("callbackUrl=")[1], login_url
+    assert login_url.endswith("%2Fsecurity%2F")
+
+
 def test_api_rejects_user_without_security_feature(client):
     with patch.object(ros.requests, "get", return_value=_me(["nav.dashboards"])):
         r = client.get("/api/session", cookies={"authjs.session-token": "abc"})

@@ -124,6 +124,9 @@ def risk_rankings(minutes: int = 60, limit: int = 5) -> dict:
 
     return {
         "start": params["start"], "end": params["end"],
+        # 排名視窗可能被 routes.RANKING_MAX_MINUTES 夾小（趨勢拉 7 天但排名只到 24 小時），
+        # 前端要據此標示，否則會把 24 小時的排名說成 7 天的。
+        "window_minutes": minutes,
         "endpoints": endpoints, "brands": brand_rows,
         "sources": sources, "failed_actors": actors,
     }

@@ -35,15 +35,123 @@ export default {
   emits: ['open-event', 'goto'],
   components: { BrandBreakdown, ApexChart, ChartLegend },
   data: () => ({
-    data: null, reloading: false, error: null, showTable: false, rankTab: 0,
+    data: null, reloading: false, error: null, showTable: false, showRankTable: false, rankTab: 0,
     SEV_META, RANK_TABS, SERIES, SEV_LABEL,
   }),
   computed: {
-    chart() {
-      if (!this.data) return null;
-      return lineChart(this.data.trend.buckets, SERIES,
-        { medianKey: 'api_median', p95Key: 'api_p95' });
+    buckets() { return this.data?.trend.buckets || []; },
+    hasBaseline() {
+      return this.buckets.some(b => b.api_median != null && b.api_p95 != null);
     },
+    trendSeries() {
+      const rows = this.buckets;
+      const lines = SERIES.map(s => ({
+        name: s.label, type: 'line',
+        data: rows.map(r => ({ x: r.label, y: r[s.key] })),
+      }));
+      // 基準帶排在最前面 = 畫在最底層
+      return this.hasBaseline
+        ? [...baselineSeries(rows, { medianKey: 'api_median', p95Key: 'api_p95' }), ...lines]
+        : lines;
+    },
+    trendOptions() {
+      const band = token('--chart-band');
+      const baseline = token('--chart-baseline');
+      const seriesColors = SERIES.map(s => token(s.tokenName));
+      const withBand = this.hasBaseline;
+      return timeSeriesOptions({
+        rowsRef: this._rows,
+        type: withBand ? 'rangeArea' : 'line',
+        colors: withBand ? [band, baseline, ...seriesColors] : seriesColors,
+        // index 0 是帶（不畫線）、1 是 median 參考線，其後才是四條資料線
+        strokeWidth: withBand ? [0, 1, 2, 2, 2, 2] : [2, 2, 2, 2],
+        dashArray: withBand ? [0, 4, 0, 0, 0, 4] : [0, 0, 0, 4],
+        showMarkers: this.buckets.length <= 40,
+        tooltipRows: row => [
+          ...SERIES.map(s => ({
+            name: s.label, value: num(row[s.key]),
+            color: token(s.tokenName), dashed: s.dashed,
+          })),
+          withBand
+            ? { name: '同時段 median', value: num(row.api_median), color: baseline, muted: true }
+            : null,
+          withBand
+            ? { name: '同時段 P95', value: num(row.api_p95), color: baseline, muted: true }
+            : null,
+        ],
+        tooltipNote: row => row.api_multiple != null
+          ? `API request 為同時段 median 的 ${row.api_multiple.toFixed(1)}×` : null,
+      });
+    },
+    trendSignature() {
+      return `ov-trend|${this.minutes}|${this.data?.trend.bucket_minutes}|${this.hasBaseline}`;
+    },
+    legendItems() {
+      const items = SERIES.map(s => ({
+        label: s.label, color: token(s.tokenName), dashed: s.dashed,
+        meta: this.seriesMeta(s.key),
+      }));
+      // 基準帶通常比實際流量高一個量級，是它把 y 軸撐開、把四條線壓在底部。
+      // 因此也要能關掉 —— 帶與中位數線是兩個序列，但在圖例上算一項。
+      if (this.hasBaseline) {
+        items.push({
+          label: 'API 同時段基線', color: token('--chart-baseline'), band: true,
+          series: ['同時段 median–P95', '同時段 median'],
+          meta: '（median–P95 範圍）',
+        });
+      }
+      return items;
+    },
+
+    rankOptions() {
+      const tab = RANK_TABS[this.rankTab];
+      return horizontalBarOptions({
+        rowsRef: this._rankRows,
+        tooltipTitle: row => row.name,      // 完整未截斷，軸上被截掉的部分在這裡看得到
+        tooltipRows: row => [
+          { name: '目前值', value: num(row.current), color: multipleFill(row.multiple) },
+          row.median != null
+            ? { name: '同時段 median', value: num(row.median),
+                color: multipleFill(row.multiple), muted: true }
+            : null,
+          row.p95 != null
+            ? { name: '同時段 P95', value: num(row.p95),
+                color: multipleFill(row.multiple), muted: true }
+            : null,
+          row.multiple != null
+            ? { name: '倍數', value: mult(row.multiple), color: multipleFill(row.multiple) }
+            : null,
+          row.brands != null
+            ? { name: '涉及品牌', value: num(row.brands) + ' 個',
+                color: multipleFill(row.multiple), muted: true }
+            : null,
+          row.accs != null
+            ? { name: '涉及帳號', value: num(row.accs) + ' 個',
+                color: multipleFill(row.multiple), muted: true }
+            : null,
+        ],
+        tooltipNote: () => tab.col,
+      });
+    },
+    rankSeries() {
+      return [{
+        name: '目前值',
+        data: this.rankRows.map(r => ({
+          x: r.name, y: r.current, fillColor: multipleFill(r.multiple),
+        })),
+      }];
+    },
+    rankSignature() { return `ov-rank|${this.rankTab}`; },
+    rankHeight() { return barHeight(this.rankRows.length); },
+    // 後端會把排名視窗夾在 24 小時（見 routes.RANKING_MAX_MINUTES），
+    // 拉 7 天時若照抄「最近 10080 分鐘」就是在說謊。
+    rankWindow() { return this.data?.rankings?.window_minutes ?? (this.minutes || 60); },
+    rankWindowClamped() { return this.rankWindow < (this.minutes || 60); },
+    rankWindowLabel() {
+      const m = this.rankWindow;
+      return m >= 1440 ? `${Math.round(m / 1440)} 天` : (m >= 60 ? `${Math.round(m / 60)} 小時` : `${m} 分鐘`);
+    },
+
     latestBucket() {
       const b = this.data?.trend.buckets;
       return b?.length ? b[b.length - 1] : null;
@@ -63,7 +171,11 @@ export default {
     async load() {
       this.reloading = true;
       try {
-        this.data = await api(`/overview?minutes=${this.minutes || 60}`);
+        const d = await api(`/overview?minutes=${this.minutes || 60}`);
+        // tooltip 讀這兩個非響應式持有者，所以 options 可以完全不依賴資料數值
+        this._rows.current = d.trend.buckets;
+        this.data = d;
+        this._rankRows.current = this.rankRows;
         this.error = null;
       } catch (e) { this.error = e.message; }
       this.reloading = false;
@@ -78,10 +190,16 @@ export default {
       return `（目前 ${num(b[key])}）`;
     },
   },
+  created() {
+    this._rows = { current: [] };
+    this._rankRows = { current: [] };
+  },
   mounted() { this.load(); },
   watch: {
     minutes() { this.load(); },
     reloadToken() { this.load(); },
+    // 換排名分頁時同步更新 tooltip 讀的那份資料
+    rankTab() { this._rankRows.current = this.rankRows; },
   },
   template: `
 <div>
@@ -160,25 +278,16 @@ export default {
       </div>
 
       <template v-if="!showTable">
-        <svg :viewBox="'0 0 '+chart.W+' '+chart.H" style="width:100%;height:auto;display:block">
-          <rect v-if="chart.band" :x="chart.padL" :y="chart.band.y"
-                :width="chart.W-chart.padL-chart.padR" :height="chart.band.height" fill="#EFF4FB"></rect>
-          <line v-if="chart.medianY!==null" :x1="chart.padL" :y1="chart.medianY"
-                :x2="chart.W-chart.padR" :y2="chart.medianY" stroke="#98A2B3" stroke-dasharray="4 4"></line>
-          <path v-for="p in chart.paths" :key="p.key" :d="p.d" fill="none"
-                :stroke="p.color" stroke-width="2" :stroke-dasharray="p.dash || ''"></path>
-          <text v-for="(l,i) in chart.xLabels" :key="i" :x="l.x" :y="chart.H-6"
-                font-size="10" fill="#667085" text-anchor="middle">{{ l.text }}</text>
-          <text x="4" y="26" font-size="10" fill="#667085">{{ num(chart.maxV) }}</text>
-          <text x="4" :y="chart.H-30" font-size="10" fill="#667085">0</text>
-          <text :x="chart.padL" y="14" font-size="10" fill="#667085">
-            灰帶 = API 同時段 median–P95 範圍 · 虛線 = median（縱軸上限 {{ num(chart.maxV) }}）</text>
-        </svg>
-        <div style="display:flex;gap:18px;font-size:12px;color:var(--text-3);margin-top:6px;flex-wrap:wrap">
-          <span v-for="s in SERIES" :key="s.key">
-            <span style="display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px"
-                  :style="{background:s.color}"></span>{{ s.label }}{{ seriesMeta(s.key) }}
-          </span>
+        <ApexChart ref="trendChart" :series="trendSeries" :options="trendOptions"
+                   :signature="trendSignature" :height="260" :reloading="reloading"
+                   aria-label="四個資料來源的 request 趨勢與 API 同時段基線；詳細數值請切換表格檢視" />
+        <ChartLegend :items="legendItems" toggleable style="margin-top:8px"
+                     @toggle="$event.forEach(n => $refs.trendChart.toggleSeries(n))" />
+        <div class="muted" style="font-size:11px;margin-top:6px">
+          <template v-if="hasBaseline">
+            淡藍帶 = API 同時段 median–P95 範圍 · 灰虛線 = 同時段 median（皆為逐時間桶）·
+          </template>
+          點圖例可暫時隱藏該序列。基線與 API 的量級通常遠大於其餘三條，關掉後 y 軸會重新縮放。
         </div>
       </template>
 
@@ -263,9 +372,27 @@ export default {
                 :class="{active: rankTab===i}" style="border-radius:999px"
                 @click="rankTab=i">{{ t.label }}</button>
         <span class="muted" style="font-size:12px;margin-left:auto">
-          最近 {{ minutes || 60 }} 分鐘，對照 28 天同時段基線</span>
+          最近 {{ rankWindowLabel }}，對照 28 天同時段基線
+          <template v-if="rankWindowClamped">（趨勢為 {{ minutes || 60 }} 分鐘）</template>
+        </span>
+        <div class="toggle">
+          <button :class="{on:!showRankTable}" @click="showRankTable=false">圖表</button>
+          <button :class="{on:showRankTable}" @click="showRankTable=true">表格</button>
+        </div>
       </div>
-      <table style="font-size:12.5px">
+
+      <template v-if="!showRankTable && rankRows.length">
+        <ApexChart :series="rankSeries" :options="rankOptions" :signature="rankSignature"
+                   :height="rankHeight" :reloading="reloading"
+                   :aria-label="RANK_TABS[rankTab].label + ' 長條圖；詳細數值請切換表格檢視'" />
+        <div class="muted" style="font-size:11px;margin-top:4px">
+          長條顏色：倍數 ≥ 5 紅、≥ 2 橘，其餘藍。沒有基線的排名一律為藍色。
+        </div>
+      </template>
+      <div v-else-if="!showRankTable" class="muted" style="text-align:center;padding:30px">
+        此時間範圍沒有資料</div>
+
+      <table v-if="showRankTable" style="font-size:12.5px">
         <thead><tr>
           <th style="width:40px">#</th><th>{{ RANK_TABS[rankTab].col }}</th>
           <th class="right">目前值</th><th class="right">同時段 median</th>
