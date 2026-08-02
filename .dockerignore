@@ -1,0 +1,31 @@
+# 建置情境只需要 Dockerfile 明確 COPY 的那幾個目錄。這個檔案的重點不是縮小
+# 映像（COPY 已經限定範圍），而是**確保憑證與狀態不可能被意外納入**：
+# 哪天有人在 Dockerfile 加一行 `COPY . .`，下面這些排除仍然擋得住。
+
+.env
+.env.*
+!.env.example
+
+state/
+outputs/
+*.db
+*.db-shm
+*.db-wal
+
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+tests/
+docs/
+scripts/
+*.md
+!README.md
+
+.claude/
+.vscode/
+.idea/

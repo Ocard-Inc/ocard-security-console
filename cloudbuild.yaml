@@ -1,0 +1,90 @@
+# push 到 main → 建映像 → 換掉 VM 上的容器。
+#
+# 部署目標是 **Compute Engine 而不是 Cloud Run**，原因寫在 docs/deploy-gcp.md：
+# 所有狀態在 state/monitor.db（SQLite），Cloud Run 的 ephemeral 檔案系統會在每次
+# 部署清空 known_sources（23 萬列 → R08A/B/C 洪水式告警）與 audit_log（調閱留痕）。
+#
+# `update-container` 只換映像，容器宣告裡的掛載與環境變數在佈建時設定一次
+# （scripts/provision_gcp.sh），此處刻意不重複傳 —— 重複傳掛載參數會疊加。
+# 萬一宣告被改壞導致 state 磁碟沒掛上，entrypoint 的哨兵檢查會讓容器大聲
+# crash-loop 而不是靜靜把 SQLite 寫到開機磁碟上。
+
+substitutions:
+  _ZONE: asia-east1-b
+  _INSTANCE: security-console
+  _IMAGE: asia-east1-docker.pkg.dev/ocard-ai/cloud-run-source-deploy/security-console/security-console
+
+steps:
+  # :latest 供 --cache-from 比對 layers。首次 build 還沒有 :latest，允許失敗。
+  - name: gcr.io/cloud-builders/docker
+    id: Pull-Cache
+    entrypoint: bash
+    args: ['-c', 'docker pull ${_IMAGE}:latest || true']
+
+  - name: gcr.io/cloud-builders/docker
+    id: Build
+    args:
+      - build
+      - --cache-from=${_IMAGE}:latest
+      - --build-arg=BUILDKIT_INLINE_CACHE=1
+      - --tag=${_IMAGE}:$COMMIT_SHA
+      - --tag=${_IMAGE}:latest
+      - .
+    waitFor: ['Pull-Cache']
+
+  - name: gcr.io/cloud-builders/docker
+    id: Push
+    args: ['push', '--all-tags', '${_IMAGE}']
+    waitFor: ['Build']
+
+  # 換映像。這個指令會改 instance metadata 並 **reset VM**。
+  # SQLite 是 WAL 模式，硬重啟是 crash-safe 的；漏掉的五分鐘視窗由
+  # scheduler 的 catch-up 機制（讀 poll_state.last_window_end）自動補跑。
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: Deploy
+    entrypoint: gcloud
+    args:
+      - compute
+      - instances
+      - update-container
+      - ${_INSTANCE}
+      - --zone=${_ZONE}
+      - --container-image=${_IMAGE}:$COMMIT_SHA
+    waitFor: ['Push']
+
+  # 沒有這一步的話，壞映像只會在 VM 上安靜地 crash-loop，而 build 顯示成功。
+  # VM 沒有外部 IP、Cloud Build 也不在 VPC 內，所以無法直接打 /healthz；
+  # 改為在 Cloud Logging 裡等 entrypoint 印出啟動成功的那一行。
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: Verify
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "等待 ${_INSTANCE} 上的新容器啟動（最多 5 分鐘）…"
+        for i in $(seq 1 30); do
+          sleep 10
+          hit=$(gcloud logging read \
+            "resource.type=gce_instance AND logName:cos_containers AND jsonPayload.message:\"啟動 uvicorn\"" \
+            --freshness=6m --limit=1 --format='value(timestamp)' 2>/dev/null || true)
+          if [ -n "$hit" ]; then
+            echo "容器已啟動（$hit）"
+            exit 0
+          fi
+          echo "  第 $i 次：尚未看到啟動訊息"
+        done
+        echo "逾時：5 分鐘內沒有看到新容器的啟動訊息。" >&2
+        echo "映像可能在 crash-loop。查看：" >&2
+        echo "  gcloud compute instances get-serial-port-output ${_INSTANCE} --zone=${_ZONE}" >&2
+        exit 1
+    waitFor: ['Deploy']
+
+images:
+  - ${_IMAGE}:$COMMIT_SHA
+  - ${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s
