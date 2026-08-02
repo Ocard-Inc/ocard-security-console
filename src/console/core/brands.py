@@ -112,6 +112,13 @@ def breakdown(brand_map: object, limit: int = BREAKDOWN_LIMIT) -> list[dict]:
     return [{"brand": b, "label": lut.get(b, str(b)), "count": c} for b, c in top]
 
 
+def top_summary(top: list[dict] | None, limit: int = 3) -> str:
+    """breakdown() 的結果 → 一句話。給無法展開的地方用（Slack、解讀與證據文字）。"""
+    if not top:
+        return ""
+    return "、".join(f"{b['label']} {b['count']:,} 次" for b in top[:limit])
+
+
 def _to_pairs(brand_map: object) -> list[tuple[int, int]]:
     """(keys, values) 兩個平行陣列 → [(編號, 次數)]；形狀不符就當作沒有資料。"""
     if brand_map is None or isinstance(brand_map, (str, bytes)):
