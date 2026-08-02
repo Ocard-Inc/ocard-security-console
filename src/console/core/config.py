@@ -25,6 +25,15 @@ class ChConfig:
     database: str
 
 
+@dataclass(frozen=True)
+class MysqlConfig:
+    host: str
+    port: int
+    user: str
+    password: str
+    database: str
+
+
 class ConfigError(RuntimeError):
     pass
 
@@ -45,6 +54,26 @@ def ch_config() -> ChConfig:
         user=_require_env("CLICKHOUSE_USER"),
         password=_require_env("CLICKHOUSE_PASSWORD"),
         database=os.environ.get("CLICKHOUSE_DB", "ocard"),
+    )
+
+
+@lru_cache(maxsize=1)
+def mysql_config() -> MysqlConfig | None:
+    """品牌名稱對照用的唯讀 MySQL（ocard.brand）。
+
+    未設定 MYSQL_HOST 時回 None —— 品牌名稱只是輔助標示，缺它不該讓以
+    ClickHouse 為核心的監測無法啟動；呼叫端會降級為僅顯示品牌編號。
+    """
+    load_dotenv(PROJECT_ROOT / ".env")
+    host = os.environ.get("MYSQL_HOST", "").strip()
+    if not host:
+        return None
+    return MysqlConfig(
+        host=host,
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=_require_env("MYSQL_USER"),
+        password=_require_env("MYSQL_PASSWORD"),
+        database=os.environ.get("MYSQL_DB", "ocard"),
     )
 
 

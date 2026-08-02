@@ -7,7 +7,7 @@ ClickHouse log 即時異常監測主控台與稽查查詢平台。監測 `ods_ad
 
 ```powershell
 uv sync                                    # 安裝依賴（Python 3.12）
-cp .env.example .env                       # 填入 CLICKHOUSE_* 與 FP_SECRET
+cp .env.example .env                       # 填入 CLICKHOUSE_*、MYSQL_*、FP_SECRET
 uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線與來源播種
 .\scripts\restart_server.ps1               # 啟動（含五分鐘檢查排程）
 ```
@@ -20,6 +20,7 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 |---|---|---|
 | 查詢 | `src/console/core/ch.py` | thread-local ClickHouse client、三層 timeout、SELECT-only 守衛 |
 | 遮罩 | `src/console/core/masking.py` | HMAC fingerprint（`src_`/`actor_`/`token_`/`resource_`）與文字清洗 |
+| 品牌 | `src/console/core/brands.py` | MySQL `ocard.brand` 對照，批次查詢 + 6 小時快取 |
 | 時間 | `src/console/core/timewin.py` | 台北牆鐘時間、視窗計算、資料落地延遲補償 |
 | 規則 | `config/rules/*.yaml` + `src/console/rules/` | 宣告式規則、基線門檻、逐規則錯誤隔離 |
 | 排程 | `src/console/checker/` | 五分鐘檢查、每日基線重算、歷史 replay |
@@ -53,7 +54,7 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 
 | 情境 | 結果 |
 |---|---|
-| 7/16 攻擊（00:13 起） | 00:25 觸發 R01（4,646 次，門檻 928）、R02（orderlist/detail 4,558 次為 median 20 的 228 倍）、R10A（品牌 7340）；00:15 觸發 R08A 新來源 |
+| 7/16 攻擊（00:13 起） | 00:25 觸發 R01（4,646 次，門檻 928）、R02（orderlist/detail 4,558 次為 median 20 的 228 倍）、R10A（台灣和民集團（7340））；00:15 觸發 R08A 新來源 |
 | 7/30 登入尖峰 21:40 | 21:45 觸發 R06（316 次 vs 同時段 median 52 / P95 80，6.1 倍） |
 | 8/1 正常日（全天） | 12 件（P1 僅 1 件）。R03 的 4 件為固定批次整合，應以 Allowlist 處理 |
 
@@ -64,6 +65,21 @@ uv run python -m console.checker.replay --start "2026-07-16 00:00" --end "2026-0
 ```
 
 replay 為 dry-run，不寫入事件也不更新 known_sources。
+
+## 品牌名稱
+
+log 表只存數字品牌編號（`_brand`）。所有呈現品牌的地方 —— 異常事件的對象
+（R10A / R10B）、Slack 告警、總覽風險排名、Log Explorer 的品牌排名與遮罩後明細、
+快速查詢 t08／t10 —— 一律顯示 **「品牌名稱（品牌編號）」**，名稱取自 MySQL
+`ocard.brand`（`idx` → `name`）。
+
+- 事件的去重鍵（`entity_key`）維持編號，名稱只進 `entity_label`；品牌改名不會
+  讓同一個品牌被當成新事件。
+- 名稱批次查詢並快取 6 小時（`config/settings.yaml` 的 `brands`）。
+- **查不到不假裝**：編號在 MySQL 沒有對應顯示「（查無品牌）（編號）」；MySQL
+  不可用顯示「（品牌名稱查詢失敗）（編號）」。兩者語意不同，不可混為一談。
+- MySQL 故障不影響監測 —— 品牌名稱是輔助標示，任何錯誤只記 log 不往上拋。
+- 品牌名稱屬營運資訊而非個資，不經遮罩。
 
 ## 遮罩
 
@@ -77,7 +93,7 @@ IP／手機／Email 樣式，確保沒有洩漏。
 ## 測試
 
 ```bash
-uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse
+uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse 與 MySQL
 ```
 
 ## 尚未實作（後續階段）

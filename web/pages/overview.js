@@ -250,7 +250,7 @@ export default {
         <tbody>
           <tr v-for="r in rankRows" :key="r.rank">
             <td class="muted">{{ r.rank }}</td>
-            <td class="mono" style="font-size:12px">{{ r.name }}</td>
+            <td :class="{mono: RANK_TABS[rankTab].key !== 'brands'}" style="font-size:12px">{{ r.name }}</td>
             <td class="right" style="font-weight:500">{{ num(r.current) }}</td>
             <td class="right muted">{{ num(r.median) }}</td>
             <td class="right muted">{{ num(r.p95) }}</td>

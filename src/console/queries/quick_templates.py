@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Callable
 
-from console.core import timewin
+from console.core import brands, timewin
 from console.core.ch import query
 from console.core.masking import src_fp, actor_fp
 from console.queries import exprs, health
@@ -71,13 +71,16 @@ def _top_brands(p: dict) -> dict:
         f"SELECT _brand, count() AS cnt, uniq(concat(controller,'/',function)) AS endpoints"
         f" FROM ods_api_log WHERE {exprs.time_filter()} GROUP BY _brand"
         f" ORDER BY cnt DESC LIMIT 15", {"start": s, "end": e})
-    rows = [{"brand": int(r["_brand"]), "count": int(r["cnt"]),
-             "endpoints": int(r["endpoints"])} for _, r in df.iterrows()]
+    brand_labels = brands.labels(df["_brand"]) if len(df) else {}
+    rows = [{"brand": brand_labels.get(int(r["_brand"]), str(int(r["_brand"]))),
+             "count": int(r["cnt"]), "endpoints": int(r["endpoints"])}
+            for _, r in df.iterrows()]
     total = sum(r["count"] for r in rows)
     top_share = round(rows[0]["count"] / total, 3) if rows and total else 0
-    return _result(["brand", "count", "endpoints"], rows,
-                   f"前 15 品牌合計 {total:,} 筆，最大單一品牌佔 {top_share:.1%}。"
-                   "品牌 ID 不屬個資，可直接顯示。", time_range=f"{s} ~ {e}")
+    note = (f"前 15 品牌合計 {total:,} 筆，最大單一品牌 {rows[0]['brand']} 佔 {top_share:.1%}。"
+            "品牌名稱與編號皆為營運資訊，不屬個資。" if rows
+            else "此時間範圍沒有 API 請求。")
+    return _result(["brand", "count", "endpoints"], rows, note, time_range=f"{s} ~ {e}")
 
 
 def _top_sources(p: dict) -> dict:
@@ -137,7 +140,9 @@ def _source_cross_brand(p: dict) -> dict:
     if not matched:
         return _result([], [], f"{fp} 在此時間範圍內沒有 API 請求。", time_range=f"{s} ~ {e}")
     matched.sort(key=lambda x: -x[1])
-    rows = [{"brand": b, "count": c} for b, c in matched[:20]]
+    top = matched[:20]
+    brand_labels = brands.labels(b for b, _ in top)
+    rows = [{"brand": brand_labels.get(b, str(b)), "count": c} for b, c in top]
     total = sum(c for _, c in matched)
     return _result(["brand", "count"], rows,
                    f"{fp} 涉及 {len(matched)} 個品牌、共 {total:,} 筆請求。"

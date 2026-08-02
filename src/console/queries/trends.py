@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from console.core import timewin
+from console.core import brands, timewin
 from console.core.ch import query
 from console.core.masking import src_fp
 from console.queries import exprs
@@ -94,8 +94,10 @@ def risk_rankings(minutes: int = 60, limit: int = 5) -> dict:
     df = query(
         f"SELECT _brand AS name, count() AS current FROM ods_api_log WHERE {tf}"
         f" GROUP BY name ORDER BY current DESC LIMIT {limit}", params)
-    brands = _with_baseline(
-        [{"name": str(int(r["name"])), "current": int(r["current"])}
+    brand_labels = brands.labels(df["name"]) if len(df) else {}
+    brand_rows = _with_baseline(
+        [{"name": brand_labels.get(int(r["name"]), str(int(r["name"]))),
+          "current": int(r["current"])}
          for _, r in df.iterrows()],
         lambda r: "brand_api_15m", end)
 
@@ -118,6 +120,6 @@ def risk_rankings(minutes: int = 60, limit: int = 5) -> dict:
 
     return {
         "start": params["start"], "end": params["end"],
-        "endpoints": endpoints, "brands": brands,
+        "endpoints": endpoints, "brands": brand_rows,
         "sources": sources, "failed_actors": actors,
     }

@@ -9,7 +9,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from console.auth.roles import CurrentUser, PERMISSIONS, current_user, guard
-from console.core import timewin
+from console.core import brands, timewin
 from console.core.ch import ChQueryError
 from console.core.config import settings
 from console.queries import explorer, health, quick_templates, trends
@@ -333,6 +333,7 @@ async def run_explorer(
                       duration_ms=elapsed)
     return {**data, "meta": {
         "elapsed_ms": elapsed, "time_range": rng, "query_hash": qh,
+        "brand_filter": brands.label(f.brand) if f.brand is not None else None,
         "dedup": "以事件 ID（_id）去重", "timezone": "Asia/Taipei",
         "data_latest": health.freshness_summary(health.source_health())["latest"],
     }}

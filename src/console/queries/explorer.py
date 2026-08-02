@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pandas as pd
 
-from console.core import masking, timewin
+from console.core import brands, masking, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.queries import exprs
@@ -120,10 +120,18 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         f"SELECT {expr} AS k, count() AS cnt, uniq(_brand) AS brands"
         f" {where} GROUP BY k ORDER BY cnt DESC LIMIT {int(limit)}", params)
     total = int(df["cnt"].sum()) if len(df) else 0
+    # 品牌維度的 k 是品牌編號，一次批次換成「名稱（編號）」再逐列組裝
+    brand_labels = (brands.labels(df["k"]) if dimension == "brand" and len(df) else {})
     rows = []
     for i, (_, r) in enumerate(df.iterrows(), 1):
         raw = r["k"]
-        name = (masking.FP_FUNCS[fp_kind](raw) if fp_kind else str(raw)) if raw else "（空）"
+        if dimension == "brand":
+            brand_id = brands.coerce_id(raw)
+            name = brand_labels.get(brand_id, "（空）") if brand_id is not None else "（空）"
+        elif not raw:
+            name = "（空）"
+        else:
+            name = masking.FP_FUNCS[fp_kind](raw) if fp_kind else str(raw)
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
                      "share": round(int(r["cnt"]) / total, 4) if total else 0})
@@ -181,7 +189,9 @@ def detail(f: ExplorerFilter) -> dict:
     where, params = _where(f)
     cols = _DETAIL_COLUMNS[f.source]
     df = query(f"SELECT {cols} {where} ORDER BY create_time DESC LIMIT {int(f.limit)}", params)
-    rows = [_mask_detail_row(f.source, dict(r)) for _, r in df.iterrows()]
+    masked = [_mask_detail_row(f.source, dict(r)) for _, r in df.iterrows()]
+    brand_labels = brands.labels(r["brand"] for r in masked)
+    rows = [{**r, "brand_label": brand_labels.get(r["brand"])} for r in masked]
     cnt = query(f"SELECT count() AS n {where}", params).iloc[0]["n"]
     return {
         "rows": rows,

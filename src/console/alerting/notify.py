@@ -1,7 +1,10 @@
 """通知調度：事件變化 → Slack（未設定 webhook 時僅記 log 與佇列）。
 
-Slack 告警內容只含聚合數字與 fingerprint / endpoint / 品牌 ID，
+Slack 告警內容只含聚合數字與 fingerprint / endpoint / 品牌名稱（編號），
 永不含原始 IP、帳號、token 或 log 原文。
+
+品牌名稱在事件建立時就寫進 entity_label（見 rules/engine.py），因此 Slack
+與 UI 看到的是同一組「品牌名稱（品牌編號）」，不需在此再查一次 MySQL。
 """
 from __future__ import annotations
 
@@ -19,6 +22,21 @@ logger = logging.getLogger(__name__)
 _SEV_EMOJI = {"P0": "🟥", "P1": "🔴", "P2": "🟠", "P3": "🔵"}
 
 
+def base_url() -> str:
+    return str(settings()["app"].get("base_url", "")).rstrip("/")
+
+
+def event_url(evt_no: str) -> str:
+    """事件詳細頁的深連結（前端 hash 路由，見 web/app.js）。"""
+    root = base_url()
+    return f"{root}/#/events/{evt_no}" if root else ""
+
+
+def page_url(page: str) -> str:
+    root = base_url()
+    return f"{root}/#/{page}" if root else ""
+
+
 def _format_event(kind: str, event: dict) -> str:
     sev = event["severity"]
     head = {"new": "新事件", "ongoing": "持續中", "resolved": "已恢復"}[kind]
@@ -30,8 +48,11 @@ def _format_event(kind: str, event: dict) -> str:
                    f"同時段 median {event['baseline_median']:,.0f}，{event['multiple']}×")
     else:
         compare = f"門檻 {event['threshold'] or 0:,.0f} · 同類對象高分位"
+    evt_no, url = event["evt_no"], event_url(event["evt_no"])
+    # 標題直接是連結：Slack 的 <url|text> 語法，讓收到告警的人一鍵進事件詳細頁
+    title = f"<{url}|{evt_no} {event['rule_name']}>" if url else f"{evt_no} {event['rule_name']}"
     lines = [
-        f"{_SEV_EMOJI.get(sev, '')} *[{sev}] {head}｜{event['evt_no']} {event['rule_name']}*",
+        f"{_SEV_EMOJI.get(sev, '')} *[{sev}] {head}｜{title}*",
         f"對象：`{event['entity_label']}`",
         f"目前值 *{metric:,.0f}*（{compare}）"
         + (f"，峰值 {peak:,.0f}" if peak > metric else ""),
@@ -41,6 +62,8 @@ def _format_event(kind: str, event: dict) -> str:
         lines.append(f"涉及品牌：{event['brands']} 個")
     if kind == "ongoing":
         lines.append(f"已持續 {event['hit_count']} 個檢查視窗。")
+    if url:
+        lines.append(f"<{url}|查看完整原因與證據> · <{page_url('events')}|所有事件>")
     return "\n".join(lines)
 
 
@@ -50,8 +73,14 @@ def dispatch(notifications: list[dict]) -> None:
         _send(text)
 
 
-def send_ops_message(title: str, body: str) -> None:
-    _send(f"⚙️ *{title}*\n{body}")
+def send_ops_message(title: str, body: str, link_page: str = "overview") -> None:
+    """維運訊息（監測中斷、基線超齡、每日摘要）。link_page 決定尾端連結去哪一頁。"""
+    text = f"⚙️ *{title}*\n{body}"
+    url = page_url(link_page)
+    if url:
+        label = {"health": "查看資料健康", "events": "查看事件清單"}.get(link_page, "開啟資安總覽")
+        text += f"\n<{url}|{label}>"
+    _send(text)
 
 
 def on_tick_failure() -> None:
@@ -62,7 +91,8 @@ def on_tick_failure() -> None:
         send_ops_message(
             "監測中斷",
             f"五分鐘檢查已連續失敗 {failures} 次（ClickHouse 查詢異常），"
-            "目前無法判定是否沒有異常。")
+            "目前無法判定是否沒有異常。",
+            link_page="health")
 
 
 def _send(text: str) -> None:

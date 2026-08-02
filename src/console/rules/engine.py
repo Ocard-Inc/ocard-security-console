@@ -12,7 +12,7 @@ import logging
 import math
 from datetime import datetime, timedelta
 
-from console.core import masking, timewin
+from console.core import brands, masking, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.rules import baseline
@@ -22,6 +22,9 @@ from console.store import db
 logger = logging.getLogger(__name__)
 
 _FP_FUNCS = masking.FP_FUNCS
+
+# 品牌欄位：去重鍵維持編號（名稱會改，鍵不能跟著漂移），顯示則帶上名稱
+BRAND_COLUMN = "_brand"
 
 
 def _is_internal_account(raw: str) -> bool:
@@ -51,7 +54,7 @@ def _entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
             else:
                 text = str(raw)
             keys.append(text)
-            labels.append(text)
+            labels.append(brands.label(raw) if field.col == BRAND_COLUMN else text)
     return f"{rule.id}|" + "|".join(keys), " · ".join(labels), internal
 
 

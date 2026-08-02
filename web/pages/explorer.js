@@ -88,8 +88,10 @@ export default {
         <input type="text" v-model="f.start" style="width:100%" placeholder="2026-08-01 00:00:00"></div>
       <div><div class="muted" style="margin-bottom:3px">結束時間</div>
         <input type="text" v-model="f.end" style="width:100%" placeholder="2026-08-01 01:00:00"></div>
-      <div><div class="muted" style="margin-bottom:3px">品牌 ID</div>
-        <input type="number" v-model.number="f.brand" style="width:100%" placeholder="全部"></div>
+      <div><div class="muted" style="margin-bottom:3px">品牌編號</div>
+        <input type="number" v-model.number="f.brand" style="width:100%" placeholder="全部">
+        <div v-if="result && result.meta.brand_filter" class="muted" style="font-size:11.5px;margin-top:3px">
+          {{ result.meta.brand_filter }}</div></div>
       <div><div class="muted" style="margin-bottom:3px">
         {{ f.source === 'api' ? 'Controller/Function 前綴' : (f.source === 'backend' ? 'Route 前綴' : 'Function 前綴') }}</div>
         <input type="text" v-model="f.endpoint" class="mono" style="width:100%"
@@ -154,7 +156,7 @@ export default {
           <tbody>
             <tr v-for="r in result.rows" :key="r.rank">
               <td class="muted">{{ r.rank }}</td>
-              <td class="mono" style="font-size:12px">{{ r.name }}</td>
+              <td :class="{mono: f.analysis !== 'brand'}" style="font-size:12px">{{ r.name }}</td>
               <td class="right" style="font-weight:500">{{ num(r.count) }}</td>
               <td class="right muted">{{ pct(r.share) }}</td>
               <td class="right">{{ r.brands }}</td>
@@ -210,7 +212,9 @@ export default {
               <tr v-for="(r,i) in result.rows" :key="i">
                 <td class="mono" style="font-size:11.5px;white-space:nowrap">{{ r.time }}</td>
                 <td class="muted">{{ r.source }}</td>
-                <td>{{ r.brand ?? '—' }}</td>
+                <td :title="r.brand_label || ''"
+                    style="white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis">
+                  {{ r.brand_label || '—' }}</td>
                 <td class="mono" style="font-size:11.5px">{{ r.endpoint }}</td>
                 <td><span class="fp" :title="'不可逆識別值，非原始資料'">{{ r.source_fp || '—' }}</span></td>
                 <td><span v-if="r.actor_fp" class="fp">{{ r.actor_fp }}</span><span v-else>—</span></td>

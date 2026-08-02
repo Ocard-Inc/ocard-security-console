@@ -3,6 +3,9 @@ app:
   host: 127.0.0.1
   port: 8600
   env_label: Production
+  # Slack 告警內的連結會以此為前綴。部署到正式網域後改成對外網址，
+  # 否則收到告警的人點了會連到自己電腦的 localhost。
+  base_url: http://127.0.0.1:8600
 
 time:
   timezone: Asia/Taipei
@@ -30,6 +33,12 @@ data_sources:
     label: Auth Log
     table: ods_auth_log
     sensitive: true
+
+brands:
+  # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，
+  # 避免每五分鐘檢查與每次排名查詢都打 MySQL。
+  cache_ttl_seconds: 21600
+  max_cached: 20000
 
 freshness:
   # 資料健康狀態閾值（分鐘）— 依設計稿 14.3

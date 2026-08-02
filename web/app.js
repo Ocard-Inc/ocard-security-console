@@ -66,9 +66,35 @@ const App = {
       this.page = page; this.evtNo = null;
       if (filter) this.eventsFilter = filter;
       this.refreshKey++;
+      this.syncHash();
     },
-    openEvent(evtNo) { this.evtNo = evtNo; this.page = 'eventDetail'; },
+    openEvent(evtNo) {
+      this.evtNo = evtNo; this.page = 'eventDetail';
+      this.syncHash();
+    },
     refresh() { this.refreshKey++; },
+
+    // Hash 路由：讓 Slack 告警能直接連到單一事件（#/events/EVT-0001）。
+    // 不用 History API，因為前端由 FastAPI 以單一入口提供，沒有 server-side 路由。
+    syncHash() {
+      const hash = this.page === 'eventDetail' && this.evtNo
+        ? `#/events/${this.evtNo}` : `#/${this.page}`;
+      if (location.hash !== hash) {
+        this._ignoreHash = true;
+        location.hash = hash;
+      }
+    },
+    applyHash() {
+      if (this._ignoreHash) { this._ignoreHash = false; return; }
+      const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+      if (!parts.length) return;
+      const [head, arg] = parts;
+      if (head === 'events' && arg) {
+        this.evtNo = arg; this.page = 'eventDetail';
+      } else if (TITLES[head]) {
+        this.page = head; this.evtNo = null;
+      }
+    },
     async pollFreshness() {
       try {
         const h = await api('/health');
@@ -78,6 +104,9 @@ const App = {
   },
   async mounted() {
     await this.loadSession();
+    this.applyHash();
+    this._onHash = () => this.applyHash();
+    window.addEventListener('hashchange', this._onHash);
     await this.pollFreshness();
     this.timer = setInterval(() => {
       if (!this.autoRefresh) return;
@@ -85,7 +114,10 @@ const App = {
       if (this.page === 'overview') this.refreshKey++;
     }, 30000);
   },
-  unmounted() { clearInterval(this.timer); },
+  unmounted() {
+    clearInterval(this.timer);
+    window.removeEventListener('hashchange', this._onHash);
+  },
   template: `
 <div class="shell" v-if="session">
   <div class="nav">
