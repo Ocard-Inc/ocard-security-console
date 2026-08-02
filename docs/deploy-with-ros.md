@@ -34,22 +34,28 @@ ROS 的 super-admin（`PROTECTED_ADMIN_EMAIL` 或 role=admin）自動擁有全�
 
 `config/settings.yaml`：
 
-```yaml
-app:
-  base_url: https://<ros-domain>/security   # Slack 告警連結的前綴
+網址隨環境而異，所以放 `.env`（不進版控），不是 `config/settings.yaml`：
 
-ros:
-  base_url: https://<ros-domain>            # 留空 = 沒有任何登入保護
-  enabled: true
-  mount_path: /security                     # 登入完導回哪（本機直接跑時留空）
-  cache_ttl_seconds: 30                     # 身分快取；設短一點讓權限撤銷即時生效
+```bash
+ROS_BASE_URL=https://<ros-domain>
+CONSOLE_BASE_URL=https://<ros-domain>/security
 ```
 
-`ros.base_url` 一旦填入，任何請求都必須帶有效的 ROS session。
-**正式環境務必填** —— 留空等於任何人都能直接進來。
+`ROS_BASE_URL` 一旦填入，任何請求都必須帶有效的 ROS session。
+**正式環境務必填** —— 留空等於沒有登入保護，任何人都能直接進來。
 
-`mount_path` 只用來組登入完的回跳網址。前端呼叫 API 的前綴不看設定，而是從
-實際載入路徑推導（見 `web/index.html`），所以本機與 proxy 部署都不必改。
+`CONSOLE_BASE_URL` 一個值決定兩件事，所以不會互相矛盾：Slack 告警連結的前綴，
+以及登入完的回跳路徑（從網址的 path 推導，此例為 `/security`）。前端呼叫 API 的
+前綴則不看設定，是從實際載入路徑推導的（見 `web/index.html`），本機與 proxy
+部署都不必改。
+
+`config/settings.yaml` 只放與環境無關的行為參數（快取秒數、門檻、規則設定等）：
+
+```yaml
+ros:
+  enabled: true            # 總開關；ROS 維護時可臨時關掉改用離線模式
+  cache_ttl_seconds: 30    # 身分快取；設短一點讓權限撤銷即時生效
+```
 
 ## 三、Reverse proxy
 

@@ -1,27 +1,24 @@
 # Ocard Security Log Console — 全域設定
+#
+# 這個檔案進版控，所以只放「所有環境都一樣」的行為參數。
+# 隨環境而異的網址與憑證一律放 .env：
+#   ROS_BASE_URL      Ocard ROS 的網址（留空 = 沒有登入保護）
+#   CONSOLE_BASE_URL  本主控台的對外網址；同時決定 Slack 連結前綴與掛載路徑
 app:
+  # uvicorn 的監聽位址（服務自己綁在哪，不是對外網址）。只聽本機，
+  # 對外一律經 reverse proxy —— 見 docs/deploy-with-ros.md。
   host: 127.0.0.1
   port: 8600
   env_label: Production
-  # Slack 告警內的連結會以此為前綴。部署到正式網域後改成對外網址，
-  # 否則收到告警的人點了會連到自己電腦的 localhost。
-  base_url: http://127.0.0.1:8600
 
 ros:
   # Ocard ROS 是統一登入入口。本主控台不自己做登入：轉發瀏覽器送來的
   # ROS session cookie 給 /api/auth/me 換取身分，再看有沒有
-  # security.console 這個 feature 決定放不放行。
+  # security.console 這個 feature 決定放不放行。沒有分級 —— 進得來就是完整功能。
   #
-  # 沒有分級 —— 進得來就是完整功能。
-  #
-  # 留空 = 停用 ROS 驗證（無登入保護，只可用於離線 demo）。
-  base_url: http://localhost:3000     # 正式環境改成 https://ros.ocard.co
+  # 網址在 .env 的 ROS_BASE_URL。這裡的 enabled 是總開關：即使設了網址，
+  # 也能臨時關掉（例如 ROS 維護時改用離線模式）。
   enabled: true
-  # 未登入導向 ROS 登入頁時，callbackUrl 要帶的路徑（登入完回到哪）。
-  # 本機直接跑在 127.0.0.1:8600、沒有 reverse proxy 時留空；
-  # 正式部署掛在 ros.ocard.co/security 底下才填 /security。
-  # （前端的 API 前綴不看這個值，是從實際載入路徑自動推導的。）
-  mount_path: ""
   # 身分快取秒數。ROS 自己有 10 秒快取，這層是避免單一頁面載入時
   # 數個 API 各打一次 ROS；設短一點讓權限撤銷幾乎即時生效。
   cache_ttl_seconds: 30

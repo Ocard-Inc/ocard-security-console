@@ -151,7 +151,31 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
   在 UTC 的機器上整條線平移 8 小時而且不會報錯。真的要改的話，唯一安全解法寫在
   `charts/format.js` 的 `wallClockToUtcMs()` 註解裡。
 - **基準帶用 `rangeArea` 逐 bucket 繪製**。舊版 `lib.js` 只讀 `buckets[0]` 畫成一條平帶，
-  6 小時視窗下位置誤差達 25 倍。每個 bucket 都有自己的 `api_median`／`api_p95`。
+  6 小時視窗下位置誤差達 25 倍。每個 bucket 都有自己的 median／P95。
+- **y 軸不要用 `forceNiceScale` + `tickAmount`**：它會強制「N 等分 × 整齊級距」，
+  實測固定浪費 2.4 倍軸高（資料最大值 8,323 被推到軸頂 20,000），線因此被壓在底部。
+  一律用 `yaxis.max: niceMax`（`charts/format.js`）—— 它是純函式，ApexCharts 繪製時才
+  帶入資料最大值，所以設定仍與資料無關，浪費降到約 1.05 倍。
+
+### 首頁趨勢是 2×2 小倍數，不是一張四線圖
+
+四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），單一 y 軸下小的那幾條被壓在底部，
+而**雙軸是最容易誤導人的圖表做法，禁用**。所以拆成四個面板，每個自己一個 y 軸、
+自己一條同時段 median 虛線（`overview.js` 的 `PANELS` 與 `panels()`）。
+
+- 四個面板共用 `chart.group: 'ov-trend'` → 準星跨圖同步（滑鼠移一張、四張一起動），
+  tooltip 各自顯示自己的值。每個面板要有唯一的 `chart.id`。
+- **小面板只畫 median 參考線，不畫 median–P95 帶**：P95 比實際流量高一個量級
+  （8,323 vs 776），畫成帶會把軸撐到 8,800、線只剩 9% 高，換成小倍數也沒解決。
+  只畫 median 的話線佔 55%。P95 在面板標頭與 tooltip 裡都是精確數字。
+  帶**保留在事件詳細頁** —— 那裡是單一序列，帶就是重點。
+- 面板標頭是 HTML 不是 ApexCharts 的 `title`，才帶得動即時數字與倍數。
+- 四個面板的縱軸各自獨立，**不可跨面板比較高度**，說明文字要寫出來。
+
+`queries/trends.py` 的 `baseline_keys` 是四條線 → metric key 的對照。四個基線都由
+`calibrate.py` 算好（`table_10m:api`／`table_10m:backend`／`login_success_10m`／
+`login_failed_10m`），以前只讀了兩個。`baseline.get()` 每次都是一趟 SQLite，
+所以在 `request_trend` 內用 dict memoize（相異鍵最多 4 × 24 × 2）。
 
 `web/app.js` 的 30 秒自動更新走 `reloadToken` **prop**，不是 `:key` —— 進 `:key` 會讓
 Vue 每半分鐘卸載重建整頁，圖表實例跟著被銷毀。`sessionKey` 才是給 `:key` 的

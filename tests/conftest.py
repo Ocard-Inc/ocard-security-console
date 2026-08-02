@@ -10,8 +10,6 @@ thread-local 的 —— 多個 TestClient 併存會累積連線並撞上伺服�
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,8 +23,10 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _offline_auth():
-    with patch.object(ros, "_cfg", return_value={"base_url": "", "enabled": False}):
-        ros.clear_cache()
-        yield
-        ros.clear_cache()
+def _offline_auth(monkeypatch):
+    # 網址來自 .env（ROS_BASE_URL），清掉它就等於離線模式
+    monkeypatch.setenv("ROS_BASE_URL", "")
+    monkeypatch.setenv("CONSOLE_BASE_URL", "")
+    ros.clear_cache()
+    yield
+    ros.clear_cache()

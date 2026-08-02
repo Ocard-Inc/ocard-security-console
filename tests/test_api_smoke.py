@@ -98,3 +98,39 @@ def test_sparklines_available(client):
     """統計卡在總覽與資料健康兩頁都要用到。"""
     r = client.get("/api/sparklines")
     assert r.status_code == 200
+
+
+# ── 待判定事件 ────────────────────────────────────────────────────────────
+# 事件會在數值回到門檻以下時自動 resolved，但首頁的 attention 只查 status='active'，
+# 於是自動結束的事件完全從首頁消失、頁面顯示「沒有未處理事件」—— 即使從來沒有人
+# 看過它們。那是假的安心感，跟本專案「沒有事件 ≠ 系統安全」的前提正好相反。
+
+def test_overview_reports_pending_judgement(client):
+    r = client.get("/api/overview?minutes=60")
+    assert r.status_code == 200
+    pj = r.json()["pending_judgement"]
+    assert set(pj) == {"total", "by_severity", "oldest", "events"}
+    assert set(pj["by_severity"]) == {"P0", "P1", "P2", "P3"}
+    assert pj["total"] == sum(pj["by_severity"].values())
+    assert len(pj["events"]) <= 5
+    for e in pj["events"]:
+        assert e["judgement"] is None, "待判定清單裡不該出現已判定的事件"
+    if pj["total"]:
+        assert pj["oldest"], "有待判定事件就該有最早時間，橫幅要用它"
+
+
+def test_events_unjudged_filter(client):
+    """首頁「前往判定」連結指向的查詢。"""
+    everything = client.get("/api/events").json()
+    unjudged = client.get("/api/events?unjudged=true").json()
+    assert all(e["judgement"] is None for e in unjudged["events"])
+    assert unjudged["total"] <= everything["total"]
+    expected = sum(1 for e in everything["events"] if e["judgement"] is None)
+    assert unjudged["total"] == expected
+
+
+def test_events_unjudged_default_off(client):
+    """不帶參數時不可過濾 —— 預設行為不能被這個新參數改掉。"""
+    a = client.get("/api/events").json()["total"]
+    b = client.get("/api/events?unjudged=false").json()["total"]
+    assert a == b

@@ -23,6 +23,7 @@ from urllib.parse import quote, urljoin
 
 import requests
 
+from console.core import config
 from console.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -55,15 +56,17 @@ class RosUnavailable(RuntimeError):
 
 
 def _cfg() -> dict:
+    """settings.yaml 的 ros 段（只放與環境無關的行為參數）。"""
     return settings().get("ros", {}) or {}
 
 
 def base_url() -> str:
-    return str(_cfg().get("base_url", "")).rstrip("/")
+    """ROS 網址。來自 .env 的 ROS_BASE_URL —— 隨環境而異，不進版控。"""
+    return config.ros_base_url()
 
 
 def enabled() -> bool:
-    """未設定 ros.base_url 時停用 ROS 驗證，走開發模式的 header 角色切換。"""
+    """未設定 ROS_BASE_URL 時停用登入驗證（沒有任何保護，僅供離線 demo）。"""
     return bool(base_url()) and bool(_cfg().get("enabled", True))
 
 
@@ -74,7 +77,7 @@ def login_url(next_path: str = "/") -> str:
     主控台掛在同網域子路徑，所以帶相對路徑即可，不會觸發 NextAuth 的
     跨站 callback 阻擋。
     """
-    mount = str(_cfg().get("mount_path", "")).rstrip("/")
+    mount = config.console_mount_path()
     target = f"{mount}{next_path}" if next_path.startswith("/") else f"{mount}/{next_path}"
     return f"{base_url()}/login?callbackUrl={quote(target, safe='')}"
 

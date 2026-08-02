@@ -7,7 +7,7 @@ ClickHouse log 即時異常監測主控台與稽查查詢平台。監測 `ods_ad
 
 ```powershell
 uv sync                                    # 安裝依賴（Python 3.12）
-cp .env.example .env                       # 填入 CLICKHOUSE_*、MYSQL_*、FP_SECRET
+cp .env.example .env                       # 填入 CLICKHOUSE_*、MYSQL_*、FP_SECRET、ROS_BASE_URL
 uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線與來源播種
 .\scripts\restart_server.ps1               # 啟動（含五分鐘檢查排程）
 ```
@@ -126,8 +126,11 @@ ROS 的 `/api/auth/me` 換取身分。
 （顯示無權限頁與登入中的 email）、**ROS 不可用**（回 503，不放行也不誤導使用者
 去重新登入）。
 
+網址放 `.env`（隨環境而異，不進版控）：`ROS_BASE_URL` 是 ROS 的位址，
+`CONSOLE_BASE_URL` 是本主控台的對外網址（同時決定 Slack 連結前綴與登入回跳路徑）。
+**`ROS_BASE_URL` 留空時沒有任何登入保護**，僅供離線 demo。
+
 設定與 reverse proxy 見 [`docs/deploy-with-ros.md`](docs/deploy-with-ros.md)。
-`config/settings.yaml` 的 `ros.base_url` 留空時**沒有任何登入保護**，僅供離線 demo。
 
 ## 尚未實作（後續階段）
 

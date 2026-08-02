@@ -29,14 +29,17 @@ def _me(features: list[str], *, email="someone@olis.com.tw", active=True) -> Fak
         "roleName": "資安值班", "active": active}}})
 
 
-BASE_CFG = {"base_url": "https://ros.example.com", "enabled": True,
-            "mount_path": "/security", "cache_ttl_seconds": 30}
-
-
 @pytest.fixture(autouse=True)
-def _ros_enabled():
-    """把 ROS 設定成啟用，並在每個測試前後清掉身分快取。"""
-    with patch.object(ros, "_cfg", return_value=BASE_CFG):
+def _ros_enabled(monkeypatch):
+    """啟用 ROS 驗證（網址來自環境變數），並在每個測試前後清掉身分快取。
+
+    掛載路徑由 CONSOLE_BASE_URL 的 path 推導 —— 這裡設 /security，
+    等同於部署在 https://ros.example.com/security。
+    """
+    monkeypatch.setenv("ROS_BASE_URL", "https://ros.example.com")
+    monkeypatch.setenv("CONSOLE_BASE_URL", "https://ros.example.com/security")
+    with patch.object(ros, "_cfg", return_value={"enabled": True,
+                                                 "cache_ttl_seconds": 30}):
         ros.clear_cache()
         yield
         ros.clear_cache()
@@ -176,3 +179,30 @@ def test_index_redirects_to_ros_login_when_not_logged_in(client):
 def test_healthz_is_public(client):
     r = client.get("/healthz")
     assert r.status_code == 200 and r.json()["ok"] is True
+
+
+# ─────────────── 設定來源：網址必須來自環境變數 ───────────────
+
+def test_urls_come_from_env_not_versioned_config(monkeypatch):
+    """網址隨環境而異，不可寫死在進版控的 settings.yaml。"""
+    from console.core import config
+
+    monkeypatch.setenv("ROS_BASE_URL", "https://ros.prod.example/")
+    monkeypatch.setenv("CONSOLE_BASE_URL", "https://ros.prod.example/security/")
+    # 尾端斜線一律去掉，組出來的網址才不會出現 //
+    assert config.ros_base_url() == "https://ros.prod.example"
+    assert config.console_base_url() == "https://ros.prod.example/security"
+    # 掛載路徑由對外網址推導，不需另外設定，也就不會互相矛盾
+    assert config.console_mount_path() == "/security"
+
+
+def test_mount_path_empty_when_no_subpath(monkeypatch):
+    monkeypatch.setenv("CONSOLE_BASE_URL", "http://127.0.0.1:8600")
+    from console.core import config
+    assert config.console_mount_path() == ""
+
+
+def test_blank_ros_url_disables_auth(monkeypatch):
+    """留空 = 沒有登入保護（離線 demo），這點必須是明確行為而非意外。"""
+    monkeypatch.setenv("ROS_BASE_URL", "")
+    assert ros.enabled() is False

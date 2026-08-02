@@ -46,6 +46,37 @@ def _require_env(key: str) -> str:
 
 
 @lru_cache(maxsize=1)
+def _load_env() -> None:
+    load_dotenv(PROJECT_ROOT / ".env")
+
+
+# ─── 對外網址（隨環境而異，因此放 .env 而不是進版控的 settings.yaml）───
+# 這兩個 getter 刻意不快取：值本身很便宜，快取只會讓測試與熱重載難以覆寫。
+
+def ros_base_url() -> str:
+    """Ocard ROS 的網址。留空 = 停用登入驗證（沒有任何保護）。"""
+    _load_env()
+    return os.environ.get("ROS_BASE_URL", "").strip().rstrip("/")
+
+
+def console_base_url() -> str:
+    """本主控台的對外網址，例如 https://ros.ocard.co/security。
+
+    同時決定兩件事，因此只需設定這一個值、不會互相矛盾：
+      1. Slack 告警連結的前綴
+      2. 掛載路徑（未登入導回 ROS 時的 callbackUrl）
+    """
+    _load_env()
+    return os.environ.get("CONSOLE_BASE_URL", "").strip().rstrip("/")
+
+
+def console_mount_path() -> str:
+    """從 CONSOLE_BASE_URL 推導出的掛載路徑（沒有子路徑時為空字串）。"""
+    from urllib.parse import urlparse
+    return urlparse(console_base_url()).path.rstrip("/")
+
+
+@lru_cache(maxsize=1)
 def ch_config() -> ChConfig:
     load_dotenv(PROJECT_ROOT / ".env")
     return ChConfig(

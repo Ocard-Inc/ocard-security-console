@@ -14,8 +14,8 @@ import logging
 
 import requests
 
-from console.core import brands, timewin
-from console.core.config import settings, slack_webhook_url
+from console.core import brands, config, timewin
+from console.core.config import slack_webhook_url
 from console.store import db
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,9 @@ _SEV_EMOJI = {"P0": "🟥", "P1": "🔴", "P2": "🟠", "P3": "🔵"}
 
 
 def base_url() -> str:
-    return str(settings()["app"].get("base_url", "")).rstrip("/")
+    """主控台對外網址（.env 的 CONSOLE_BASE_URL）。沒設定就不放連結 ——
+    寧可少一個連結，也不要給收到告警的人一個連到自己 localhost 的死連結。"""
+    return config.console_base_url()
 
 
 def event_url(evt_no: str) -> str:
