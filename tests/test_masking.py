@@ -1,11 +1,7 @@
-import os
+from console.core import masking
 
-os.environ.setdefault("FP_SECRET", "test-secret-for-unit-tests")
-os.environ.setdefault("CLICKHOUSE_HOST", "x")
-os.environ.setdefault("CLICKHOUSE_USER", "x")
-os.environ.setdefault("CLICKHOUSE_PASSWORD", "x")
-
-from console.core import masking  # noqa: E402
+# CLICKHOUSE_* 由 conftest 從 .env 載入；此處不可塞假值，
+# 否則 lru_cache 會讓同一 session 後續的真實查詢全部連到假主機。
 
 
 def test_fingerprint_deterministic():

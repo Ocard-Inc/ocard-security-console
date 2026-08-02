@@ -1,12 +1,6 @@
-import os
 from datetime import datetime
 
-os.environ.setdefault("FP_SECRET", "test-secret-for-unit-tests")
-os.environ.setdefault("CLICKHOUSE_HOST", "x")
-os.environ.setdefault("CLICKHOUSE_USER", "x")
-os.environ.setdefault("CLICKHOUSE_PASSWORD", "x")
-
-from console.core import timewin  # noqa: E402
+from console.core import timewin
 
 
 def test_fmt_includes_seconds():

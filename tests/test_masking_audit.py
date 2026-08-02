@@ -8,11 +8,6 @@ from __future__ import annotations
 import json
 import re
 
-import pytest
-from fastapi.testclient import TestClient
-
-from console.api.app import app
-
 # 已知的真實識別值（來自 7/16 事件與生產資料），絕不可出現在任何回應中
 FORBIDDEN_LITERALS = [
     "andrew_c", "131.143.215.229", "ocardcathy", "ocardjacky",
@@ -26,11 +21,6 @@ EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 # 允許出現的例外：本機位址與登入帳號 email（session 端點本來就要回自己的身分）
 IP_ALLOW = {"127.0.0.1", "0.0.0.0"}
 EMAIL_ALLOW = {"vinek@olis.com.tw"}
-
-
-@pytest.fixture(scope="module")
-def client():
-    return TestClient(app)
 
 
 def _scan(payload: str, where: str) -> None:

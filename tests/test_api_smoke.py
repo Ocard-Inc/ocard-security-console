@@ -1,17 +1,6 @@
 """API 煙霧測試（會實際打 ClickHouse，需要有效 .env）。"""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-
-from console.api.app import app
-
-
-@pytest.fixture(scope="module")
-def client():
-    # 不啟動 lifespan（避免測試期間啟動排程器）
-    return TestClient(app, raise_server_exceptions=True)
-
 
 def test_session_default_admin(client):
     r = client.get("/api/session")
