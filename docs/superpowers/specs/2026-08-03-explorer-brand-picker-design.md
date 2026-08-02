@@ -159,9 +159,10 @@ CSS 加一組 `.brandpick-*`，命名對齊 `.rangepick-*`。
 2. **鍵盤操作**：↑↓ 移動、Enter 選取、Esc 關閉。ROS 的只能滑鼠點。
 3. **三種空狀態不可混淆**：未輸入 →「輸入品牌名稱、代碼或編號」；有輸入無結果 →
    「查無符合的品牌」；查詢失敗 → 紅字「品牌查詢失敗」。這是「502 不吞成空陣列」在 UI 上的落點。
-4. **`modelValue` 變 `null` 時清掉內部顯示**：`explorer.js:194` 切換資料來源時會
-   `Object.assign(this.f, { brand: null, ... })`；沒有 watch 的話畫面上還留著上一個品牌名，
-   但實際送出的是「全部」。
+4. **`modelValue` 變 `null` 時清掉內部顯示**：`explorer.js:194` 的 `reset()`（「清除」鈕）
+   會 `Object.assign(this.f, { brand: null, ... })`；沒有 watch 的話畫面上還留著上一個品牌名，
+   但實際送出的是「全部」—— 選擇器顯示什麼就必須是送出去的東西。
+   （資料來源的 `<select>` 只呼叫 `run`，不重設 brand。）
 
 ### 其他
 
