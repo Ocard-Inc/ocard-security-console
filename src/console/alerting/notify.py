@@ -1,11 +1,22 @@
 """通知調度：事件變化 → Slack（未設定 webhook 時僅記 log 與佇列）。
 
-Slack 告警內容只含聚合數字與 fingerprint / endpoint / 品牌名稱（編號），
-永不含原始 IP、帳號、token 或 log 原文。
+## Slack 訊息含什麼
 
-品牌名稱在事件建立時就寫進 entity_label 與 context.brand_top（見 rules/engine.py），
-因此 Slack 與 UI 看到的是同一組「品牌名稱（品牌編號）」，不需在此再查一次 MySQL。
-UI 的「涉及品牌」可以點開看明細，Slack 不行，所以前十名直接列在訊息裡。
+聚合數字、**原始後台帳號與來源 IP**、endpoint、品牌名稱（編號）。收到告警的人
+不必再進主控台就知道是哪個帳號、哪個來源、影響哪些品牌 —— 這是刻意的
+（見 `core/masking.py` 的模組說明）。
+
+`entity_label` 由 `rules/engine.entity_parts()` 在事件建立時組好，所以 Slack 與 UI
+看到的是同一組值，不需在此再查一次 MySQL。UI 的「涉及品牌」可以點開看明細，
+Slack 不行，所以前十名直接列在訊息裡。
+
+## 仍然不含什麼
+
+**log 原文（params／headers）與有效的 API token。** 前者混著憑證與消費者手機、
+Email，後者顯示了就能被冒用 —— 而 Slack 頻道的成員範圍不在主控台的權限控制內，
+訊息也會留在頻道歷史裡。要看原文請走主控台的逐筆調閱（一次一筆、寫入稽核）。
+
+**前提**：這個 Slack 頻道必須是對內且成員可控的。它拿到的資訊等同主控台的事件頁。
 """
 from __future__ import annotations
 

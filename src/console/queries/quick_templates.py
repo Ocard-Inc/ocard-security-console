@@ -11,7 +11,7 @@ from typing import Callable
 
 from console.core import brands, timewin
 from console.core.ch import query
-from console.core.masking import src_fp, actor_fp
+from console.core import masking
 from console.queries import exprs, health
 from console.rules import baseline
 
@@ -96,7 +96,7 @@ def _top_sources(p: dict) -> dict:
         f" WHERE src != '' GROUP BY src ORDER BY cnt DESC LIMIT 15",
         {"start": s, "end": e})
     b = baseline.get("api_src_60m")
-    rows = [{"source_fp": src_fp(r["src"]), "count": int(r["cnt"]),
+    rows = [{"source_fp": masking.src(r["src"]), "count": int(r["cnt"]),
              "brands": int(r["brands"]), "brand_top": brands.breakdown(r["brand_map"]),
              "endpoints": int(r["endpoints"]),
              "p99": round(b.p99) if b else None} for _, r in df.iterrows()]
@@ -140,7 +140,7 @@ def _source_cross_brand(p: dict) -> dict:
         f"  WHERE {exprs.time_filter()}) WHERE src != '' GROUP BY src, _brand",
         {"start": s, "end": e})
     matched = [(int(r["_brand"]), int(r["cnt"])) for _, r in df.iterrows()
-               if src_fp(r["src"]) == fp]
+               if masking.src(r["src"]) == fp]
     if not matched:
         return _result([], [], f"{fp} 在此時間範圍內沒有 API 請求。", time_range=f"{s} ~ {e}")
     matched.sort(key=lambda x: -x[1])
@@ -175,7 +175,7 @@ def _top_login_failed(p: dict) -> dict:
         f"SELECT ip, count() AS cnt, uniq(acc) AS accs FROM ods_admin_log"
         f" WHERE {exprs.time_filter()} AND {exprs.ANY_LOGIN_FAILED} AND ip != ''"
         f" GROUP BY ip ORDER BY cnt DESC LIMIT 15", {"start": s, "end": e})
-    rows = [{"source_fp": src_fp(r["ip"]), "failures": int(r["cnt"]),
+    rows = [{"source_fp": masking.src(r["ip"]), "failures": int(r["cnt"]),
              "accounts": int(r["accs"])} for _, r in df.iterrows()]
     noip = query(
         f"SELECT count() AS n FROM ods_admin_log WHERE {exprs.time_filter()}"
@@ -280,7 +280,7 @@ def _orderlist_traversal(p: dict) -> dict:
         b = baseline.get(f"backend_route_60m:{r['route2']}", hour=end_dt.hour,
                          day_class=baseline.day_class_of(end_dt))
         cnt = int(r["cnt"])
-        rows.append({"route": r["route2"], "actor_fp": actor_fp(r["acc"]), "count": cnt,
+        rows.append({"route": r["route2"], "actor": masking.actor(r["acc"]), "count": cnt,
                      "brands": int(r["brands"]),
                      "brand_top": brands.breakdown(r["brand_map"]),
                      "unique_paths": int(r["uniq_paths"]),
@@ -293,7 +293,7 @@ def _orderlist_traversal(p: dict) -> dict:
             if r["count"] > 1000 and ((r["multiple"] or 0) > 10 or (r["unique_ratio"] or 0) > 0.8)]
     if trav:
         top = trav[0]
-        note = (f"{len(trav)} 個操作者呈現大量查閱特徵。最高者 {top['actor_fp']} 於 "
+        note = (f"{len(trav)} 個操作者呈現大量查閱特徵。最高者 {top['actor']} 於 "
                 f"{top['route']} 查閱 {top['count']:,} 次"
                 + (f"，為同時段 median（{top['median']}）的 {top['multiple']:,.0f} 倍" if top["multiple"] else "")
                 + f"，涉及 {top['brands']} 個品牌"
@@ -301,7 +301,7 @@ def _orderlist_traversal(p: dict) -> dict:
                    if top["brand_top"] else "") + "。")
     else:
         note = "未觀察到大量查閱特徵；此範圍內的 orderlist 存取量都在同時段基線範圍內。"
-    return _result(["route", "actor_fp", "count", "brands", "unique_paths",
+    return _result(["route", "actor", "count", "brands", "unique_paths",
                     "unique_ratio", "median", "multiple"], rows,
                    note + " 注意：orderlist/detail 的訂單識別在 POST body 而非 URL，"
                           "因此 unique 路徑比例對該 route 恆為 0，不可作為遍歷判定依據。"
@@ -388,7 +388,7 @@ def _compare_dates(p: dict) -> dict:
             f" AND {exprs.ENDPOINT} = %(ep)s) WHERE src != ''"
             f" GROUP BY src ORDER BY cnt DESC LIMIT 1", params)
         total = int(r["total"])
-        top_src = (src_fp(sdf.iloc[0]["src"]), int(sdf.iloc[0]["cnt"])) if len(sdf) else (None, 0)
+        top_src = (masking.src(sdf.iloc[0]["src"]), int(sdf.iloc[0]["cnt"])) if len(sdf) else (None, 0)
         with_res = int(r["with_res"])
         metrics.append({
             "range": f"{s} ~ {e}", "total": total,

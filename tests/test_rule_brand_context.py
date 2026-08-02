@@ -42,7 +42,9 @@ def test_masked_context_turns_brand_map_into_top_list(monkeypatch):
         {"brand": 1180, "label": "wa10 瓦城（1180）", "count": 646},
     ]
     assert "brand_map" not in ctx, "原始 sumMap 不入庫，只留展開用的前 N 名"
-    assert ctx["acc"].startswith("actor_"), "遮罩行為不受影響"
+    # 帳號原樣入庫。規則引擎的 context 是事件詳細頁與 Slack 的資料來源，
+    # 追究問題需要知道是哪個帳號（見 core/masking.py 的政策說明）。
+    assert ctx["acc"] == "andrew_c", "帳號應原樣保留，不再指紋化"
     brands.clear_cache()
 
 

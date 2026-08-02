@@ -21,7 +21,7 @@ from console.store import db
 
 logger = logging.getLogger(__name__)
 
-_FP_FUNCS = masking.FP_FUNCS
+_DISPLAY = masking.DISPLAY_FUNCS
 
 # 品牌欄位：去重鍵維持編號（名稱會改，鍵不能跟著漂移），顯示則帶上名稱
 BRAND_COLUMN = "_brand"
@@ -43,7 +43,7 @@ def entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
     for field in rule.entity:
         raw = row.get(field.col)
         if field.fp:
-            fp = _FP_FUNCS[field.fp](raw)
+            fp = _DISPLAY[field.fp](raw)
             keys.append(fp or "-")
             labels.append(fp or "（空）")
             if field.fp == "actor" and raw is not None and _is_internal_account(raw):
@@ -61,7 +61,7 @@ def entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
 
 
 def _active_allowlist_srcs() -> dict[str, set[str]]:
-    """生效中 allowlist：src_fp → 允許的 endpoint 集合（空字串 = 全部）。"""
+    """生效中 allowlist：src → 允許的 endpoint 集合（空字串 = 全部）。"""
     now = timewin.fmt(timewin.taipei_now())
     rows = db.rows(
         "SELECT source_fp, COALESCE(endpoint, '') AS ep FROM allowlist"
@@ -153,7 +153,7 @@ def _eval_new_source(rule: Rule, start: str, end: str,
         if metric < rule.min_events:
             continue
         fp_key = "|".join(
-            _FP_FUNCS[f.fp](row.get(f.col)) or "-" for f in rule.entity if f.fp)
+            _DISPLAY[f.fp](row.get(f.col)) or "-" for f in rule.entity if f.fp)
         known = db.one(
             "SELECT 1 AS x FROM known_sources WHERE kind = ? AND entity_key = ?",
             (rule.known_kind, fp_key))
@@ -216,7 +216,7 @@ def _masked_context(rule: Rule, row: dict) -> dict:
             # 因此在偵測當下就把前 N 名連同名稱一起存進事件 context。
             ctx["brand_top"] = brands.breakdown(v)
         elif k in fp_cols and fp_cols[k]:
-            ctx[k] = _FP_FUNCS[fp_cols[k]](v)
+            ctx[k] = _DISPLAY[fp_cols[k]](v)
         elif isinstance(v, (int, float)):
             ctx[k] = v
         else:

@@ -103,7 +103,7 @@ def breakdown(brand_map: object, limit: int = BREAKDOWN_LIMIT) -> list[dict]:
     輸入可能是 ClickHouse 回來的 (編號陣列, 次數陣列)，也可能是已存進
     context_json 後再讀出的同一組資料；空值一律回空 list。
     """
-    pairs = _to_pairs(brand_map)
+    pairs = to_pairs(brand_map)
     if not pairs:
         return []
     pairs.sort(key=lambda p: (-p[1], p[0]))
@@ -119,24 +119,28 @@ def top_summary(top: list[dict] | None, limit: int = 3) -> str:
     return "、".join(f"{b['label']} {b['count']:,} 次" for b in top[:limit])
 
 
-def _to_pairs(brand_map: object) -> list[tuple[int, int]]:
-    """(keys, values) 兩個平行陣列 → [(編號, 次數)]；形狀不符就當作沒有資料。"""
-    if brand_map is None or isinstance(brand_map, (str, bytes)):
+def to_pairs(sum_map: object) -> list[tuple[int, int]]:
+    """`sumMap` 的 (keys, values) 兩個平行陣列 → [(編號, 次數)]；形狀不符當作沒有資料。
+
+    公開是因為分店（`exprs.STORE_MAP`）的形狀完全相同 —— core/stores.py 與
+    sweep/context.py 共用這支，不必各寫一份解析。
+    """
+    if sum_map is None or isinstance(sum_map, (str, bytes)):
         return []
     try:
-        keys, values = brand_map            # tuple/list 長度必須是 2
+        keys, values = sum_map              # tuple/list 長度必須是 2
     except (TypeError, ValueError):
         return []
     pairs = []
     for raw_id, raw_count in zip(keys, values):
-        brand_id = coerce_id(raw_id)
-        if brand_id is None:
+        key = coerce_id(raw_id)
+        if key is None:
             continue
         try:
             count = int(raw_count)
         except (TypeError, ValueError):
             continue
-        pairs.append((brand_id, count))
+        pairs.append((key, count))
     return pairs
 
 

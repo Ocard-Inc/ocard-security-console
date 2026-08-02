@@ -16,7 +16,7 @@ from console.core import timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.core.logging_setup import setup_logging
-from console.core.masking import actor_fp, src_fp
+from console.core import masking
 from console.queries import exprs
 from console.rules import baseline
 from console.store import db
@@ -27,6 +27,14 @@ _QUANTS = (
     "quantile(0.5)(c) AS median, quantile(0.95)(c) AS p95,"
     " quantile(0.99)(c) AS p99, max(c) AS maxv, count() AS samples"
 )
+
+# 總覽趨勢的分桶粒度。基線的語意是「**該粒度的桶內計數**的分布」，
+# 所以前端用幾分鐘的桶，就必須拿同粒度的基線來比 —— 用 10 分鐘的基線去比
+# 120 分鐘的桶，原始計數約是基線的 12 倍，會憑空生出假的「12 倍」告警。
+#
+# 必須與 queries/trends.py 的 BUCKET_LADDER 一致。n=10 產生的正是既有的
+# table_10m:* 與 login_*_10m，所以 health.py、routes.py 的讀取端不受影響。
+GRANULARITIES = (5, 10, 30, 120)
 
 
 def _range(days: int) -> tuple[str, str]:
@@ -71,27 +79,47 @@ def calibrate() -> dict:
     now_str = timewin.fmt(timewin.taipei_now())
     all_rows: list[tuple] = []
 
-    # 1. 四表 10 分鐘總量（overview 趨勢 / 資料健康）
-    for key, src in settings()["data_sources"].items():
-        inner = (
-            f"SELECT toStartOfInterval(create_time, INTERVAL 10 MINUTE) AS b, count() AS c"
-            f" FROM {src['table']} WHERE {tf}{excl} GROUP BY b"
-        )
-        rows = _bucketed_distribution(inner, params, f"'table_10m:{key}'")
-        all_rows.extend(rows)
-        logger.info("table_10m:%s → %d 列", key, len(rows))
+    # 1. 四表各粒度總量（overview 趨勢 / 資料健康）
+    #    每個粒度都要算一份 —— 前端的分桶會隨時間區間變（見 trends.BUCKET_LADDER），
+    #    拿錯粒度的基線去比就會產生假的倍數。
+    for n in GRANULARITIES:
+        for key, src in settings()["data_sources"].items():
+            inner = (
+                f"SELECT toStartOfInterval(create_time, INTERVAL {n} MINUTE) AS b,"
+                f" count() AS c FROM {src['table']} WHERE {tf}{excl} GROUP BY b"
+            )
+            mk = f"table_{n}m:{key}"
+            rows = _bucketed_distribution(inner, params, f"'{mk}'")
+            all_rows.extend(rows)
+            # (-1,'all') 保底列：baseline.get() 的回退鏈是
+            # (hour,dc) → (hour,'all') → (-1,dc) → (-1,'all')，但上面只產生
+            # (hour, weekday|weekend)。樣本一少就會出現中間破洞，把 median
+            # 參考線斷成好幾截；補這一列讓回退鏈永遠不會走到底。
+            all_rows.append((mk, -1, "all", *_global_distribution(inner, params)))
+            logger.info("%s → %d 列", mk, len(rows) + 1)
 
-    # 2. 登入成功 / 失敗（overview 線 + R06/R07）
-    for mk, cond in [
-        ("boss_login_success_10m", exprs.BOSS_LOGIN_SUCCESS),
-        ("login_success_10m", exprs.ANY_LOGIN_SUCCESS),
-        ("login_failed_10m", exprs.ANY_LOGIN_FAILED),
-    ]:
-        inner = (
-            f"SELECT toStartOfInterval(create_time, INTERVAL 10 MINUTE) AS b, count() AS c"
-            f" FROM ods_admin_log WHERE {tf}{excl} AND {cond} GROUP BY b"
-        )
-        all_rows.extend(_bucketed_distribution(inner, params, f"'{mk}'"))
+    # 2. 登入成功 / 失敗（overview 線）
+    for n in GRANULARITIES:
+        for mk_base, cond in [
+            ("login_success", exprs.ANY_LOGIN_SUCCESS),
+            ("login_failed", exprs.ANY_LOGIN_FAILED),
+        ]:
+            mk = f"{mk_base}_{n}m"
+            inner = (
+                f"SELECT toStartOfInterval(create_time, INTERVAL {n} MINUTE) AS b,"
+                f" count() AS c FROM ods_admin_log WHERE {tf}{excl} AND {cond} GROUP BY b"
+            )
+            all_rows.extend(_bucketed_distribution(inner, params, f"'{mk}'"))
+            all_rows.append((mk, -1, "all", *_global_distribution(inner, params)))
+
+    # 2b. R06 的 boss 登入成功。固定 10 分鐘、不進粒度迴圈 ——
+    #     它是規則引擎的門檻依據（config/rules/r06_login_success_anomaly.yaml），
+    #     不是顯示用的，粒度不可隨前端的分桶而變。
+    inner = (
+        f"SELECT toStartOfInterval(create_time, INTERVAL 10 MINUTE) AS b, count() AS c"
+        f" FROM ods_admin_log WHERE {tf}{excl} AND {exprs.BOSS_LOGIN_SUCCESS} GROUP BY b"
+    )
+    all_rows.extend(_bucketed_distribution(inner, params, "'boss_login_success_10m'"))
 
     # 3. backend 單帳號 10 分鐘請求分布（R01，全域）
     inner = (
@@ -170,14 +198,14 @@ def seed_known_sources() -> dict:
     df = query(
         f"SELECT DISTINCT acc, ip FROM ods_backend_sys_log WHERE {tf}{excl}"
         f" AND acc IS NOT NULL AND acc != '' AND ip IS NOT NULL AND ip != ''", p90)
-    pairs = [(f"{actor_fp(r['acc'])}|{src_fp(r['ip'])}",) for _, r in df.iterrows()]
+    pairs = [(f"{masking.actor(r['acc'])}|{masking.src(r['ip'])}",) for _, r in df.iterrows()]
     counts["backend_acc_ip"] = _insert_known("backend_acc_ip", pairs, now_str)
 
     # admin_log 的登入事件（有 acc）無 ip、操作事件（有 ip）以 _admin 識別
     df = query(
         f"SELECT DISTINCT _admin, ip FROM ods_admin_log WHERE {tf}{excl}"
         f" AND _admin IS NOT NULL AND ip != ''", p90)
-    pairs = [(f"{actor_fp(int(r['_admin']))}|{src_fp(r['ip'])}",) for _, r in df.iterrows()]
+    pairs = [(f"{masking.actor(int(r['_admin']))}|{masking.src(r['ip'])}",) for _, r in df.iterrows()]
     counts["admin_admin_ip"] = _insert_known("admin_admin_ip", pairs, now_str)
 
     # API 來源：headers 解析成本高，取 28 天
@@ -186,7 +214,7 @@ def seed_known_sources() -> dict:
         f"SELECT DISTINCT src FROM (SELECT {exprs.API_SRC_IP} AS src FROM ods_api_log"
         f" WHERE {tf}{excl}) WHERE src != ''",
         {"start": s28, "end": e28})
-    pairs = [(str(src_fp(r["src"])),) for _, r in df.iterrows()]
+    pairs = [(str(masking.src(r["src"])),) for _, r in df.iterrows()]
     counts["api_src"] = _insert_known("api_src", pairs, now_str)
 
     logger.info("known_sources 播種：%s", counts)
