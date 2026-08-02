@@ -122,3 +122,16 @@ sql_console:
     - acc
     - ip
     - order_number
+
+llm:
+  # AI 研判草稿（期間異常掃描的敘事段落）。總開關比照 ros.enabled ——
+  # 即使裝了套件、設了 key，也能臨時關掉。
+  #
+  # 關掉時掃描完全正常，只是不產生敘事段落。LLM 從來不是這個功能的必要條件。
+  #
+  # 送出去的只有已聚合、已遮罩的統計摘要（fingerprint + 數字 + 標籤），
+  # 沒有原始 IP／帳號／token／訂單號 —— 遮罩在探針層就完成，narrate.py 拿不到原文。
+  # API key 放 .env 的 ANTHROPIC_API_KEY。
+  enabled: true
+  model: claude-opus-5
+  max_tokens: 16000
