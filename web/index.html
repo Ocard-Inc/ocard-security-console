@@ -4,13 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ocard Security Log Console</title>
-<link rel="stylesheet" href="/static/ds/colors_and_type.css">
+<!-- __MOUNT__ 由後端注入（見 api/app.py）。主控台掛在 ROS 同網域的子路徑時，
+     所有 API 與靜態資源都必須帶上該前綴，否則會打到 ROS 自己的路由。 -->
+<script>window.__MOUNT__ = "";</script>
+<link rel="stylesheet" href="./static/ds/colors_and_type.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css">
+<!-- ApexCharts 的樣式沒有內建在 JS 裡（實測 min.js 不含 CSS 規則），必須自己載。
+     順序：先 vendor 再自家樣式，這樣 app.css / charts.css 的覆寫不用靠 !important。 -->
+<link rel="stylesheet" href="./static/vendor/apexcharts-6.7.0.css">
+<link rel="stylesheet" href="./static/app.css">
+<link rel="stylesheet" href="./static/charts/charts.css">
 </head>
 <body>
 <div id="app"></div>
-<script type="module" src="/static/app.js"></script>
+<!-- ApexCharts 6.7.0 沒有壓縮版 ESM（dist/apexcharts.esm.js 是 1.86 MB 未壓縮），
+     所以用傳統 <script> 載 UMD 版本，再由 charts/apex.js 橋接成 ESM。
+     絕對不可加 async：classic script 不加 async 時保證在 module script 之前執行，
+     加了就會變成競態，只在慢速網路下壞掉。 -->
+<script src="./static/vendor/apexcharts-6.7.0.min.js"></script>
+<script type="module" src="./static/app.js"></script>
 </body>
 </html>

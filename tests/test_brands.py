@@ -86,6 +86,41 @@ def test_empty_input_never_touches_mysql(monkeypatch):
     assert brands.label(None) == "（空）"
 
 
+def test_breakdown_sorts_by_count_desc_and_caps(monkeypatch):
+    monkeypatch.setattr(brands, "_fetch", lambda ids: {i: f"品牌{i}" for i in ids})
+    ids = list(range(1, 16))
+    counts = [i * 10 for i in ids]           # 編號越大次數越多
+    out = brands.breakdown((ids, counts))
+    assert len(out) == brands.BREAKDOWN_LIMIT
+    assert [b["brand"] for b in out] == list(range(15, 5, -1))
+    assert out[0] == {"brand": 15, "label": "品牌15（15）", "count": 150}
+
+
+def test_breakdown_ties_are_ordered_by_brand_id(monkeypatch):
+    monkeypatch.setattr(brands, "_fetch", lambda ids: {})
+    out = brands.breakdown(([9, 3, 7], [5, 5, 5]))
+    assert [b["brand"] for b in out] == [3, 7, 9], "同次數時以編號排序，避免每次查詢順序漂移"
+
+
+def test_breakdown_respects_custom_limit(monkeypatch):
+    monkeypatch.setattr(brands, "_fetch", lambda ids: {})
+    assert len(brands.breakdown(([1, 2, 3], [3, 2, 1]), limit=2)) == 2
+    assert brands.breakdown(([1, 2, 3], [3, 2, 1]), limit=0) == []
+
+
+def test_breakdown_tolerates_missing_or_malformed_input(monkeypatch):
+    monkeypatch.setattr(brands, "_fetch", lambda ids: {})
+    for bad in (None, "", [], (), ([], []), ([1, 2],), "1180", 7340, ([None], [1])):
+        assert brands.breakdown(bad) == [], f"{bad!r} 應視為沒有品牌分布"
+
+
+def test_breakdown_survives_mysql_outage(monkeypatch):
+    """MySQL 掛掉時仍要列出次數，只是名稱標為查詢失敗。"""
+    monkeypatch.setattr(brands, "_fetch", lambda ids: None)
+    out = brands.breakdown(([1180], [42]))
+    assert out == [{"brand": 1180, "label": f"{brands.UNAVAILABLE_NAME}（1180）", "count": 42}]
+
+
 @pytest.mark.skipif(mysql_config() is None, reason="未設定 MYSQL_HOST")
 def test_real_lookup_against_mysql():
     """實際對照 MySQL：7340 是 README 記載的 7/16 事件品牌。"""

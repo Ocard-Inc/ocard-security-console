@@ -7,7 +7,8 @@ window_minutes: 10
 cooldown_minutes: 60
 sql: |
   SELECT 'Boss_initial/auth_v2' AS endpoint, count() AS metric,
-         uniq(ip) AS ips, uniq(_brand) AS brands
+         uniq(ip) AS ips, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
   FROM ods_admin_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
     AND function = 'Boss_initial/auth_v2' AND action = 'login_success'

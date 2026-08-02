@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 UNKNOWN_NAME = "（查無品牌）"
 UNAVAILABLE_NAME = "（品牌名稱查詢失敗）"
 
+# 「涉及品牌 N 個」展開時列出的品牌數上限
+BREAKDOWN_LIMIT = 10
+
 # 單次 IN 查詢的編號上限；超過就分批（避免超長 SQL 與封包上限）
 _CHUNK = 500
 
@@ -89,6 +92,45 @@ def label(value: object) -> str:
     if brand_id is None:
         return "（空）" if value is None or str(value).strip() == "" else str(value)
     return labels([brand_id])[brand_id]
+
+
+def breakdown(brand_map: object, limit: int = BREAKDOWN_LIMIT) -> list[dict]:
+    """`exprs.BRAND_MAP`（sumMap）的結果 → 次數由高到低的前 N 個品牌。
+
+    回傳 `[{"brand": 1180, "label": "wa10 瓦城（1180）", "count": 2062}, ...]`。
+    名稱一次批次查完，因此展開 10 個品牌只需一次 MySQL 查詢（且多半命中快取）。
+
+    輸入可能是 ClickHouse 回來的 (編號陣列, 次數陣列)，也可能是已存進
+    context_json 後再讀出的同一組資料；空值一律回空 list。
+    """
+    pairs = _to_pairs(brand_map)
+    if not pairs:
+        return []
+    pairs.sort(key=lambda p: (-p[1], p[0]))
+    top = pairs[:max(0, limit)]
+    lut = labels(b for b, _ in top)
+    return [{"brand": b, "label": lut.get(b, str(b)), "count": c} for b, c in top]
+
+
+def _to_pairs(brand_map: object) -> list[tuple[int, int]]:
+    """(keys, values) 兩個平行陣列 → [(編號, 次數)]；形狀不符就當作沒有資料。"""
+    if brand_map is None or isinstance(brand_map, (str, bytes)):
+        return []
+    try:
+        keys, values = brand_map            # tuple/list 長度必須是 2
+    except (TypeError, ValueError):
+        return []
+    pairs = []
+    for raw_id, raw_count in zip(keys, values):
+        brand_id = coerce_id(raw_id)
+        if brand_id is None:
+            continue
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            continue
+        pairs.append((brand_id, count))
+    return pairs
 
 
 def name(value: object) -> str | None:
@@ -177,6 +219,9 @@ def _run(cfg: MysqlConfig, sql: str, params: list[int]) -> dict[int, str]:
 def _get_conn(cfg: MysqlConfig):
     """thread-local 連線（同 ch.py：避免每次新建洩漏 socket，也避免跨執行緒共用）。"""
     conn = getattr(_local, "conn", None)
+    if conn is not None and not _alive(conn):
+        _reset_conn()
+        conn = None
     if conn is None:
         conn = pymysql.connect(
             host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
@@ -186,9 +231,16 @@ def _get_conn(cfg: MysqlConfig):
             autocommit=True,
         )
         _local.conn = conn
-    else:
-        conn.ping(reconnect=True)
     return conn
+
+
+def _alive(conn) -> bool:
+    """MySQL 會主動斷閒置連線；用 ping 確認後再決定要不要重建。"""
+    try:
+        conn.ping(reconnect=False)
+        return True
+    except (pymysql.Error, OSError):
+        return False
 
 
 def _reset_conn() -> None:

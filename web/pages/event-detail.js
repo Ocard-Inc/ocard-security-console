@@ -1,11 +1,13 @@
 // 異常事件詳細頁（設計稿 9 節）：核心判定 → 趨勢 → 證據矩陣 → 資料限制 → 調查判定
 import { api, post, num, mult, multColor, shortTime, duration, lineChart, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import BrandBreakdown from '../components/brand-breakdown.js';
 
 const JUDGEMENTS = ['已確認攻擊', '合法整合', '誤報', '證據不足', '保持觀察'];
 
 export default {
   props: ['evtNo', 'canJudge'],
   emits: ['back'],
+  components: { BrandBreakdown },
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
     judge: '', reason: '', evidence: '', nextStep: '', submitting: false, submitted: null,
@@ -114,15 +116,17 @@ export default {
                 <td class="right" style="border:none;font-weight:500">{{ num(e.peak) }}</td></tr>
             <tr><td class="muted" style="border:none;padding:5px 0">連續命中視窗</td>
                 <td class="right" style="border:none;font-weight:500">{{ e.hit_count }} 個</td></tr>
-            <tr v-if="e.brands"><td class="muted" style="border:none;padding:5px 0">涉及品牌</td>
-                <td class="right" style="border:none;font-weight:500">{{ e.brands }} 個</td></tr>
+            <tr v-if="e.brands"><td class="muted" style="border:none;padding:5px 0;vertical-align:top">涉及品牌</td>
+                <td class="right" style="border:none;font-weight:500">
+                  <BrandBreakdown :count="e.brands" :rows="e.brand_top" unit="個" /></td></tr>
           </tbody>
         </table>
         <div class="note-quote">
           {{ e.first_seen }}–{{ e.last_seen.slice(11,16) }}，<code class="mono" style="font-size:11.5px">{{ e.entity_label }}</code>
           於 {{ SOURCE_LABEL[e.source] }} 錄得 {{ num(e.metric) }}<template v-if="e.median !== null">。
           該對象歷史同時段中位數為 {{ num(e.median) }}、P95 為 {{ num(e.p95) }}，本次為中位數的 {{ mult(e.multiple) }}</template>，
-          超過門檻 {{ num(e.threshold) }}<template v-if="e.brands">，涉及 {{ e.brands }} 個品牌</template>，
+          超過門檻 {{ num(e.threshold) }}<template v-if="e.brands">，涉及
+          <BrandBreakdown :count="e.brands" :rows="e.brand_top" /></template>，
           因此觸發 {{ e.rule_id }}「{{ e.rule_name }}」。
         </div>
         <div v-if="e.rule_note" class="muted" style="font-size:11.5px;margin-top:8px;white-space:pre-line">

@@ -8,7 +8,8 @@ cooldown_minutes: 60
 sql: |
   SELECT acc, ip, count() AS metric,
          uniqExact(arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/')) AS uniq_routes,
-         uniq(_brand) AS brands
+         uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
   FROM ods_backend_sys_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
     AND acc IS NOT NULL AND acc != ''

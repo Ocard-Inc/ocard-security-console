@@ -1,25 +1,40 @@
 // 共用工具：API 呼叫、格式化、圖表（純 SVG，不依賴外部繪圖庫載入時機）
 
+// 身分由 Ocard ROS 的 session cookie 決定（見後端 auth/ros.py）。
+// devRole 只在後端未設定 ros.base_url 的本機模式下有作用。
 export const state = {
   role: 'admin',
-  user: 'vinek@olis.com.tw',
+  user: 'dev@olis.com.tw',
+  authSource: 'dev',
 };
 
+// 後端 HTTPException 的 detail 可能是字串（舊式）或帶 code 的物件（登入相關）
+function describe(detail, status) {
+  if (!detail) return `HTTP ${status}`;
+  return typeof detail === 'string' ? detail : (detail.message || `HTTP ${status}`);
+}
+
 export async function api(path, options = {}) {
-  const res = await fetch('/api' + path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Dev-Role': state.role,
-      'X-Dev-User': state.user,
-      ...(options.headers || {}),
-    },
-  });
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (state.authSource === 'dev') {
+    headers['X-Dev-Role'] = state.role;
+    headers['X-Dev-User'] = state.user;
+  }
+  // __MOUNT__ 由後端注入（掛在 ROS /security 子路徑時為 "/security"）。
+  // 少了它，API 會打到 ROS 自己的路由上。
+  const root = window.__MOUNT__ || '';
+  const res = await fetch(root + '/api' + path, { ...options, headers, credentials: 'same-origin' });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(body.detail || `HTTP ${res.status}`);
+    const detail = body.detail;
+    const err = new Error(describe(detail, res.status));
     err.status = res.status;
-    err.detail = body.detail;
+    err.detail = detail;
+    err.code = typeof detail === 'object' ? detail.code : null;
+    // session 過期：直接把人送回 ROS 登入頁，不要讓畫面停在一堆錯誤訊息上
+    if (err.code === 'not_logged_in' && detail.login_url) {
+      location.href = detail.login_url;
+    }
     throw err;
   }
   return body;

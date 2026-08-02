@@ -24,6 +24,55 @@
   --p3: #4E5BA6;
   --nav-bg: #101828;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ── 圖表色票 ──────────────────────────────────────────────────────────
+     所有圖表顏色只能來自這裡，JS 一律透過 web/charts/tokens.js 讀取。
+     要加深色模式時，把整段複製到 [data-theme="dark"] 換值 → resetTokens()，
+     JS 不用改任何一行。
+
+     序列色已通過 dataviz validator 的「全配對」檢查（4 條線互相重疊，
+     adjacent 不夠誠實）。重跑指令：
+       node scripts/validate_palette.js "#175CD3,#027A48,#9E77ED,#B42318" \
+         --mode light --surface "#FFFFFF" --pairs all
+     動到任何序列色都必須重跑。 */
+  --chart-api:        #175CD3;   /* API request */
+  --chart-login-ok:   #027A48;   /* 登入成功 */
+  --chart-backend:    #9E77ED;   /* Backend request。舊值 #7A5AF8 與 --chart-api
+                                    normal-vision ΔE 只有 12.6（下限 15），一般人也分不出來 */
+  --chart-login-fail: #B42318;   /* 登入失敗。與 --chart-login-ok 的 deutan ΔE 只有 6.2，
+                                    依 dataviz 規則必須搭配第二編碼 —— 虛線筆畫、圖例、
+                                    tooltip 標籤、表格檢視四者缺一不可 */
+  --chart-explorer:   #DC6803;   /* Log Explorer 單線 */
+  --chart-event:      #B42318;   /* 事件詳細單線 */
+
+  --chart-bar:        #175CD3;   /* 排名長條主色 */
+  --chart-bar-warn:   #DC6803;   /* 倍數 ≥ 2 */
+  --chart-bar-alert:  #B42318;   /* 倍數 ≥ 5 */
+
+  /* 基準帶與基準線屬於「圖表外框」而非資料序列，所以用灰階、不佔序列色 */
+  --chart-band:       rgba(23, 92, 211, .10);
+  --chart-baseline:   #98A2B3;
+
+  --chart-grid:       #F2F4F7;
+  --chart-axis:       #E4E7EC;
+  --chart-axis-text:  #667085;
+  --chart-crosshair:  #D0D5DD;
+  --chart-marker-ring: #FFFFFF;
+
+  --chart-tip-bg:     #FFFFFF;
+  --chart-tip-line:   #E4E7EC;
+  --chart-tip-text:   #101828;   /* 數值：高對比的主元素 */
+  --chart-tip-muted:  #667085;   /* 序列名稱：次要元素 */
+
+  --chart-font:       'Noto Sans TC', system-ui, sans-serif;
+  --chart-font-num:   'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ApexCharts v6 自己會讀這組 token（theme.tokens 預設 true）。
+     別名到同一批值，當作我們沒有明確設定到的內建外框的兜底。 */
+  --apx-surface: var(--card-bg);
+  --apx-fore:    var(--text-2);
+  --apx-grid:    var(--chart-grid);
+  --apx-accent:  var(--chart-api);
 }
 
 * { box-sizing: border-box; }
@@ -110,7 +159,8 @@ input, select, textarea { font-family: inherit; }
 .banner-info { background: #F8F9FC; border: 1px solid #D5D9EB; color: #3E4784; }
 
 th { color: var(--text-2); text-align: left; font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
+/* 靠上對齊：某一格展開明細（如「涉及品牌」）撐高整列時，其餘欄位仍與標題對齊 */
+td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
 tbody tr:hover { background: #FCFCFD; }
 
 .btn {

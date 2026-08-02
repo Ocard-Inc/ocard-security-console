@@ -1,5 +1,10 @@
 // Log Explorer（設計稿 10 節）：三區式版面 — Filter Builder / 分析結果 / 欄位說明
-import { post, num, pct, lineChart, SOURCE_LABEL } from '../lib.js';
+import { post, num, pct, SOURCE_LABEL } from '../lib.js';
+import BrandBreakdown from '../components/brand-breakdown.js';
+import ApexChart from '../charts/ApexChart.js';
+import { token } from '../charts/tokens.js';
+import { timeSeriesOptions } from '../charts/time-series.js';
+import { horizontalBarOptions, barHeight } from '../charts/bar.js';
 
 // 預設查最近 1 小時（右界退 6 分鐘吸收資料落地延遲）
 function defaultWindow() {
@@ -37,32 +42,125 @@ const LIMITS = {
 
 export default {
   props: ['defaultRange'],
+  components: { BrandBreakdown, ApexChart },
   data() {
     return {
       f: {
         source: 'api', start: '', end: '', brand: null, endpoint: '',
         only_error: false, limit: 500, analysis: 'trend', bucket: '10m',
       },
-      result: null, loading: false, error: null,
+      result: null, loading: false, reloading: false, error: null,
       SOURCE_LABEL, ANALYSES,
     };
   },
   computed: {
-    chart() {
-      const rows = this.result?.rows;
-      if (this.f.analysis !== 'trend' || !rows?.length) return null;
-      return lineChart(rows.map(r => ({ ...r, label: r.bucket.slice(5, 16) })),
-        [{ key: 'count', label: '請求量', color: '#DC6803' }], { height: 220 });
+    hasTrend() {
+      return this.f.analysis === 'trend' && !!this.result?.rows?.length;
     },
+    trendSeries() {
+      if (!this.hasTrend) return [];
+      return [{
+        name: '請求量',
+        type: 'line',
+        // 標籤去掉年份：「2026-08-03 10:20:00」→「08-03 10:20」
+        data: this.result.rows.map(r => ({ x: r.bucket.slice(5, 16), y: r.count })),
+      }];
+    },
+    trendOptions() {
+      // 只依賴 bucket 大小（決定 dense / 標籤密度），不依賴任何資料數值。
+      const dense = ['1m', '5m'].includes(this.f.bucket);
+      return timeSeriesOptions({
+        rowsRef: this._rows,
+        colors: [token('--chart-explorer')],
+        strokeWidth: [2],
+        dashArray: [0],
+        dense,
+        showMarkers: !dense,
+        tooltipRows: row => [
+          { name: '請求量', value: num(row.count), color: token('--chart-explorer') },
+        ],
+      });
+    },
+    trendSignature() { return `ex-trend|${this.f.bucket}`; },
+
+    hasRanking() {
+      return ['endpoint', 'brand', 'source', 'actor'].includes(this.f.analysis)
+        && !!this.result?.rows?.length;
+    },
+    rankingSeries() {
+      if (!this.hasRanking) return [];
+      return [{
+        name: '請求數',
+        data: this.result.rows.map(r => ({ x: r.name, y: r.count })),
+      }];
+    },
+    rankingOptions() {
+      const label = this.result?.label || '';
+      return horizontalBarOptions({
+        rowsRef: this._rows,
+        // 完整未截斷的名稱，軸上被截掉的部分在這裡看得到
+        tooltipTitle: row => row.name,
+        tooltipRows: row => [
+          { name: '請求數', value: num(row.count), color: token('--chart-bar') },
+          { name: '占比', value: pct(row.share), color: token('--chart-bar'), muted: true },
+          row.brands != null
+            ? { name: '涉及品牌', value: num(row.brands) + ' 個',
+                color: token('--chart-bar'), muted: true }
+            : null,
+        ],
+        tooltipNote: () => label || null,
+      });
+    },
+    rankingSignature() { return `ex-rank|${this.f.analysis}`; },
+    rankingHeight() { return barHeight(this.result?.rows?.length || 0); },
+
+    hasError() {
+      return this.f.analysis === 'error' && !!this.result?.rows?.length;
+    },
+    errorSeries() {
+      if (!this.hasError) return [];
+      return [{
+        name: '錯誤數',
+        data: this.result.rows.map(r => ({ x: r.endpoint, y: r.errors })),
+      }];
+    },
+    errorOptions() {
+      return horizontalBarOptions({
+        rowsRef: this._rows,
+        tooltipTitle: row => row.endpoint,
+        // 只畫錯誤數。error_rate 是另一種單位，塞成第二條長條等於把兩種尺度混進一張圖。
+        tooltipRows: row => [
+          { name: '錯誤數', value: num(row.errors), color: token('--chart-bar-alert') },
+          { name: '總請求數', value: num(row.total), color: token('--chart-bar-alert'), muted: true },
+          { name: '錯誤率', value: pct(row.error_rate, 2),
+            color: token('--chart-bar-alert'), muted: true },
+        ],
+        tooltipNote: () => 'has_error 僅在請求出錯時設值，NULL 屬正常',
+      });
+    },
+    errorHeight() { return barHeight(this.result?.rows?.length || 0); },
+
     limits() { return LIMITS[this.f.source] || []; },
   },
+  // tooltip 讀的是這個非響應式持有者，不是 computed —— 這樣 options 可以完全
+  // 不依賴資料數值，避免每次查詢都得重建整組設定（見 ApexChart.js 的契約）。
+  created() { this._rows = { current: [] }; },
   methods: {
     num, pct,
     async run() {
-      this.loading = true; this.error = null;
-      try { this.result = await post('/explorer', this.f); }
-      catch (e) { this.error = e.detail || e.message; this.result = null; }
-      this.loading = false;
+      // 換分析方式時結果結構真的變了，顯示骨架；同一種分析重跑則沿用畫面。
+      if (this.result && this.result.__analysis !== this.f.analysis) this.result = null;
+      this.loading = !this.result;
+      this.reloading = true;
+      try {
+        const r = await post('/explorer', this.f);
+        this._rows.current = r.rows || [];
+        this.result = { ...r, __analysis: this.f.analysis };
+        this.error = null;
+      } catch (e) {
+        this.error = e.detail || e.message; this.result = null; this._rows.current = [];
+      }
+      this.loading = false; this.reloading = false;
     },
     reset() {
       Object.assign(this.f, { brand: null, endpoint: '', only_error: false });
@@ -130,12 +228,10 @@ export default {
     <template v-else-if="result">
       <!-- 趨勢 -->
       <div v-if="f.analysis==='trend'" class="card" style="margin-bottom:12px">
-        <div v-if="chart">
-          <svg :viewBox="'0 0 '+chart.W+' '+chart.H" style="width:100%;display:block">
-            <path :d="chart.paths[0].d" fill="none" stroke="#DC6803" stroke-width="2.5"></path>
-            <text v-for="(l,i) in chart.xLabels" :key="i" :x="l.x" :y="chart.H-6"
-                  font-size="10" fill="#667085" text-anchor="middle">{{ l.text }}</text>
-          </svg>
+        <div v-if="hasTrend">
+          <ApexChart :series="trendSeries" :options="trendOptions"
+                     :signature="trendSignature" :height="240" :reloading="reloading"
+                     aria-label="Request 趨勢折線圖，詳細數值見下方表格" />
           <table style="font-size:12.5px;margin-top:12px">
             <thead><tr><th>時間桶</th><th class="right">請求量</th></tr></thead>
             <tbody><tr v-for="r in result.rows" :key="r.bucket">
@@ -148,6 +244,11 @@ export default {
       <!-- 排名 -->
       <div v-else-if="['endpoint','brand','source','actor'].includes(f.analysis)"
            class="card" style="margin-bottom:12px;padding:0;overflow:hidden">
+        <div v-if="hasRanking" style="padding:14px 16px 0">
+          <ApexChart :series="rankingSeries" :options="rankingOptions"
+                     :signature="rankingSignature" :height="rankingHeight" :reloading="reloading"
+                     :aria-label="result.label + ' 排名長條圖，詳細數值見下方表格'" />
+        </div>
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
             <th style="width:40px">#</th><th>{{ result.label }}</th>
@@ -159,7 +260,10 @@ export default {
               <td :class="{mono: f.analysis !== 'brand'}" style="font-size:12px">{{ r.name }}</td>
               <td class="right" style="font-weight:500">{{ num(r.count) }}</td>
               <td class="right muted">{{ pct(r.share) }}</td>
-              <td class="right">{{ r.brands }}</td>
+              <td class="right">
+                <BrandBreakdown v-if="f.analysis !== 'brand'" :count="r.brands"
+                                :rows="r.brand_top" unit="個" />
+                <span v-else>{{ r.brands }}</span></td>
             </tr>
             <tr v-if="!result.rows.length"><td colspan="5" class="muted" style="text-align:center;padding:30px">
               此時間範圍沒有符合條件的資料</td></tr>
@@ -169,6 +273,11 @@ export default {
 
       <!-- 錯誤分析 -->
       <div v-else-if="f.analysis==='error'" class="card" style="margin-bottom:12px;padding:0;overflow:hidden">
+        <div v-if="hasError" style="padding:14px 16px 0">
+          <ApexChart :series="errorSeries" :options="errorOptions"
+                     signature="ex-error" :height="errorHeight" :reloading="reloading"
+                     aria-label="各 endpoint 錯誤數長條圖，詳細數值見下方表格" />
+        </div>
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
             <th>Endpoint</th><th class="right">總數</th><th class="right">錯誤數</th><th class="right">錯誤率</th>

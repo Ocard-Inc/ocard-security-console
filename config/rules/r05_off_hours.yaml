@@ -7,7 +7,8 @@ window_minutes: 60
 cooldown_minutes: 120
 off_hours_only: true
 sql: |
-  SELECT acc, ip, count() AS metric, uniq(_brand) AS brands
+  SELECT acc, ip, count() AS metric, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
   FROM ods_backend_sys_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
     AND acc IS NOT NULL AND acc != ''

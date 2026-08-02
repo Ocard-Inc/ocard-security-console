@@ -7,7 +7,8 @@ window_minutes: 60
 cooldown_minutes: 120
 sql: |
   SELECT concat(controller, '/', function) AS endpoint,
-         count() AS metric, uniq(_brand) AS brands
+         count() AS metric, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
   FROM ods_api_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
   GROUP BY endpoint

@@ -3,8 +3,9 @@
 Slack 告警內容只含聚合數字與 fingerprint / endpoint / 品牌名稱（編號），
 永不含原始 IP、帳號、token 或 log 原文。
 
-品牌名稱在事件建立時就寫進 entity_label（見 rules/engine.py），因此 Slack
-與 UI 看到的是同一組「品牌名稱（品牌編號）」，不需在此再查一次 MySQL。
+品牌名稱在事件建立時就寫進 entity_label 與 context.brand_top（見 rules/engine.py），
+因此 Slack 與 UI 看到的是同一組「品牌名稱（品牌編號）」，不需在此再查一次 MySQL。
+UI 的「涉及品牌」可以點開看明細，Slack 不行，所以前十名直接列在訊息裡。
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import logging
 
 import requests
 
-from console.core import timewin
+from console.core import brands, timewin
 from console.core.config import settings, slack_webhook_url
 from console.store import db
 
@@ -59,12 +60,29 @@ def _format_event(kind: str, event: dict) -> str:
         f"視窗：{event['first_seen']} ~ {event['last_seen']}（Asia/Taipei）",
     ]
     if event.get("brands"):
-        lines.append(f"涉及品牌：{event['brands']} 個")
+        lines.append(f"涉及品牌：{event['brands']} 個{_brand_detail(event)}")
     if kind == "ongoing":
         lines.append(f"已持續 {event['hit_count']} 個檢查視窗。")
     if url:
         lines.append(f"<{url}|查看完整原因與證據> · <{page_url('events')}|所有事件>")
     return "\n".join(lines)
+
+
+def _brand_detail(event: dict) -> str:
+    """Slack 無法「展開」，因此把前十名品牌直接列在告警裡。"""
+    ctx = event.get("context_json")
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except ValueError:
+            ctx = {}
+    top = (ctx or {}).get("brand_top") or []
+    if not top:
+        return ""
+    listed = "、".join(f"{b['label']} {b['count']:,} 次"
+                       for b in top[:brands.BREAKDOWN_LIMIT])
+    more = "" if event["brands"] <= len(top) else f"（前 {len(top)} 名）"
+    return f"{more}：{listed}"
 
 
 def dispatch(notifications: list[dict]) -> None:

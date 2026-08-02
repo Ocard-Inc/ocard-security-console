@@ -1,0 +1,61 @@
+"""規則引擎會把「涉及品牌」的逐品牌明細寫進事件 context。
+
+只評估 sql_threshold 類規則：new_source 類會寫 known_sources，測試不該有副作用。
+"""
+from __future__ import annotations
+
+import pytest
+
+from console.core import brands
+from console.core.config import mysql_config
+from console.queries import exprs
+from console.rules import engine
+from console.rules.loader import load_rules
+from console.rules.model import EntityField, Rule
+
+
+def _rule(rid: str) -> Rule:
+    rule = next((r for r in load_rules() if r.id == rid), None)
+    assert rule is not None, f"找不到規則 {rid}"
+    return rule
+
+
+def test_rules_with_brand_count_also_emit_brand_map():
+    """有「涉及品牌 N 個」就必須有能展開的明細，兩者不可脫鉤。"""
+    missing = [r.id for r in load_rules()
+               if r.sql and "uniq(_brand) AS brands" in r.sql and exprs.BRAND_MAP not in r.sql]
+    assert not missing, f"這些規則有品牌數卻沒有逐品牌明細：{missing}"
+
+
+def test_masked_context_turns_brand_map_into_top_list(monkeypatch):
+    monkeypatch.setattr(brands, "_fetch", lambda ids: {7340: "台灣和民集團", 1180: "wa10 瓦城"})
+    brands.clear_cache()
+    rule = Rule(id="RX", name="t", severity="P2", source="backend", kind="sql_threshold",
+                window_minutes=10, enabled=True,
+                entity=(EntityField(col="acc", fp="actor"),))
+    ctx = engine._masked_context(rule, {
+        "acc": "andrew_c", "metric": 4646.0, "brands": 2,
+        "brand_map": ([7340, 1180], [4000, 646]),
+    })
+    assert ctx["brand_top"] == [
+        {"brand": 7340, "label": "台灣和民集團（7340）", "count": 4000},
+        {"brand": 1180, "label": "wa10 瓦城（1180）", "count": 646},
+    ]
+    assert "brand_map" not in ctx, "原始 sumMap 不入庫，只留展開用的前 N 名"
+    assert ctx["acc"].startswith("actor_"), "遮罩行為不受影響"
+    brands.clear_cache()
+
+
+@pytest.mark.skipif(mysql_config() is None, reason="未設定 MYSQL_HOST")
+def test_r02_finding_carries_brand_breakdown():
+    """7/16 的 orderlist/detail 遍歷事件應能展開看到被查閱的品牌。"""
+    rule = _rule("R02")
+    findings = engine._eval_sql_threshold(
+        rule, "2026-07-16 00:00:00", "2026-07-16 01:00:00",
+        __import__("datetime").datetime(2026, 7, 16, 1, 0), {})
+    assert findings, "7/16 應觸發 R02"
+    top = findings[0].context["brand_top"]
+    assert top, "R02 事件應帶品牌明細"
+    assert len(top) <= brands.BREAKDOWN_LIMIT
+    assert [b["count"] for b in top] == sorted((b["count"] for b in top), reverse=True)
+    assert any("7340" in b["label"] for b in top), "7/16 事件的品牌是 7340"

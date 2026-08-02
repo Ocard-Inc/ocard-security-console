@@ -1,0 +1,127 @@
+/* 圖表元件樣式。色票本身在 app.css 的 :root（--chart-*），這裡只放版面與外觀。 */
+
+.chart-frame {
+  position: relative;
+  width: 100%;
+  transition: opacity 140ms ease-out;
+}
+
+/* 重新載入時保留上一版畫面、降低不透明度：不換骨架、不跳版面。
+   「更新中…」的字樣放在卡片標題列，不覆蓋在圖上（那等於另一種版面跳動）。 */
+.chart-frame.is-reloading {
+  opacity: .55;
+  pointer-events: none;
+}
+
+/* ── tooltip ──────────────────────────────────────────────────────────
+   內容由 charts/tooltip.js 產生。ApexCharts 內建外框仍在，所以要把它的
+   邊框與陰影收掉，避免出現雙層框。 */
+.apexcharts-tooltip.apexcharts-theme-light {
+  border: 1px solid var(--chart-tip-line);
+  background: var(--chart-tip-bg);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, .12);
+  border-radius: 8px;
+}
+
+.ctip {
+  font-family: var(--chart-font);
+  font-size: 12px;
+  padding: 9px 11px;
+  min-width: 168px;
+}
+
+.ctip-title {
+  font-weight: 700;
+  color: var(--chart-tip-text);
+  font-family: var(--chart-font-num);
+  font-size: 11.5px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--chart-tip-line);
+  /* endpoint 與品牌名稱可能很長，這裡是完整未截斷值，必須換行而不是撐爆 tooltip */
+  max-width: 320px;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.ctip-rows { display: flex; flex-direction: column; gap: 3px; }
+
+.ctip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.5;
+}
+
+/* 資料序列與「基準」在同一個 tooltip 裡，後者要退到次要層級 */
+.ctip-row.is-muted .ctip-name,
+.ctip-row.is-muted .ctip-value { color: var(--chart-tip-muted); font-weight: 400; }
+
+/* 短筆畫色標，不是實心方塊 —— 對應線圖的筆畫，也不會用資料量級的墨水做標籤 */
+.ctip-key {
+  flex: none;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid currentColor;
+}
+.ctip-key.is-dashed { border-top-style: dashed; }
+
+/* 序列名稱次要、數值強勢 —— 讀者已經知道是哪條線，要的是數字 */
+.ctip-name {
+  color: var(--chart-tip-muted);
+  font-weight: 400;
+  margin-right: auto;
+  white-space: nowrap;
+}
+.ctip-value {
+  color: var(--chart-tip-text);
+  font-weight: 600;
+  font-family: var(--chart-font-num);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ctip-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--chart-tip-line);
+  color: var(--chart-tip-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  max-width: 260px;
+  white-space: normal;
+}
+
+/* ── 圖例（charts/ChartLegend.js）────────────────────────────────────── */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.chart-legend-item { display: flex; align-items: center; gap: 7px; }
+.chart-legend-key {
+  flex: none;
+  width: 16px;
+  height: 0;
+  border-top: 2px solid currentColor;
+}
+.chart-legend-key.is-dashed { border-top-style: dashed; }
+.chart-legend-num { color: var(--text-2); font-size: 11.5px; font-family: var(--chart-font-num); }
+
+/* ── 長條圖 ───────────────────────────────────────────────────────────
+   ApexCharts 沒有「抬起」的原生效果（states.hover.filter 只會調色），
+   所以在 CSS 做。baseOptions() 已把 states filter 關成 none，不會互相打架。 */
+.chart-frame .apexcharts-bar-area {
+  transition: transform 120ms ease-out, filter 120ms ease-out;
+}
+.chart-frame .apexcharts-bar-area:hover {
+  transform: translateX(2px);
+  filter: brightness(1.06);
+}
+
+/* ── 統計卡 sparkline ─────────────────────────────────────────────────
+   純粹是「形狀」，數字在它正上方，所以不掛 tooltip（一排卡片五個 tooltip 互搶是噪音）。 */
+.chart-spark { height: 30px; margin-top: 6px; }
+.chart-spark .apexcharts-svg { overflow: visible; }

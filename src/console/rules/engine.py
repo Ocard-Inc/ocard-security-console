@@ -25,6 +25,8 @@ _FP_FUNCS = masking.FP_FUNCS
 
 # 品牌欄位：去重鍵維持編號（名稱會改，鍵不能跟著漂移），顯示則帶上名稱
 BRAND_COLUMN = "_brand"
+# 規則 SQL 以 exprs.BRAND_MAP 產出的逐品牌次數（見 config/rules/*.yaml）
+BRAND_MAP_COLUMN = "brand_map"
 
 
 def _is_internal_account(raw: str) -> bool:
@@ -35,7 +37,7 @@ def _is_internal_account(raw: str) -> bool:
     return any(value.startswith(p) for p in cfg.get("prefixes", []))
 
 
-def _entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
+def entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
     """回傳 (entity_key, entity_label, has_internal_account)。"""
     keys, labels, internal = [], [], False
     for field in rule.entity:
@@ -115,7 +117,7 @@ def _eval_sql_threshold(rule: Rule, start: str, end: str,
             den = float(row.get(rule.ratio.den_col) or 0)
             if den <= 0 or metric / den < rule.ratio.min_ratio:
                 continue
-        entity_key, label, _ = _entity_parts(rule, row)
+        entity_key, label, _ = entity_parts(rule, row)
         if _is_allowlisted(entity_key, row, allow):
             logger.info("%s %s 命中但在 Allowlist 內，抑制", rule.id, label)
             continue
@@ -162,7 +164,7 @@ def _eval_new_source(rule: Rule, start: str, end: str,
                 "INSERT OR IGNORE INTO known_sources (kind, entity_key, first_seen, origin)"
                 " VALUES (?, ?, ?, 'live')",
                 (rule.known_kind, fp_key, now_str))
-        entity_key, label, internal = _entity_parts(rule, row)
+        entity_key, label, internal = entity_parts(rule, row)
         if _is_allowlisted(entity_key, row, allow):
             continue
         severity = "P1" if internal else rule.severity
@@ -209,7 +211,11 @@ def _masked_context(rule: Rule, row: dict) -> dict:
     for k, v in row.items():
         if v is None:
             continue
-        if k in fp_cols and fp_cols[k]:
+        if k == BRAND_MAP_COLUMN:
+            # 展開「涉及品牌 N 個」用；事後重查 ClickHouse 成本高且視窗未必還在，
+            # 因此在偵測當下就把前 N 名連同名稱一起存進事件 context。
+            ctx["brand_top"] = brands.breakdown(v)
+        elif k in fp_cols and fp_cols[k]:
             ctx[k] = _FP_FUNCS[fp_cols[k]](v)
         elif isinstance(v, (int, float)):
             ctx[k] = v

@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from console.auth import ros
 from console.auth.roles import CurrentUser, PERMISSIONS, current_user, guard
 from console.core import brands, timewin
 from console.core.ch import ChQueryError
@@ -28,12 +29,17 @@ _SEV_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 async def session(user: CurrentUser = Depends(current_user)) -> dict:
     return {
         "email": user.email,
+        "name": user.name,
         "role": user.role_name,
         "role_label": user.role_label,
         "permissions": user.allowed_permissions(),
         "all_permissions": sorted(PERMISSIONS),
         "env_label": settings()["app"]["env_label"],
         "timezone": settings()["time"]["timezone"],
+        # dev = 未接 ROS 的本機模式，前端據此顯示角色切換鈕與警示
+        "auth_source": user.source,
+        "ros_role_name": user.ros_role_name,
+        "logout_url": f"{ros.base_url()}/api/auth/signout" if ros.enabled() else None,
     }
 
 
@@ -122,6 +128,8 @@ def _event_public(e: dict) -> dict:
         "source": e["source_key"], "metric": e["metric_value"],
         "threshold": e["threshold"], "median": e["baseline_median"],
         "p95": e["baseline_p95"], "multiple": e["multiple"], "brands": e["brands"],
+        # 「涉及品牌 N 個」的展開明細（偵測當下算好存進 context，見 rules/engine.py）
+        "brand_top": ctx.get("brand_top") or [],
         "first_seen": e["first_seen"], "last_seen": e["last_seen"],
         "peak": e["peak_value"], "hit_count": e["hit_count"],
         "status": e["status"], "judgement": e["judgement"],
@@ -195,7 +203,7 @@ def _build_evidence(row: dict, event: dict) -> dict:
     if ctx.get("uniq_routes") is not None and ctx["uniq_routes"] <= 3:
         attack.append(f"行為集中於 {ctx['uniq_routes']} 個路由，符合逐筆遍歷特徵")
     if event["brands"] and event["brands"] > 10:
-        attack.append(f"涉及 {event['brands']} 個品牌，範圍異常廣")
+        attack.append(f"涉及 {event['brands']} 個品牌，範圍異常廣{_brand_examples(event)}")
     if event["hit_count"] > 3:
         attack.append(f"連續 {event['hit_count']} 個檢查視窗持續命中")
 
@@ -208,8 +216,18 @@ def _build_evidence(row: dict, event: dict) -> dict:
     if ctx.get("uniq_routes") and ctx["uniq_routes"] > 8:
         normal.append(f"操作分散於 {ctx['uniq_routes']} 個路由，較接近正常瀏覽行為")
     if event["brands"] == 1:
-        normal.append("僅涉及單一品牌，符合單一整合來源特徵")
+        only = event["brand_top"][0]["label"] if event["brand_top"] else None
+        normal.append(f"僅涉及單一品牌{f'（{only}）' if only else ''}，符合單一整合來源特徵")
     return {"attack": attack, "normal": normal}
+
+
+def _brand_examples(event: dict, n: int = 3) -> str:
+    """證據要能自己站得住，所以把最大的幾個品牌寫進句子；完整前十名在上方展開。"""
+    top = event["brand_top"][:n]
+    if not top:
+        return ""
+    listed = "、".join(f"{b['label']} {b['count']:,} 次" for b in top)
+    return f"，最多的是 {listed}"
 
 
 def _extra_limitations(event: dict) -> list[str]:

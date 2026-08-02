@@ -44,7 +44,8 @@ def _result(columns, rows, interpretation, **extra):
 def _top_endpoints(p: dict) -> dict:
     s, e, end_dt = _win(p)
     df = query(
-        f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS cnt, uniq(_brand) AS brands"
+        f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS cnt, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map"
         f" FROM ods_api_log WHERE {exprs.time_filter()} GROUP BY endpoint"
         f" ORDER BY cnt DESC LIMIT 15", {"start": s, "end": e})
     rows = []
@@ -53,6 +54,7 @@ def _top_endpoints(p: dict) -> dict:
                          day_class=baseline.day_class_of(end_dt))
         rows.append({
             "endpoint": r["endpoint"], "count": int(r["cnt"]), "brands": int(r["brands"]),
+            "brand_top": brands.breakdown(r["brand_map"]),
             "median": round(b.median) if b else None,
             "p95": round(b.p95) if b else None,
             "multiple": round(int(r["cnt"]) / b.median, 1) if b and b.median else None,
@@ -87,6 +89,7 @@ def _top_sources(p: dict) -> dict:
     s, e, end_dt = _win(p)
     df = query(
         f"SELECT src, count() AS cnt, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map,"
         f" uniq(concat(controller,'/',function)) AS endpoints FROM"
         f" (SELECT {exprs.API_SRC_IP} AS src, _brand, controller, function, create_time"
         f"  FROM ods_api_log WHERE {exprs.time_filter()})"
@@ -94,7 +97,8 @@ def _top_sources(p: dict) -> dict:
         {"start": s, "end": e})
     b = baseline.get("api_src_60m")
     rows = [{"source_fp": src_fp(r["src"]), "count": int(r["cnt"]),
-             "brands": int(r["brands"]), "endpoints": int(r["endpoints"]),
+             "brands": int(r["brands"]), "brand_top": brands.breakdown(r["brand_map"]),
+             "endpoints": int(r["endpoints"]),
              "p99": round(b.p99) if b else None} for _, r in df.iterrows()]
     cross = [r for r in rows if r["brands"] > 5]
     return _result(["source_fp", "count", "brands", "endpoints", "p99"], rows,
@@ -189,7 +193,8 @@ def _login_success_anomaly(p: dict) -> dict:
     s, e, _ = _win(p, 90)
     df = query(
         f"SELECT toStartOfTenMinutes(create_time) AS b, count() AS cnt,"
-        f" uniq(ip) AS ips, uniq(_brand) AS brands FROM ods_admin_log"
+        f" uniq(ip) AS ips, uniq(_brand) AS brands, {exprs.BRAND_MAP} AS brand_map"
+        f" FROM ods_admin_log"
         f" WHERE {exprs.time_filter()} AND {exprs.BOSS_LOGIN_SUCCESS}"
         f" GROUP BY b ORDER BY b", {"start": s, "end": e})
     rows = []
@@ -201,6 +206,7 @@ def _login_success_anomaly(p: dict) -> dict:
         mult = round(int(r["cnt"]) / base.median, 1) if base and base.median else None
         row = {"bucket": bt.strftime("%m/%d %H:%M"), "login_success": int(r["cnt"]),
                "sources": int(r["ips"]), "brands": int(r["brands"]),
+               "brand_top": brands.breakdown(r["brand_map"]),
                "median": round(base.median) if base else None,
                "p95": round(base.p95) if base else None, "multiple": mult}
         rows.append(row)
@@ -239,6 +245,7 @@ def _cell_lookup(p: dict) -> dict:
     s, e, end_dt = _win(p)
     df = query(
         f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS cnt, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map,"
         f" uniq(_admin) AS actors FROM ods_api_log WHERE {exprs.time_filter()}"
         f" AND function IN {exprs.in_list(list(exprs.CELL_LOOKUP_FUNCTIONS))}"
         f" GROUP BY endpoint ORDER BY cnt DESC", {"start": s, "end": e})
@@ -247,7 +254,9 @@ def _cell_lookup(p: dict) -> dict:
         b = baseline.get(f"api_endpoint_60m:{r['endpoint']}", hour=end_dt.hour,
                          day_class=baseline.day_class_of(end_dt))
         rows.append({"endpoint": r["endpoint"], "count": int(r["cnt"]),
-                     "brands": int(r["brands"]), "actors": int(r["actors"]),
+                     "brands": int(r["brands"]),
+                     "brand_top": brands.breakdown(r["brand_map"]),
+                     "actors": int(r["actors"]),
                      "median": round(b.median) if b else None,
                      "multiple": round(int(r["cnt"]) / b.median, 1) if b and b.median else None})
     return _result(["endpoint", "count", "brands", "actors", "median", "multiple"], rows,
@@ -259,6 +268,7 @@ def _orderlist_traversal(p: dict) -> dict:
     s, e, end_dt = _win(p)
     df = query(
         f"SELECT {exprs.ROUTE2} AS route2, acc, count() AS cnt, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map,"
         f" uniqExact(route) AS uniq_paths FROM ods_backend_sys_log"
         # 用 startsWith 而非 LIKE：SQL 走 Python % 參數格式化，裸露的 % 會被誤判為佔位符
         f" WHERE {exprs.time_filter()} AND startsWith({exprs.ROUTE2}, 'orderlist')"
@@ -269,7 +279,9 @@ def _orderlist_traversal(p: dict) -> dict:
                          day_class=baseline.day_class_of(end_dt))
         cnt = int(r["cnt"])
         rows.append({"route": r["route2"], "actor_fp": actor_fp(r["acc"]), "count": cnt,
-                     "brands": int(r["brands"]), "unique_paths": int(r["uniq_paths"]),
+                     "brands": int(r["brands"]),
+                     "brand_top": brands.breakdown(r["brand_map"]),
+                     "unique_paths": int(r["uniq_paths"]),
                      "unique_ratio": round(int(r["uniq_paths"]) / cnt, 3) if cnt else None,
                      "median": round(b.median) if b else None,
                      "multiple": round(cnt / b.median, 1) if b and b.median else None})

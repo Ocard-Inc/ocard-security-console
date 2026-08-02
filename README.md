@@ -73,8 +73,16 @@ log 表只存數字品牌編號（`_brand`）。所有呈現品牌的地方 —�
 快速查詢 t08／t10 —— 一律顯示 **「品牌名稱（品牌編號）」**，名稱取自 MySQL
 `ocard.brand`（`idx` → `name`）。
 
+「涉及品牌 N 個」一律可以點開，列出各品牌名稱與次數（由高到低，前十名；超過十個
+會標明其餘幾個未顯示）。逐品牌次數由 `sumMap([_brand], [1])` 在原查詢的同一次
+GROUP BY 內算出（`exprs.BRAND_MAP`），不另外查一次 ClickHouse；事件則在偵測當下
+就把前十名寫進 `context.brand_top`，之後每次命中隨 `metric_value` 一起更新，
+確保展開的明細對應畫面上的數值。Slack 無法展開，因此前十名直接列在告警訊息裡。
+
 - 事件的去重鍵（`entity_key`）維持編號，名稱只進 `entity_label`；品牌改名不會
   讓同一個品牌被當成新事件。
+- 本功能上線前建立的事件沒有保留明細，UI 會標明「此筆沒有保留逐品牌明細」；
+  仍在持續中的事件會在下一次命中時自動補上。
 - 名稱批次查詢並快取 6 小時（`config/settings.yaml` 的 `brands`）。
 - **查不到不假裝**：編號在 MySQL 沒有對應顯示「（查無品牌）（編號）」；MySQL
   不可用顯示「（品牌名稱查詢失敗）（編號）」。兩者語意不同，不可混為一談。
@@ -96,9 +104,28 @@ IP／手機／Email 樣式，確保沒有洩漏。
 uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse 與 MySQL
 ```
 
+## 登入與權限
+
+身分由 **Ocard ROS**（統一登入入口）決定，主控台自己不做登入。掛在 ROS 同網域的
+子路徑（`/security`）時，瀏覽器會把 ROS 的 session cookie 一併送來，主控台轉發給
+ROS 的 `/api/auth/me` 換取身分與 feature。
+
+| ROS feature | 主控台角色 |
+|---|---|
+| `security.console` | Viewer — 總覽、事件、快速查詢、資料健康、稽查模式 |
+| `security.analyst` | Analyst — ＋Log Explorer、遮罩明細、判定、匯出 |
+| `security.admin` | Admin — ＋唯讀 SQL、規則與 Allowlist、操作稽核 |
+
+三種狀況在畫面上刻意分開：**未登入**（導向 ROS 登入頁）、**已登入但無權限**
+（顯示無權限頁與登入中的 email）、**ROS 不可用**（回 503，不放行也不誤導使用者
+去重新登入）。權限一律在伺服器端檢查，不是只把選單藏起來。
+
+設定與 reverse proxy 見 [`docs/deploy-with-ros.md`](docs/deploy-with-ros.md)。
+`config/settings.yaml` 的 `ros.base_url` 留空時退回 `X-Dev-Role` header 切換，
+**僅供本機開發** —— 正式環境不填等於沒有登入保護。
+
 ## 尚未實作（後續階段）
 
-- Slack 告警送出（程式已就緒，待填 `SLACK_WEBHOOK_URL`）與 Task Scheduler 常駐部署
+- Task Scheduler 常駐部署與 watchdog（Slack 告警本身已可用）
 - SQL Console、調查案件、規則與 Allowlist 管理、操作稽核檢視頁（稽核紀錄已在寫入）
 - 證據包匯出（Excel）與 audit CLI
-- Google SSO（目前以 `X-Dev-Role` header 切換角色）

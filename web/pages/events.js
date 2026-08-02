@@ -1,9 +1,11 @@
 // 異常事件清單 + 快速預覽 Drawer（設計稿 8 節）
 import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import BrandBreakdown from '../components/brand-breakdown.js';
 
 export default {
   props: ['initialFilter'],
   emits: ['open-event'],
+  components: { BrandBreakdown },
   data: () => ({
     data: null, loading: true, error: null, rules: [],
     f: { severity: '', status: '', rule_id: '', source: '', keyword: '', hours: 168 },
@@ -129,7 +131,7 @@ export default {
                 <span v-else class="muted" style="font-weight:400" title="此規則的基線為跨對象分布，不適用自身倍數">
                   門檻 {{ num(e.threshold) }}</span>
               </td>
-              <td class="right">{{ e.brands ?? '—' }}</td>
+              <td class="right"><BrandBreakdown :count="e.brands" :rows="e.brand_top" /></td>
               <td :style="{color: e.status==='active' ? 'var(--warn)' : 'var(--text-2)'}">
                 {{ e.status === 'active' ? '持續中' : '已停止' }}</td>
               <td>{{ e.judgement || '待確認' }}</td>

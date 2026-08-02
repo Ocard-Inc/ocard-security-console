@@ -7,6 +7,22 @@ app:
   # 否則收到告警的人點了會連到自己電腦的 localhost。
   base_url: http://127.0.0.1:8600
 
+ros:
+  # Ocard ROS 是統一登入入口。設定 base_url 後，本主控台一律以 ROS 的
+  # session 驗證身分（轉發 cookie 給 ROS 的 /api/auth/me），並依 ROS 的
+  # security.* feature 決定角色。
+  #
+  # 留空 = 停用 ROS 驗證，退回 X-Dev-Role header 切換（僅供本機開發）。
+  # 正式環境必須填，否則任何人都能自稱 Admin。
+  base_url: ""            # 例：https://ros.ocard.co
+  enabled: true
+  # 本主控台掛在 ROS 同網域下的哪個路徑（reverse proxy 轉發過來的前綴）。
+  # 未登入導向 ROS 登入頁時，callbackUrl 會帶上這個前綴才能導回主控台。
+  mount_path: /security
+  # 身分快取秒數。ROS 自己有 10 秒快取，這層是避免單一頁面載入時
+  # 數個 API 各打一次 ROS；設短一點讓權限撤銷幾乎即時生效。
+  cache_ttl_seconds: 30
+
 time:
   timezone: Asia/Taipei
   # 資料由 Mongo 同步進 ClickHouse 約 5 分鐘落地延遲，再加 1 分安全邊際

@@ -62,11 +62,15 @@ def apply_findings(findings: list[Finding], tick_at: datetime) -> list[dict]:
         last_notified = _parse(active["last_notified"]) if active["last_notified"] else None
         escalate = last_notified is None or (tick_at - last_notified) >= cooldown
         with db.tx() as conn:
+            # brands / context 跟著 metric_value 一起更新：畫面上「涉及品牌」的
+            # 展開明細必須對應目前顯示的數值，停留在首次命中的視窗會造成誤讀。
             conn.execute(
                 "UPDATE events SET last_seen = ?, hit_count = hit_count + 1, peak_value = ?,"
                 " metric_value = ?, multiple = ?, miss_ticks = 0, threshold = ?,"
+                " brands = ?, context_json = ?,"
                 " last_notified = CASE WHEN ? THEN ? ELSE last_notified END WHERE id = ?",
                 (f.window_end, peak, f.metric, f.multiple, f.threshold,
+                 f.brands, json.dumps(f.context, ensure_ascii=False, default=str),
                  int(escalate), now_str, active["id"]))
         if escalate:
             event = db.one("SELECT * FROM events WHERE id = ?", (active["id"],))

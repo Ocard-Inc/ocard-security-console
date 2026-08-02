@@ -21,6 +21,12 @@ API_SRC_IP = (
     "JSONExtractString(headers, 'x-forwarded-for')))[1]))"
 )
 
+# 「涉及品牌」的逐品牌次數。sumMap 在同一次 GROUP BY 內就能算出
+# (品牌編號陣列, 次數陣列)，不必為了展開明細多跑一次查詢或改寫成子查詢；
+# 排序與取前 N 名交給 Python（見 core/brands.py 的 breakdown()）。
+# 值明寫 UInt64，避免 UInt8 累加後型別不足。
+BRAND_MAP = "sumMap([_brand], [toUInt64(1)])"
+
 # admin_log 登入事件（兩個家族）
 BOSS_LOGIN_SUCCESS = "(function = 'Boss_initial/auth_v2' AND action = 'login_success')"
 BOSS_LOGIN_FAILED = "(function = 'Boss_initial/auth_v2' AND action = 'login_failed')"

@@ -23,6 +23,23 @@ def _assert_labelled(value: str, where: str) -> None:
     assert brands.UNAVAILABLE_NAME not in value, f"{where} 品牌名稱查詢失敗"
 
 
+def _assert_breakdown(row: dict, where: str) -> None:
+    """「涉及品牌 N 個」必須附上可展開的前十名（名稱 + 次數，由高到低）。"""
+    count = row.get("brands")
+    top = row.get("brand_top")
+    assert top is not None, f"{where} 缺少 brand_top"
+    if not count:
+        return
+    assert top, f"{where} 涉及 {count} 個品牌卻沒有明細"
+    assert len(top) <= brands.BREAKDOWN_LIMIT, f"{where} 超過前 {brands.BREAKDOWN_LIMIT} 名"
+    assert len(top) == min(count, brands.BREAKDOWN_LIMIT), f"{where} 明細筆數與品牌數不符"
+    counts = [b["count"] for b in top]
+    assert counts == sorted(counts, reverse=True), f"{where} 未依次數由高到低排序"
+    for b in top:
+        _assert_labelled(b["label"], where)
+        assert b["count"] > 0
+
+
 def test_explorer_brand_ranking_shows_names(client):
     r = client.post("/api/explorer", json={
         "source": "api", "analysis": "brand", **WINDOW})
@@ -71,3 +88,53 @@ def test_overview_brand_ranking_shows_names(client):
     rows = r.json()["rankings"]["brands"]
     for row in rows:
         _assert_labelled(row["name"], "總覽風險排名（品牌）")
+
+
+# ─────────── 「涉及品牌 N 個」的展開明細 ───────────
+
+def test_explorer_ranking_rows_expand_to_brands(client):
+    for dim in ("endpoint", "source", "actor"):
+        r = client.post("/api/explorer", json={
+            "source": "api", "analysis": dim, **WINDOW})
+        assert r.status_code == 200, r.text
+        rows = r.json()["rows"]
+        assert rows, f"{dim} 排名應有資料"
+        for row in rows:
+            _assert_breakdown(row, f"Explorer {dim} 排名")
+
+
+def test_explorer_brand_ranking_has_no_self_breakdown(client):
+    """品牌維度本身就是品牌，不該再掛一份逐品牌明細。"""
+    r = client.post("/api/explorer", json={"source": "api", "analysis": "brand", **WINDOW})
+    assert all(row["brand_top"] == [] for row in r.json()["rows"])
+
+
+def test_overview_rankings_expand_to_brands(client):
+    body = client.get("/api/overview?minutes=60").json()
+    for key in ("endpoints", "sources"):
+        for row in body["rankings"][key]:
+            _assert_breakdown(row, f"總覽風險排名（{key}）")
+    for row in body["attention"]:
+        assert "brand_top" in row, "需要注意的事件缺少 brand_top"
+
+
+def test_quick_templates_expand_to_brands(client):
+    for tid in ("t01", "t05", "t12"):
+        r = client.post(f"/api/quick/{tid}", json=WINDOW)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "brands" in body["columns"], f"{tid} 應有涉及品牌欄"
+        for row in body["rows"]:
+            _assert_breakdown(row, f"快速查詢 {tid}")
+
+
+def test_events_carry_brand_breakdown(client):
+    """事件的品牌明細存在 context，形狀必須正確。
+
+    本功能上線前建立的事件沒有保留明細（context 當時沒這個欄位），只要仍在
+    active 就會在下一次命中時補上，因此這裡不強制舊事件一定有值。
+    """
+    for event in client.get("/api/events").json()["events"]:
+        assert "brand_top" in event, f"{event['evt_no']} 缺少 brand_top"
+        if event["brand_top"]:
+            _assert_breakdown(event, f"事件 {event['evt_no']}")

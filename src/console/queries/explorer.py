@@ -116,16 +116,18 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         raise FilterError(f"資料來源 {f.source} 不支援分組維度 {dimension!r}")
     expr, fp_kind, label = dims[f.source]
     where, params = _where(f)
+    # 品牌維度的 k 本身就是品牌，再算一次逐品牌分布沒有意義
+    is_brand_dim = dimension == "brand"
+    breakdown_col = "" if is_brand_dim else f", {exprs.BRAND_MAP} AS brand_map"
     df = query(
-        f"SELECT {expr} AS k, count() AS cnt, uniq(_brand) AS brands"
+        f"SELECT {expr} AS k, count() AS cnt, uniq(_brand) AS brands{breakdown_col}"
         f" {where} GROUP BY k ORDER BY cnt DESC LIMIT {int(limit)}", params)
     total = int(df["cnt"].sum()) if len(df) else 0
-    # 品牌維度的 k 是品牌編號，一次批次換成「名稱（編號）」再逐列組裝
-    brand_labels = (brands.labels(df["k"]) if dimension == "brand" and len(df) else {})
+    brand_labels = brands.labels(df["k"]) if is_brand_dim and len(df) else {}
     rows = []
     for i, (_, r) in enumerate(df.iterrows(), 1):
         raw = r["k"]
-        if dimension == "brand":
+        if is_brand_dim:
             brand_id = brands.coerce_id(raw)
             name = brand_labels.get(brand_id, "（空）") if brand_id is not None else "（空）"
         elif not raw:
@@ -134,6 +136,7 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
             name = masking.FP_FUNCS[fp_kind](raw) if fp_kind else str(raw)
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
+                     "brand_top": [] if is_brand_dim else brands.breakdown(r["brand_map"]),
                      "share": round(int(r["cnt"]) / total, 4) if total else 0})
     return {"dimension": dimension, "label": label, "total": total, "rows": rows}
 

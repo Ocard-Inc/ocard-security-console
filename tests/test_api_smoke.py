@@ -24,7 +24,10 @@ def test_explorer_forbidden_for_viewer(client):
                     json={"source": "api", "start": "2026-08-01 00:00:00",
                           "end": "2026-08-01 01:00:00"})
     assert r.status_code == 403
-    assert "權限不足" in r.json()["detail"] or "無法使用" in r.json()["detail"]
+    # 權限相關的 detail 是結構化物件（前端要靠 code 分辨要顯示哪一種畫面）
+    detail = r.json()["detail"]
+    assert detail["code"] == "insufficient_role"
+    assert "無法使用" in detail["message"]
 
 
 def test_explorer_rejects_bad_range(client):

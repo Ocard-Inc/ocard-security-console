@@ -1,5 +1,6 @@
 // 資安總覽（設計稿 7 節）：狀態摘要 → 即時趨勢 → 需要注意 + 資料來源健康 → 風險排名
 import { api, num, mult, multColor, clockTime, duration, lineChart, SEV_LABEL } from '../lib.js';
+import BrandBreakdown from '../components/brand-breakdown.js';
 
 const SEV_META = {
   P0: { bar: '#7A271A', label: 'P0 緊急事件' },
@@ -23,10 +24,11 @@ const SERIES = [
 ];
 
 export default {
-  props: ['minutes'],
+  props: ['minutes', 'reloadToken'],
   emits: ['open-event', 'goto'],
+  components: { BrandBreakdown },
   data: () => ({
-    data: null, loading: true, error: null, showTable: false, rankTab: 0,
+    data: null, reloading: false, error: null, showTable: false, rankTab: 0,
     SEV_META, RANK_TABS, SERIES, SEV_LABEL,
   }),
   computed: {
@@ -49,12 +51,15 @@ export default {
   },
   methods: {
     num, mult, multColor, clockTime, duration,
+    // 安靜重載：只有「還沒有任何資料」才顯示骨架，之後一律沿用上一版畫面並降低不透明度。
+    // 30 秒自動更新若換骨架會整頁閃、版面跳動，圖表也會失去 hover 狀態。
     async load() {
-      this.loading = true; this.error = null;
+      this.reloading = true;
       try {
         this.data = await api(`/overview?minutes=${this.minutes || 60}`);
+        this.error = null;
       } catch (e) { this.error = e.message; }
-      this.loading = false;
+      this.reloading = false;
     },
     seriesMeta(key) {
       const b = this.latestBucket;
@@ -67,10 +72,14 @@ export default {
     },
   },
   mounted() { this.load(); },
-  watch: { minutes() { this.load(); } },
+  watch: {
+    minutes() { this.load(); },
+    reloadToken() { this.load(); },
+  },
   template: `
 <div>
-  <div v-if="loading" style="display:flex;flex-direction:column;gap:16px">
+  <!-- 骨架只在「從來沒有拿到資料」時出現。重載時沿用上一版畫面，不換骨架、不跳版面。 -->
+  <div v-if="!data && !error" style="display:flex;flex-direction:column;gap:16px">
     <div class="muted" style="font-size:13px">正在查詢原始 log…</div>
     <div class="grid" style="grid-template-columns:repeat(5,1fr)">
       <div v-for="i in 5" :key="i" class="skel" style="height:110px" :style="{animationDelay: (i*0.1)+'s'}"></div>
@@ -79,12 +88,18 @@ export default {
     <div class="skel" style="height:200px"></div>
   </div>
 
-  <div v-else-if="error" class="banner banner-danger">
+  <template v-else>
+  <!-- 查詢失敗時，若手上還有上一版資料就把錯誤放在最上方、保留畫面；
+       完全沒有資料才整頁換成錯誤。「沒有異常」與「查不到」是兩回事，不能混為一談。 -->
+  <div v-if="error" class="banner banner-danger">
     <div style="font-weight:700;margin-bottom:6px">部分監測查詢失敗，現在無法判定是否沒有異常</div>
-    <div style="font-size:13px;line-height:1.7">{{ error }}　·　<a @click="load">重新查詢 →</a></div>
+    <div style="font-size:13px;line-height:1.7">
+      {{ error }}　·　<a @click="load">重新查詢 →</a>
+      <template v-if="data">　·　以下為上一次成功查詢的結果</template>
+    </div>
   </div>
 
-  <div v-else>
+  <div v-if="data">
     <div v-if="data.freshness.banner" class="banner banner-warn">
       <strong>資料延遲</strong>　{{ data.freshness.banner }}
       <a @click="$emit('goto','health')" style="float:right">查看資料健康 →</a>
@@ -199,7 +214,9 @@ export default {
               <div class="mono muted" style="font-size:12px;margin-top:3px">{{ e.entity_label }}</div>
             </div>
             <div class="right muted" style="flex:none;font-size:12px">
-              {{ e.brands ? e.brands + ' 品牌 · ' : '' }}{{ duration(e.first_seen, e.last_seen) }}<br>
+              <template v-if="e.brands">
+                <BrandBreakdown :count="e.brands" :rows="e.brand_top" unit="品牌" /> ·
+              </template>{{ duration(e.first_seen, e.last_seen) }}<br>
               <span style="color:var(--warn)">{{ e.status === 'active' ? '持續中' : '已停止' }}
                 · {{ e.judgement || '待確認' }}</span>
             </div>
@@ -256,8 +273,8 @@ export default {
             <td class="right muted">{{ num(r.p95) }}</td>
             <td class="right" style="font-weight:700" :style="{color:multColor(r.multiple)}">{{ mult(r.multiple) }}</td>
             <td class="muted">
-              <template v-if="r.brands > 5">跨 {{ r.brands }} 個品牌</template>
-              <template v-else-if="r.brands">{{ r.brands }} 個品牌</template>
+              <BrandBreakdown v-if="r.brands" :count="r.brands" :rows="r.brand_top"
+                              :prefix="r.brands > 5 ? '跨 ' : ''" />
               <template v-else-if="r.accs">涉及 {{ r.accs }} 個帳號</template>
               <template v-else>—</template>
             </td>
@@ -271,5 +288,6 @@ export default {
       </div>
     </div>
   </div>
+  </template>
 </div>`,
 };

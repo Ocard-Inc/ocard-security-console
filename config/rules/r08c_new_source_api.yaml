@@ -8,7 +8,8 @@ window_minutes: 10
 cooldown_minutes: 240
 min_events: 100
 sql: |
-  SELECT src, count() AS metric, uniq(_brand) AS brands
+  SELECT src, count() AS metric, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
   FROM (
     SELECT multiIf(JSONExtractString(headers, 'X-real-ip') != '', JSONExtractString(headers, 'X-real-ip'),
                    JSONExtractString(headers, 'x-real-ip') != '', JSONExtractString(headers, 'x-real-ip'),

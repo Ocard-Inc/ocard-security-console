@@ -1,5 +1,6 @@
 // 快速查詢（設計稿 11 節）：16 模板 / 4 分類 → 填參數 → 執行 → 結果與解讀
 import { post, api, num, pct } from '../lib.js';
+import BrandBreakdown from '../components/brand-breakdown.js';
 
 const INPUT_FIELDS = {
   '時間': [
@@ -18,6 +19,7 @@ const INPUT_FIELDS = {
 
 export default {
   props: ['preselect'],
+  components: { BrandBreakdown },
   data: () => ({ cats: [], sel: null, params: {}, result: null, loading: false, error: null }),
   computed: {
     fields() {
@@ -116,7 +118,8 @@ export default {
                 <td v-for="c in result.columns" :key="c"
                     :class="{right: typeof r[c] === 'number', mono: isFp(c) || c==='endpoint'}"
                     :style="c==='multiple' && r[c] >= 2 ? {color:'var(--warn)',fontWeight:600} : {}">
-                  <span v-if="isFp(c) && r[c]" class="fp">{{ r[c] }}</span>
+                  <BrandBreakdown v-if="c === 'brands'" :count="r[c]" :rows="r.brand_top" unit="個" />
+                  <span v-else-if="isFp(c) && r[c]" class="fp">{{ r[c] }}</span>
                   <span v-else>{{ cell(r, c) }}</span>
                 </td>
               </tr>

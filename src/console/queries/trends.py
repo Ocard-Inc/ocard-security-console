@@ -83,11 +83,13 @@ def risk_rankings(minutes: int = 60, limit: int = 5) -> dict:
     tf = exprs.time_filter()
 
     df = query(
-        f"SELECT {exprs.ENDPOINT} AS name, count() AS current, uniq(_brand) AS brands"
+        f"SELECT {exprs.ENDPOINT} AS name, count() AS current, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map"
         f" FROM ods_api_log WHERE {tf} GROUP BY name ORDER BY current DESC LIMIT {limit}",
         params)
     endpoints = _with_baseline(
-        [{"name": r["name"], "current": int(r["current"]), "brands": int(r["brands"])}
+        [{"name": r["name"], "current": int(r["current"]), "brands": int(r["brands"]),
+          "brand_top": brands.breakdown(r["brand_map"])}
          for _, r in df.iterrows()],
         lambda r: f"api_endpoint_60m:{r['name']}", end)
 
@@ -102,12 +104,14 @@ def risk_rankings(minutes: int = 60, limit: int = 5) -> dict:
         lambda r: "brand_api_15m", end)
 
     df = query(
-        f"SELECT src, count() AS current, uniq(_brand) AS brands FROM"
+        f"SELECT src, count() AS current, uniq(_brand) AS brands,"
+        f" {exprs.BRAND_MAP} AS brand_map FROM"
         f" (SELECT {exprs.API_SRC_IP} AS src, _brand, create_time FROM ods_api_log WHERE {tf})"
         f" WHERE src != '' GROUP BY src ORDER BY current DESC LIMIT {limit}", params)
     sources = _with_baseline(
         [{"name": src_fp(r["src"]), "current": int(r["current"]),
-          "brands": int(r["brands"])} for _, r in df.iterrows()],
+          "brands": int(r["brands"]), "brand_top": brands.breakdown(r["brand_map"])}
+         for _, r in df.iterrows()],
         lambda r: "api_src_60m", end)
 
     df = query(
