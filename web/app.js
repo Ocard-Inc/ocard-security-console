@@ -5,6 +5,7 @@ import Overview from './pages/overview.js';
 import Events from './pages/events.js';
 import EventDetail from './pages/event-detail.js';
 import Explorer from './pages/explorer.js';
+import Sweep from './pages/sweep.js';
 import Quick from './pages/quick.js';
 import Health from './pages/health.js';
 import AuditMode from './pages/audit-mode.js';
@@ -15,6 +16,7 @@ const NAV = [
   { key: 'overview', label: '資安總覽', icon: '◎' },
   { key: 'events', label: '異常事件', icon: '▲' },
   { key: 'explorer', label: 'Log Explorer', icon: '⌕' },
+  { key: 'sweep', label: '期間異常掃描', icon: '⌗' },
   { key: 'quick', label: '快速查詢', icon: '≡' },
   { key: 'auditmode', label: '稽查模式', icon: '✓', hidden: true },
   { key: 'health', label: '資料健康', icon: '♡' },
@@ -25,37 +27,22 @@ const NAV = [
 
 const TITLES = {
   overview: '資安總覽', events: '異常事件', eventDetail: '異常事件詳細',
-  explorer: 'Log Explorer', quick: '快速查詢', auditmode: '稽查模式',
+  explorer: 'Log Explorer', sweep: '期間異常掃描', quick: '快速查詢', auditmode: '稽查模式',
   health: '資料健康', rules: '規則與 Allowlist', sql: 'SQL Console（唯讀）',
   auditlog: '操作稽核',
 };
 
-const RANGES = [
-  ['10m', '最近 10 分鐘', 10], ['30m', '最近 30 分鐘', 30], ['1h', '最近 1 小時', 60],
-  ['6h', '最近 6 小時', 360], ['today', '今天', null], ['7d', '最近 7 天', 10080],
-];
-
-// 「今天」沒有固定分鐘數，要現算「台北午夜到現在」。
-// 一律用 Intl 指定 Asia/Taipei，不能靠瀏覽器本地時區 —— 資料存的是台北牆鐘時間，
-// 在 UTC 的機器上用本地時區會整整差 8 小時。
-function minutesSinceTaipeiMidnight() {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).formatToParts(new Date());
-  const pick = t => Number(parts.find(p => p.type === t).value);
-  const mins = (pick('hour') % 24) * 60 + pick('minute');
-  return Math.min(1440, Math.max(10, mins));   // 後端 minutes 的合法範圍下界是 10
-}
-
-// 排名查詢在 7 天視窗要 3 秒以上（sources 的 JSONExtract 掃 19M 列），
-// 後端會把排名夾在 24 小時；超過這個界線就不該再每 30 秒自動重跑。
-const AUTO_REFRESH_MAX_MINUTES = 1440;
+// 時間區間刻意「不」放在這裡。它以前是全域 header 的下拉，但實際上只有
+// <Overview> 收得到 :minutes，其餘六頁完全忽略它 —— 選單看起來在控制全站，
+// 其實對它們是純裝飾。現在改由需要的頁面各自持有（見 components/range-picker.js），
+// 因為每一頁的時間語意本來就不同：總覽是「最近 N 分鐘」、事件是「N 小時內」、
+// Explorer 是絕對區間，而資料健康固定今天、稽查模式是寫死的歷史重播。
 
 const App = {
-  components: { Overview, Events, EventDetail, Explorer, Quick, Health, AuditMode },
+  components: { Overview, Events, EventDetail, Explorer, Sweep, Quick, Health, AuditMode },
   data: () => ({
     session: null, page: 'overview', evtNo: null, eventsFilter: null,
-    range: '1h', autoRefresh: true, fresh: null, timer: null, RANGES,
+    autoRefresh: true, fresh: null, timer: null,
     // sessionKey 進 :key（角色變了權限也變，該整個重建）；
     // reloadToken 當 prop 傳下去（30 秒自動更新不可重建，否則圖表實例每半分鐘被銷毀）。
     sessionKey: 0, reloadToken: 0,
@@ -64,15 +51,6 @@ const App = {
   computed: {
     navItems() {
       return this.session ? NAV.filter(n => !n.hidden) : [];
-    },
-    minutes() {
-      if (this.range === 'today') {
-        // 讀一下 reloadToken，讓這個 computed 在每次重新整理時失效重算 ——
-        // 否則「今天」的分鐘數會停在剛切換過去的那一刻，隨著時間過去愈來愈短。
-        void this.reloadToken;
-        return minutesSinceTaipeiMidnight();
-      }
-      return RANGES.find(r => r[0] === this.range)?.[2] || 60;
     },
     title() { return TITLES[this.page] || ''; },
     canJudge() { return !!this.session; },
@@ -145,10 +123,9 @@ const App = {
     this.timer = setInterval(() => {
       if (!this.autoRefresh) return;
       this.pollFreshness();
-      // 寬視窗的 /overview 要好幾秒，配 30 秒計時器等於自我壓測 —— 只自動更新資料新鮮度。
-      if (this.page === 'overview' && this.minutes <= AUTO_REFRESH_MAX_MINUTES) {
-        this.reloadToken++;
-      }
+      // 只送訊號，要不要真的重查由頁面自己決定 —— 現在區間歸各頁持有，
+      // 只有頁面知道自己的視窗有多寬、值不值得每 30 秒重跑一次。
+      if (this.page === 'overview') this.reloadToken++;
     }, 30000);
   },
   unmounted() {
@@ -194,11 +171,8 @@ const App = {
       <h1>{{ title }}</h1>
       <span class="chip-prod">{{ session.env_label }}</span>
       <div class="header-right">
-        <!-- 不要加 @change="refresh"：range 變了 minutes 就變，頁面自己 watch minutes，
-             再 bump 一次 reloadToken 只會讓同一個昂貴查詢送兩遍。 -->
-        <select v-model="range">
-          <option v-for="r in RANGES" :key="r[0]" :value="r[0]">{{ r[1] }}</option>
-        </select>
+        <!-- 時間區間不在這裡：它只有總覽收得到，對其餘六頁是純裝飾。
+             現在由需要的頁面各自放 RangePicker（見檔頭說明）。 -->
         <span>{{ session.timezone }}</span>
         <span style="display:flex;align-items:center;gap:5px">
           <span class="dot" :style="{background: fresh && fresh.delayed.length ? 'var(--p2)' : '#12B76A'}"></span>
@@ -225,13 +199,14 @@ const App = {
       </div>
       <!-- :key 只綁 sessionKey（角色切換才重建）。自動更新走 :reload-token prop，
            不能進 :key —— 否則圖表實例每 30 秒被銷毀重建，畫面會閃、動畫會重播。 -->
-      <Overview v-else-if="page==='overview'" :key="'ov'+sessionKey" :minutes="minutes"
+      <Overview v-else-if="page==='overview'" :key="'ov'+sessionKey"
                 :reload-token="reloadToken" @open-event="openEvent" @goto="goto" />
       <Events v-else-if="page==='events'" :key="'ev'+sessionKey" :initial-filter="eventsFilter"
               @open-event="openEvent" />
       <EventDetail v-else-if="page==='eventDetail'" :evt-no="evtNo" :can-judge="canJudge"
                    @back="goto('events')" />
       <Explorer v-else-if="page==='explorer'" :key="'ex'+sessionKey" />
+      <Sweep v-else-if="page==='sweep'" :key="'sw'+sessionKey" :reload-token="reloadToken" />
       <Quick v-else-if="page==='quick'" :key="'qk'+sessionKey" />
       <Health v-else-if="page==='health'" :key="'he'+sessionKey" :reload-token="reloadToken" />
       <AuditMode v-else-if="page==='auditmode'" @goto="goto" />

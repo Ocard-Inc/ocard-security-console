@@ -122,6 +122,54 @@ CREATE TABLE IF NOT EXISTS baselines (
     PRIMARY KEY (metric_key, hour, day_class)
 );
 
+-- 期間異常掃描（sweep）。與 events 刻意分開：events 是即時規則的狀態機
+-- （去重、cooldown、resolved），sweep 是回溯調查的一次性快照，沒有生命週期。
+-- 存檔的目的是讓報告可重看、可跨區間比對；落盤一律 fingerprint。
+CREATE TABLE IF NOT EXISTS sweeps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sweep_no TEXT UNIQUE NOT NULL,          -- SWEEP-001
+    range_start TEXT NOT NULL,              -- 台北牆鐘
+    range_end TEXT NOT NULL,
+    include_api_probe INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    duration_ms INTEGER,
+    summary_json TEXT NOT NULL,             -- report.build() 的 summary
+    limitations_json TEXT NOT NULL,         -- 可信度限制（產出當下的事實，不可事後重算）
+    probes_json TEXT NOT NULL,
+    narrative_md TEXT,                      -- LLM 敘事草稿（可為 NULL）
+    narrative_model TEXT,
+    narrative_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sweeps_time ON sweeps (created_at);
+
+CREATE TABLE IF NOT EXISTS sweep_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sweep_no TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    entity TEXT NOT NULL,           -- 原始帳號或 IP（不再是指紋）
+    entity_kind TEXT NOT NULL,              -- actor / src
+    risk_level TEXT NOT NULL,               -- 極高/高/中高/中/中低
+    score REAL NOT NULL,
+    single_signal INTEGER NOT NULL DEFAULT 0,
+    finding_json TEXT NOT NULL              -- 完整 finding（含 hits 與 evidence）
+);
+CREATE INDEX IF NOT EXISTS idx_sweep_findings ON sweep_findings (sweep_no, rank);
+CREATE INDEX IF NOT EXISTS idx_sweep_findings_entity ON sweep_findings (entity);
+
+-- 來源情報。**只存 fingerprint 與分類，不存原始 IP** —— 維持「系統沒有還原能力」
+-- 的保證。分類由離線的雲端 IP 範圍檔與人工清單比對而來（見 console/intel）。
+CREATE TABLE IF NOT EXISTS ip_intel (
+    src TEXT PRIMARY KEY,                   -- 原始來源 IP（不再是指紋，見 core/masking.py）
+    source_type TEXT NOT NULL,              -- hosting/vpn/residential/private/forged/unknown
+    org TEXT,
+    country TEXT,
+    note TEXT,
+    first_seen TEXT,
+    last_seen TEXT,
+    classified_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS poll_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -145,6 +193,29 @@ CREATE TABLE IF NOT EXISTS slack_queue (
 """
 
 
+# 純衍生資料表：內容全部可以從 ClickHouse 重算，欄位改名時直接丟掉重建即可。
+# 這是 `CREATE TABLE IF NOT EXISTS` 的例外處理 —— 既有 DB 的舊欄位不會自動改名，
+# 而讀取端已改用新名稱，不處理就是「查一個不存在的欄位」。
+#
+# 只有衍生表能這樣做。events / cases / audit_log / allowlist 是人工產出或有稽核
+# 意義的資料，欄位變更一律手動處理（見 CLAUDE.md）。
+_DERIVED_TABLES = {
+    # 表名 → (必須存在的欄位, 重建方式)
+    "ip_intel": "src",           # 舊版是 src_fp；重建：console.intel.refresh
+    "sweep_findings": "entity",  # 舊版是 entity_fp；重跑掃描即可
+}
+
+
+def _drop_stale_derived(conn: sqlite3.Connection) -> None:
+    for table, required_column in _DERIVED_TABLES.items():
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if not rows:
+            continue                      # 表還不存在，_SCHEMA 會建
+        columns = {r[1] for r in rows}
+        if required_column not in columns:
+            conn.execute(f"DROP TABLE {table}")
+
+
 def get_conn() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
@@ -153,7 +224,9 @@ def get_conn() -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        _drop_stale_derived(conn)
         conn.executescript(_SCHEMA)
+        conn.commit()
         _local.conn = conn
     return conn
 
