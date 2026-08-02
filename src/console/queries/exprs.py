@@ -27,6 +27,10 @@ API_SRC_IP = (
 # 值明寫 UInt64，避免 UInt8 累加後型別不足。
 BRAND_MAP = "sumMap([_brand], [toUInt64(1)])"
 
+# 同上，但分組是分店（`_store`）。`-1` 代表品牌層級操作、不屬於任何分店 ——
+# 那不是「查不到分店」，展開時由 core/stores.py 標成「（品牌層級，非特定分店）」。
+STORE_MAP = "sumMap([_store], [toUInt64(1)])"
+
 # admin_log 登入事件（兩個家族）
 BOSS_LOGIN_SUCCESS = "(function = 'Boss_initial/auth_v2' AND action = 'login_success')"
 BOSS_LOGIN_FAILED = "(function = 'Boss_initial/auth_v2' AND action = 'login_failed')"

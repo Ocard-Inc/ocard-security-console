@@ -4,18 +4,24 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
 from console.core import brands, timewin
-from console.core.ch import ChQueryError
+from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
-from console.queries import explorer, health, quick_templates, sparklines, trends
+from console.queries import (
+    brand_search, endpoint_suggest, explorer, health, quick_templates,
+    sparklines, trends,
+)
 from console.rules.loader import load_rules
-from console.store import audit, db
+from console.store import audit, db, sweeps
+from console.intel import store as intel_store
+from console.sweep import narrate
+from console.sweep import report as sweep_report
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,13 +56,41 @@ async def session(user: CurrentUser = Depends(current_user)) -> dict:
 RANKING_MAX_MINUTES = 1440
 
 
+# 自訂區間的上限。四張表都有 create_time 範圍剪枝，但 sources 排名要對 headers
+# 做 JSONExtract，區間拉太長會讓單一請求跑上好幾十秒。
+MAX_CUSTOM_RANGE_DAYS = 31
+
+
+def _parse_window(start: str | None, end: str | None) -> tuple:
+    """自訂區間的共用解析與驗證。兩個都給才算數；只給一個視同沒給。"""
+    if not start or not end:
+        return None, None
+    try:
+        s, e = timewin.parse(start), timewin.parse(end)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if s >= e:
+        raise HTTPException(400, "開始時間必須早於結束時間")
+    span_days = (e - s).total_seconds() / 86400
+    if span_days > MAX_CUSTOM_RANGE_DAYS:
+        raise HTTPException(
+            400, f"自訂區間最長 {MAX_CUSTOM_RANGE_DAYS} 天，目前為 {span_days:.1f} 天")
+    return s, e
+
+
 @router.get("/overview")
 async def overview(
     minutes: int = Query(60, ge=10, le=10080),
+    # 自訂區間（台北牆鐘）。兩個都給時蓋過 minutes。
+    start: str | None = None,
+    end: str | None = None,
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_overview")
     started = time.time()
+    win_start, win_end = _parse_window(start, end)
+    if win_start is not None:
+        minutes = max(int((win_end - win_start).total_seconds() // 60), 10)
     cards = health.source_health()
     fresh = health.freshness_summary(cards)
 
@@ -111,7 +145,7 @@ async def overview(
         "monitor": monitor_status,
         "last_five_min_check": hb["last_ok"] if hb else None,
         "last_daily_check": daily["last_ok"] if daily else None,
-        "trend": trends.request_trend(minutes=minutes),
+        "trend": trends.request_trend(minutes=minutes, start=win_start, end=win_end),
         "attention": [_event_public(e) for e in attention],
         "pending_judgement": {
             "total": sum(pending_by_sev.values()),
@@ -121,7 +155,8 @@ async def overview(
         },
         "health": cards,
         "freshness": fresh,
-        "rankings": trends.risk_rankings(minutes=min(minutes, RANKING_MAX_MINUTES)),
+        "rankings": trends.risk_rankings(
+            minutes=min(minutes, RANKING_MAX_MINUTES), end=win_end),
         "elapsed_ms": int((time.time() - started) * 1000),
     }
 
@@ -203,18 +238,28 @@ async def list_events(
 
 
 @router.get("/events/{evt_no}")
-async def event_detail(evt_no: str, user: CurrentUser = Depends(current_user)) -> dict:
+async def event_detail(
+    evt_no: str,
+    # 趨勢圖往事件視窗前後各再拉多久。只看前後 30 分鐘看不出事件之前的脈絡。
+    pad_minutes: int = Query(30, ge=10, le=10080),
+    # 自訂絕對區間（台北牆鐘）。兩個都給時蓋過 pad_minutes。
+    start: str | None = None,
+    end: str | None = None,
+    user: CurrentUser = Depends(current_user),
+) -> dict:
     guard(user, "view_events")
     row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
     if row is None:
         raise HTTPException(404, f"找不到事件 {evt_no}")
+    win_start, win_end = _parse_window(start, end)
     audit.record(who=user.email, role=user.role_label, action="查看事件", target=evt_no)
     event = _event_public(row)
     rule = next((r for r in load_rules() if r.id == row["rule_id"]), None)
     event["rule_note"] = rule.note if rule else ""
     event["evidence"] = _build_evidence(row, event)
     event["limitations"] = _extra_limitations(event) + _data_limitations(row["source_key"])
-    event["trend"] = _event_trend(row)
+    event["trend"] = _event_trend(row, pad_minutes=pad_minutes,
+                                  start=win_start, end=win_end)
     return event
 
 
@@ -278,33 +323,65 @@ def _data_limitations(source_key: str) -> list[str]:
     return per_source.get(source_key, []) + common
 
 
-def _event_trend(row: dict) -> dict:
-    """事件時間序列：以事件視窗前後各 30 分鐘、10 分鐘分桶。"""
+# 事件趨勢可以往事件視窗前後各再拉多久。分析師常需要看「事件之前長什麼樣」，
+# 只給前後 30 分鐘看不出脈絡。必須與 web/pages/event-detail.js 的 PADS 一致。
+EVENT_TREND_PADDINGS = (30, 180, 720, 1440, 2880)
+
+
+def _event_trend(
+    row: dict,
+    pad_minutes: int = 30,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict:
+    """事件時間序列。
+
+    給 start/end 就用絕對區間，否則以事件視窗前後各 pad_minutes 分鐘。
+    分桶依總長自動選，start/end 一律對齊格線（見 trends.resolve_window 的說明）。
+    """
     from console.core.ch import query
-    from console.queries import exprs
+    from console.queries import exprs, trends
     from console.rules import baseline
     table = settings()["data_sources"].get(row["source_key"], {}).get("table")
     if table is None:
         return {"rows": [], "note": "此規則跨多個資料來源，不提供單一趨勢圖。"}
-    start = timewin.parse(row["first_seen"]) - timedelta(minutes=30)
-    end = timewin.parse(row["last_seen"]) + timedelta(minutes=30)
+
+    if start is None or end is None:
+        start = timewin.parse(row["first_seen"]) - timedelta(minutes=pad_minutes)
+        end = timewin.parse(row["last_seen"]) + timedelta(minutes=pad_minutes)
+    span = max(int((end - start).total_seconds() // 60), 1)
+    bucket = trends.bucket_for(span)
+    start, end, bucket = trends.resolve_window(start=start, end=end, bucket_minutes=bucket)
     try:
         df = query(
-            f"SELECT toStartOfTenMinutes(create_time) AS b, count() AS cnt FROM {table}"
+            f"SELECT toStartOfInterval(create_time, INTERVAL {bucket} MINUTE) AS b,"
+            f" count() AS cnt FROM {table}"
             f" WHERE {exprs.time_filter()} GROUP BY b ORDER BY b",
             {"start": timewin.fmt(start), "end": timewin.fmt(end)})
     except ChQueryError as exc:
         return {"rows": [], "note": f"趨勢查詢失敗：{exc}"}
+
+    counts = {timewin.fmt(r["b"].to_pydatetime()): int(r["cnt"]) for _, r in df.iterrows()}
+    # 零填：沒有零填的話空桶會直接消失，而 category 軸依索引等距排列，
+    # 安靜的時段會被壓縮成一段直線而不是凹下去。
     rows = []
-    for _, r in df.iterrows():
-        bt = r["b"].to_pydatetime()
-        base = baseline.get(f"table_10m:{row['source_key']}", hour=bt.hour,
-                            day_class=baseline.day_class_of(bt))
-        rows.append({"bucket": bt.strftime("%m/%d %H:%M"), "count": int(r["cnt"]),
-                     "median": round(base.median) if base else None,
-                     "p95": round(base.p95) if base else None})
-    return {"rows": rows, "note": "此為該資料來源的整體流量趨勢（10 分鐘分桶），"
-                                  "非僅該異常對象的請求量。"}
+    cursor = start
+    while cursor < end:
+        base = baseline.get(f"table_{bucket}m:{row['source_key']}", hour=cursor.hour,
+                            day_class=baseline.day_class_of(cursor))
+        rows.append({
+            "bucket": cursor.strftime("%m/%d %H:%M"),
+            "count": counts.get(timewin.fmt(cursor), 0),
+            "median": round(base.median) if base else None,
+            "p95": round(base.p95) if base else None,
+        })
+        cursor += timedelta(minutes=bucket)
+    return {
+        "rows": rows,
+        "pad_minutes": pad_minutes,
+        "bucket_minutes": bucket,
+        "note": f"此為該資料來源的整體流量趨勢（{bucket} 分鐘分桶），非僅該異常對象的請求量。",
+    }
 
 
 @router.post("/events/{evt_no}/judge")
@@ -338,6 +415,41 @@ async def judge_event(
 
 # ─────────────────────────── Log Explorer ───────────────────────────
 
+def _explain_empty(f: explorer.ExplorerFilter) -> dict | None:
+    """查詢回 0 筆時，說明是「這個對象不存在」還是「它不在你選的區間」。
+
+    只在有下對象篩選時才問（多一趟查詢，實測回看 365 天約 0.1 秒）。
+    沒下篩選就回 0 筆通常是區間太窄或該表沒資料，那個已經看得出來。
+    """
+    for field, value, label in (("source_ip", f.source_ip, "來源"),
+                                ("actor", f.actor, "帳號")):
+        if not value:
+            continue
+        try:
+            extent = explorer.entity_extent(f.source, field, value)
+        except ChQueryError:
+            return None                      # 解釋失敗不該讓整個查詢失敗
+        if extent is None:
+            continue
+        if not extent["found"]:
+            return {
+                "kind": "not_found", "field": field, "value": value,
+                "message": f"回看 {extent['lookback_days']} 天內都找不到這個{label}"
+                           f"（{value}）。請確認值是否正確 —— 注意比對是完全相等，"
+                           "不是前綴。",
+            }
+        return {
+            "kind": "outside_range", "field": field, "value": value,
+            "first_seen": extent["first_seen"], "last_seen": extent["last_seen"],
+            "total_in_lookback": extent["count"],
+            "message": f"這個{label}（{value}）存在，但活動不在你選的區間內。"
+                       f"它在近 {extent['lookback_days']} 天共有 "
+                       f"{extent['count']:,} 筆，範圍是 {extent['first_seen']} ~ "
+                       f"{extent['last_seen']}。把區間改到這段時間就看得到。",
+        }
+    return None
+
+
 @router.post("/explorer")
 async def run_explorer(
     payload: dict = Body(...),
@@ -349,6 +461,8 @@ async def run_explorer(
         source=payload.get("source", "api"),
         start=payload.get("start", ""), end=payload.get("end", ""),
         brand=payload.get("brand"), endpoint=payload.get("endpoint"),
+        # 依對象反查：把掃描結果或排名裡看到的帳號／IP 貼回來追明細
+        source_ip=payload.get("source_ip"), actor=payload.get("actor"),
         only_error=bool(payload.get("only_error")),
         limit=int(payload.get("limit", 500)),
     )
@@ -372,6 +486,12 @@ async def run_explorer(
     except ChQueryError as exc:
         raise HTTPException(502, f"查詢失敗：{exc}") from exc
     elapsed = int((time.time() - started) * 1000)
+    # 「0 筆」要自己解釋原因。使用者從掃描結果貼一個對象進來，Explorer 的預設區間
+    # 比掃描短得多（實測 192.168.97.1 最後出現在 7/29，而預設是最近 1 小時），
+    # 只顯示空表格會讓人以為「這個對象不存在」。
+    empty = not data.get("rows") and not data.get("total")
+    if empty:
+        data["empty_reason"] = _explain_empty(f)
     rng = f"{f.start} ~ {f.end}"
     qh = audit.record(who=user.email, role=user.role_label, action="Log Explorer 查詢",
                       target=f"{f.source}/{analysis}", query_text=json.dumps(payload, sort_keys=True),
@@ -383,6 +503,49 @@ async def run_explorer(
         "dedup": "以事件 ID（_id）去重", "timezone": "Asia/Taipei",
         "data_latest": health.freshness_summary(health.source_health())["latest"],
     }}
+
+
+@router.get("/brands")
+async def search_brands(
+    q: str = "",
+    limit: int = Query(brand_search.DEFAULT_LIMIT, ge=1, le=brand_search.MAX_LIMIT),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """品牌選擇器的候選清單（Log Explorer 的品牌篩選欄位）。
+
+    不記稽查：品牌名稱是營運資訊而非個資，而 debounce 打字會把 audit_log 洗版，
+    稀釋真正該追的「Log Explorer 查詢」。實際的查詢行為在 POST /explorer 已記錄，
+    meta.brand_filter 也會帶出最後選了哪個品牌。
+    """
+    guard(user, "use_explorer")
+    try:
+        return {"rows": brand_search.search(q, limit)}
+    except ChQueryError as exc:
+        # 不吞成空陣列 —— 空陣列在 UI 上等於「查無此品牌」，與查詢失敗是兩回事。
+        # 同 core/brands.py 的「（查無品牌）」vs「（品牌名稱查詢失敗）」之分。
+        raise HTTPException(502, f"品牌查詢失敗：{exc}") from exc
+
+
+@router.get("/endpoints")
+async def suggest_endpoints(
+    source: str = "api",
+    start: str = "",
+    end: str = "",
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """該區間內的 endpoint 候選值，依呼叫量由高到低（Log Explorer 的建議選單）。
+
+    一次回傳全部而非分頁：基數有界且小（實測最多約 600 種），前端過濾才能
+    做到零延遲且完整 —— 只取 top N 會讓罕見的 endpoint 永遠找不到。
+    不記稽查，理由同 GET /api/brands。
+    """
+    guard(user, "use_explorer")
+    try:
+        return endpoint_suggest.suggest(source, start, end)
+    except explorer.FilterError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ChQueryError as exc:
+        raise HTTPException(502, f"endpoint 查詢失敗：{exc}") from exc
 
 
 # ─────────────────────────── 快速查詢 ───────────────────────────
@@ -441,6 +604,147 @@ async def data_sparklines(user: CurrentUser = Depends(current_user)) -> dict:
     只有一個要這份資料（詳見 queries/sparklines.py 的模組說明）。"""
     guard(user, "view_health")
     return sparklines.source_sparklines()
+
+
+# 逐筆調閱完整 payload。
+#
+# 一般明細的 params 只給大小與欄位名稱（見 core/masking.payload_summary），因為
+# 那些內容混著 authorization／cookie／secret，以及消費者的手機與 Email，而畫面、
+# Slack、磁碟上的 log 都會沾到。但「要查的時候查不到」也不行 —— 所以保留這條路徑。
+#
+# 收斂的方式是「一次一筆、寫入 audit_log」，**不要求填理由**：這是對內的調查工具，
+# 每次調閱都要打字說明只會讓人繞過它去直接查 DB，反而失去留痕。
+# 稽核仍然記下誰、何時、哪一筆。
+@router.post("/explorer/payload")
+def explorer_payload(
+    payload_body: dict = Body(...),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    guard(user, "view_raw_payload")
+    source = str(payload_body.get("source") or "")
+    row_id = str(payload_body.get("row_id") or "")
+    try:
+        data = explorer.payload(source, row_id)
+    except explorer.FilterError as exc:
+        # 失敗也要留痕：查不到什麼也是稽核事實
+        audit.record(who=user.email, role=user.role_label, action="調閱完整 payload",
+                     target=f"{source}/{row_id}", result="失敗", reason=str(exc))
+        raise HTTPException(400, str(exc)) from exc
+    except ChQueryError as exc:
+        raise HTTPException(502, f"查詢失敗：{exc}") from exc
+
+    audit.record(who=user.email, role=user.role_label, action="調閱完整 payload",
+                 target=f"{source}/{row_id}", time_range=data.get("time"),
+                 row_count=1)
+    return data
+
+
+# ─────────────────────────── 期間異常掃描 ───────────────────────────
+
+# 掃描的區間上限與 Explorer 的 MAX_CUSTOM_RANGE_DAYS 刻意不同：Explorer 的限制來自
+# 「排名要對 api_log 的 headers 做 JSONExtract」，而掃描的低成本探針全部走
+# backend/admin/auth，實測 94 天的完整掃描牆鐘 1.9 秒。對齊稽查匯出的上限。
+SWEEP_MAX_RANGE_DAYS = 92
+
+
+def _sweep_window(payload: dict) -> tuple[datetime, datetime]:
+    start_s, end_s = payload.get("start"), payload.get("end")
+    if not start_s or not end_s:
+        raise HTTPException(400, "必須指定 start 與 end（格式 YYYY-MM-DD[ HH:MM:SS]）")
+    try:
+        start, end = timewin.parse(start_s), timewin.parse(end_s)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if start >= end:
+        raise HTTPException(400, "開始時間必須早於結束時間")
+    span_days = (end - start).total_seconds() / 86400
+    if span_days > SWEEP_MAX_RANGE_DAYS:
+        raise HTTPException(
+            400, f"掃描區間最長 {SWEEP_MAX_RANGE_DAYS} 天，目前為 {span_days:.1f} 天")
+    return start, end
+
+
+# 刻意用同步 def，不是 async def。裡面的 ClickHouse 查詢是阻塞的，寫成 async def
+# 會佔住事件迴圈 —— 勾了 API 來源探針時單次要 30 秒，整台 server（含五分鐘檢查
+# 排程與其他人的請求）都會卡住。同步的 path operation 由 FastAPI 丟進 threadpool。
+@router.post("/sweep")
+def run_sweep(
+    payload: dict = Body(...),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    guard(user, "run_sweep")
+    start, end = _sweep_window(payload)
+    include_api = bool(payload.get("include_api_probe"))
+    started = time.time()
+    try:
+        result = sweep_report.build(start, end, include_high_cost=include_api,
+                                    intel_available=intel_store.available())
+    except ChConnectionError as exc:
+        raise HTTPException(503, f"ClickHouse 連線失敗：{exc}") from exc
+    except ChQueryError as exc:
+        raise HTTPException(502, f"查詢失敗：{exc}") from exc
+    elapsed = int((time.time() - started) * 1000)
+
+    sweep_no = sweeps.save(result, created_by=user.email, duration_ms=elapsed,
+                           include_api_probe=include_api)
+    audit.record(who=user.email, role=user.role_label, action="執行期間異常掃描",
+                 target=sweep_no,
+                 query_text=json.dumps({"start": timewin.fmt(start),
+                                        "end": timewin.fmt(end),
+                                        "include_api_probe": include_api},
+                                       sort_keys=True),
+                 time_range=f"{timewin.fmt(start)} ~ {timewin.fmt(end)}",
+                 row_count=result["summary"]["findings"], duration_ms=elapsed)
+    return {**result, "sweep_no": sweep_no, "duration_ms": elapsed,
+            "include_api_probe": include_api}
+
+
+@router.get("/sweep")
+def list_sweeps(
+    limit: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    guard(user, "run_sweep")
+    return {"sweeps": sweeps.recent(limit),
+            "max_range_days": SWEEP_MAX_RANGE_DAYS,
+            "intel_available": intel_store.available()}
+
+
+@router.get("/sweep/{sweep_no}")
+def get_sweep(sweep_no: str, user: CurrentUser = Depends(current_user)) -> dict:
+    guard(user, "run_sweep")
+    stored = sweeps.load(sweep_no)
+    if stored is None:
+        raise HTTPException(404, f"找不到掃描 {sweep_no}")
+    audit.record(who=user.email, role=user.role_label, action="查看期間異常掃描",
+                 target=sweep_no, row_count=len(stored["findings"]))
+    return stored
+
+
+# 敘事是獨立端點，不併進 /sweep：確定性的結果要能先上畫面，LLM 慢或掛掉
+# 都不該讓整份報告產不出來。
+@router.post("/sweep/{sweep_no}/narrate")
+def narrate_sweep(sweep_no: str, user: CurrentUser = Depends(current_user)) -> dict:
+    guard(user, "run_sweep")
+    stored = sweeps.load(sweep_no)
+    if stored is None:
+        raise HTTPException(404, f"找不到掃描 {sweep_no}")
+    started = time.time()
+    result = narrate.write(stored)
+    elapsed = int((time.time() - started) * 1000)
+    if result.markdown:
+        sweeps.save_narrative(sweep_no, result.markdown, result.model)
+    audit.record(who=user.email, role=user.role_label, action="產生 AI 研判草稿",
+                 target=sweep_no, duration_ms=elapsed,
+                 result="成功" if result.markdown else "失敗",
+                 reason=result.error)
+    return {
+        "sweep_no": sweep_no,
+        "markdown": result.markdown,
+        "model": result.model,
+        "error": result.error,
+        "disclaimer": narrate.DISCLAIMER,
+    }
 
 
 # ─────────────────────────── 規則 ───────────────────────────
