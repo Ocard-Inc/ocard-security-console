@@ -22,17 +22,25 @@ _SEV_EMOJI = {"P0": "🟥", "P1": "🔴", "P2": "🟠", "P3": "🔵"}
 def _format_event(kind: str, event: dict) -> str:
     sev = event["severity"]
     head = {"new": "新事件", "ongoing": "持續中", "resolved": "已恢復"}[kind]
+    metric, peak = event["metric_value"], event["peak_value"]
+    # baseline_median 為 None 代表該規則的基線是跨對象分布（見 rules/model.py），
+    # 此時談「相對自身的倍數」沒有意義，只呈現門檻。
+    if event.get("baseline_median"):
+        compare = (f"門檻 {event['threshold'] or 0:,.0f}，"
+                   f"同時段 median {event['baseline_median']:,.0f}，{event['multiple']}×")
+    else:
+        compare = f"門檻 {event['threshold'] or 0:,.0f} · 同類對象高分位"
     lines = [
         f"{_SEV_EMOJI.get(sev, '')} *[{sev}] {head}｜{event['evt_no']} {event['rule_name']}*",
         f"對象：`{event['entity_label']}`",
-        f"目前值 {event['metric_value']:.0f}（門檻 {event['threshold'] or 0:.0f}"
-        + (f"，median {event['baseline_median']:.0f}，{event['multiple']}×"
-           if event.get("baseline_median") else "")
-        + f"，峰值 {event['peak_value']:.0f}）",
+        f"目前值 *{metric:,.0f}*（{compare}）"
+        + (f"，峰值 {peak:,.0f}" if peak > metric else ""),
         f"視窗：{event['first_seen']} ~ {event['last_seen']}（Asia/Taipei）",
     ]
     if event.get("brands"):
         lines.append(f"涉及品牌：{event['brands']} 個")
+    if kind == "ongoing":
+        lines.append(f"已持續 {event['hit_count']} 個檢查視窗。")
     return "\n".join(lines)
 
 
