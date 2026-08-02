@@ -1,9 +1,14 @@
 """角色與權限守衛（server-side 強制，不依賴前端隱藏）。
 
 身分來自 Ocard ROS 的登入 session（見 auth/ros.py）。ROS 的動態 RBAC feature
-決定本主控台的角色：
+決定本主控台的角色，由設定檔的 `ros.role_mode` 決定怎麼對應：
 
-    security.console → Viewer    security.analyst → Analyst    security.admin → Admin
+    full（現況）  有 security.console → Admin，進得來就是完整權限
+    tiered        security.console / analyst / admin → Viewer / Analyst / Admin
+
+分級的機制一直都在，只是現階段設定成 full。要改成分級時在 ROS 加回
+security.analyst / security.admin 兩個 feature key，再把 role_mode 切成
+tiered 即可，不必改程式。
 
 未設定 `ros.base_url` 時（本機開發、ROS 尚未部署）退回 X-Dev-Role header 切換，
 方便單機演示；正式環境務必設定 ros.base_url，否則任何人都能自稱 Admin。
@@ -109,10 +114,17 @@ class NoSecurityAccess(HTTPException):
         })
 
 
-def role_from_features(features: tuple[str, ...] | list[str]) -> Role | None:
-    """取 feature 對應的最高角色；完全沒有 security.* 時回 None。"""
+def role_from_features(features: tuple[str, ...] | list[str],
+                       mode: str | None = None) -> Role | None:
+    """取 feature 對應的角色；完全沒有 security.* 時回 None（＝不得進入）。
+
+    mode=full 時只要有任一 security.* 就給 Admin；tiered 則取最高的那一級。
+    """
     roles = [r for key, r in FEATURE_ROLE.items() if key in features]
-    return max(roles) if roles else None
+    if not roles:
+        return None
+    resolved = mode or ros.role_mode()
+    return Role.ADMIN if resolved == "full" else max(roles)
 
 
 def current_user(

@@ -79,8 +79,7 @@ def _brand_detail(event: dict) -> str:
     top = (ctx or {}).get("brand_top") or []
     if not top:
         return ""
-    listed = "、".join(f"{b['label']} {b['count']:,} 次"
-                       for b in top[:brands.BREAKDOWN_LIMIT])
+    listed = brands.top_summary(top, brands.BREAKDOWN_LIMIT)
     more = "" if event["brands"] <= len(top) else f"（前 {len(top)} 名）"
     return f"{more}：{listed}"
 

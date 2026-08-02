@@ -128,6 +128,20 @@ def test_quick_templates_expand_to_brands(client):
             _assert_breakdown(row, f"快速查詢 {tid}")
 
 
+def test_event_detail_evidence_names_the_brands(client):
+    """證據矩陣是純文字，展不開，所以句子本身要帶出最大的幾個品牌。"""
+    for event in client.get("/api/events").json()["events"]:
+        detail = client.get(f"/api/events/{event['evt_no']}").json()
+        if not detail["brand_top"]:
+            continue
+        text = "".join(detail["evidence"]["attack"] + detail["evidence"]["normal"])
+        if detail["brands"] > 10:
+            assert "最多的是" in text, f"{event['evt_no']} 證據沒帶出品牌"
+            assert detail["brand_top"][0]["label"] in text
+        elif detail["brands"] == 1:
+            assert detail["brand_top"][0]["label"] in text, f"{event['evt_no']} 單一品牌未具名"
+
+
 def test_events_carry_brand_breakdown(client):
     """事件的品牌明細存在 context，形狀必須正確。
 

@@ -14,20 +14,39 @@ Python 端解密 NextAuth 的 cookie（那要複製 HKDF 細節，且會隨 Next
 
 ## 一、ROS 端：指派權限
 
-三個 feature key 已加在 `ocard-ros/lib/features.ts`，於 **設定 → 角色權限** 的
+`ocard-ros/lib/features.ts` 已加入一個 feature key，於 **設定 → 角色權限** 的
 「資安監控」分組出現：
 
-| Feature key | 主控台角色 | 可用範圍 |
-|---|---|---|
-| `security.console` | Viewer | 資安總覽、異常事件、快速查詢、資料健康、稽查模式 |
-| `security.analyst` | Analyst | ＋Log Explorer、遮罩明細、事件判定、匯出證據 |
-| `security.admin` | Admin | ＋唯讀 SQL Console、規則與 Allowlist、操作稽核 |
+| Feature key | 效果 |
+|---|---|
+| `security.console` | 使用資安主控台的**完整功能** |
 
-三者是累進的，取最高者。沒有勾選任何一項的人登入後會看到「你尚未取得資安監控權限」，
-**不是**登入頁 —— 這兩種狀況在畫面上刻意分開，否則使用者會一直重複登入卻進不來。
+**現階段不分級**：勾了就有全部功能（含唯讀 SQL、匯出、規則管理），沒勾就進不來。
+
+沒有勾選的人登入後會看到「你尚未取得資安監控權限」，**不是**登入頁 —— 這兩種
+狀況在畫面上刻意分開，否則使用者會一直重複登入卻進不來。
 
 ROS 的 super-admin（`PROTECTED_ADMIN_EMAIL` 或 role=admin）自動擁有全部 feature，
-因此不必額外指派就是 Security Admin。
+不必額外指派。
+
+### 之後要分級時
+
+主控台的 Viewer / Analyst / Admin 分級機制一直都在，啟用只需兩步、不必改程式：
+
+1. 在 `ocard-ros/lib/features.ts` 的 security 分組加回兩個 key：
+   ```ts
+   { key: "security.analyst", group: "security", i18n: "rolesAdmin.featSecurityAnalyst" },
+   { key: "security.admin", group: "security", i18n: "rolesAdmin.featSecurityAdmin" },
+   ```
+   （i18n 字串一併補回 `lib/i18n/messages/*.ts` 的 `rolesAdmin`）
+2. 主控台 `config/settings.yaml` 把 `ros.role_mode` 從 `full` 改成 `tiered`。
+
+分級後：`security.console` = Viewer（總覽、事件、快速查詢、資料健康、稽查模式）、
+`security.analyst` = ＋Log Explorer 與遮罩明細、判定、匯出、`security.admin` =
+＋唯讀 SQL、規則與 Allowlist、操作稽核。取最高者。
+
+稽查若問到「權限是否分離」（一般人不該能開唯讀 SQL、匯出個資明細），要先切到
+tiered 才答得出來。
 
 ## 二、主控台端：設定
 
@@ -73,15 +92,18 @@ location /security/ {
 
 ## 四、驗收
 
-1. 用**沒有**任何 `security.*` feature 的帳號開 `/security` → 應看到「你尚未取得
-   資安監控權限」，並顯示登入中的 email。
-2. 用只有 `security.console` 的帳號 → 左側只有五個項目，沒有 Log Explorer 與
-   SQL Console；直接打 `POST /security/api/explorer` 應回 403 `insufficient_role`
-   （權限在伺服器端強制，不是只把選單藏起來）。
+1. 用**沒有** `security.console` 的帳號開 `/security` → 應看到「你尚未取得
+   資安監控權限」，並顯示登入中的 email（不是登入頁）。
+2. 勾了 `security.console` 的帳號 → 左側九個項目都在，Log Explorer 與 SQL Console
+   都能開。
 3. 登出 ROS 後重整 → 應 302 到 ROS 登入頁，登入完自動回到 `/security`。
-4. 在 ROS 把該角色的 `security.analyst` 取消 → 最多 30 秒後主控台的 Log Explorer
-   就會回 403（`cache_ttl_seconds`）。
+4. 在 ROS 把 `security.console` 取消 → 最多 30 秒後主控台就會擋下
+   （`cache_ttl_seconds`），不必等 session 過期。
 5. 把 ROS 停掉再開主控台 → 應顯示「無法驗證登入狀態」而不是登入頁，也不可放行。
+
+切到 `tiered` 後另加一項：用只有 `security.console` 的帳號直接打
+`POST /security/api/explorer`，應回 403 `insufficient_role` —— 確認權限是在
+伺服器端強制，不是只把選單藏起來。
 
 ## 常見狀況
 

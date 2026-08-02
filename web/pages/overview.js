@@ -1,6 +1,11 @@
 // 資安總覽（設計稿 7 節）：狀態摘要 → 即時趨勢 → 需要注意 + 資料來源健康 → 風險排名
-import { api, num, mult, multColor, clockTime, duration, lineChart, SEV_LABEL } from '../lib.js';
+import { api, num, mult, multColor, clockTime, duration, SEV_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
+import ApexChart from '../charts/ApexChart.js';
+import ChartLegend from '../charts/ChartLegend.js';
+import { token } from '../charts/tokens.js';
+import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
+import { horizontalBarOptions, barHeight, multipleFill } from '../charts/bar.js';
 
 const SEV_META = {
   P0: { bar: '#7A271A', label: 'P0 緊急事件' },
@@ -16,17 +21,19 @@ const RANK_TABS = [
   { key: 'failed_actors', label: '高失敗來源', col: '來源 fingerprint' },
 ];
 
+// 序列順序即圖例順序。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
+// 登入失敗的 dashed 是紅綠色盲下的必要第二編碼，不是裝飾，不可拿掉。
 const SERIES = [
-  { key: 'api', label: 'API request', color: '#175CD3' },
-  { key: 'backend', label: 'Backend request', color: '#7A5AF8' },
-  { key: 'login_success', label: '登入成功', color: '#027A48' },
-  { key: 'login_failed', label: '登入失敗', color: '#B42318', dash: '2 3' },
+  { key: 'api', label: 'API request', tokenName: '--chart-api' },
+  { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
+  { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
+  { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail', dashed: true },
 ];
 
 export default {
   props: ['minutes', 'reloadToken'],
   emits: ['open-event', 'goto'],
-  components: { BrandBreakdown },
+  components: { BrandBreakdown, ApexChart, ChartLegend },
   data: () => ({
     data: null, reloading: false, error: null, showTable: false, rankTab: 0,
     SEV_META, RANK_TABS, SERIES, SEV_LABEL,

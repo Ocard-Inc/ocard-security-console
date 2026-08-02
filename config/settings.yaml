@@ -22,6 +22,14 @@ ros:
   # 身分快取秒數。ROS 自己有 10 秒快取，這層是避免單一頁面載入時
   # 數個 API 各打一次 ROS；設短一點讓權限撤銷幾乎即時生效。
   cache_ttl_seconds: 30
+  # full   = 只要 ROS 勾了 security.console 就給完整權限（現階段）
+  # tiered = 依 security.console / analyst / admin 分成 Viewer / Analyst / Admin
+  #
+  # 要改成分級時：在 ROS 的 lib/features.ts 加回 security.analyst 與
+  # security.admin 兩個 key，再把這裡切成 tiered，程式不必改。
+  # 註：稽查會問「權限是否分離」（例如一般人不該能開唯讀 SQL、匯出明細），
+  # 屆時 tiered 才答得出來。
+  role_mode: full
 
 time:
   timezone: Asia/Taipei

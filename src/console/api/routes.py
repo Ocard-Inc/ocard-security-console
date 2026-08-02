@@ -221,13 +221,10 @@ def _build_evidence(row: dict, event: dict) -> dict:
     return {"attack": attack, "normal": normal}
 
 
-def _brand_examples(event: dict, n: int = 3) -> str:
+def _brand_examples(event: dict) -> str:
     """證據要能自己站得住，所以把最大的幾個品牌寫進句子；完整前十名在上方展開。"""
-    top = event["brand_top"][:n]
-    if not top:
-        return ""
-    listed = "、".join(f"{b['label']} {b['count']:,} 次" for b in top)
-    return f"，最多的是 {listed}"
+    listed = brands.top_summary(event["brand_top"])
+    return f"，最多的是 {listed}" if listed else ""
 
 
 def _extra_limitations(event: dict) -> list[str]:

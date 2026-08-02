@@ -28,12 +28,23 @@ def _me(features: list[str], *, email="someone@olis.com.tw", active=True) -> Fak
         "roleName": "資安值班", "active": active}}})
 
 
+BASE_CFG = {"base_url": "https://ros.example.com", "enabled": True,
+            "mount_path": "/security", "cache_ttl_seconds": 30, "role_mode": "full"}
+
+
 @pytest.fixture(autouse=True)
 def _ros_enabled():
     """把 ROS 設定成啟用，並在每個測試前後清掉身分快取。"""
-    cfg = {"base_url": "https://ros.example.com", "enabled": True,
-           "mount_path": "/security", "cache_ttl_seconds": 30}
-    with patch.object(ros, "_cfg", return_value=cfg):
+    with patch.object(ros, "_cfg", return_value=BASE_CFG):
+        ros.clear_cache()
+        yield
+        ros.clear_cache()
+
+
+@pytest.fixture
+def tiered():
+    """切成分級模式（未來要分 Viewer/Analyst/Admin 時的設定）。"""
+    with patch.object(ros, "_cfg", return_value={**BASE_CFG, "role_mode": "tiered"}):
         ros.clear_cache()
         yield
         ros.clear_cache()
@@ -41,7 +52,13 @@ def _ros_enabled():
 
 # ─────────────── feature → 角色映射 ───────────────
 
-def test_role_mapping_takes_highest():
+def test_full_mode_grants_admin_to_anyone_with_console_feature():
+    """現況：進得來就是完整權限。"""
+    assert role_from_features(["security.console"]) is Role.ADMIN
+
+
+def test_tiered_mode_takes_highest(tiered):
+    """分級機制仍在，切換設定即可啟用。"""
     assert role_from_features(["security.console"]) is Role.VIEWER
     assert role_from_features(["security.console", "security.analyst"]) is Role.ANALYST
     assert role_from_features(["security.analyst", "security.admin"]) is Role.ADMIN
@@ -49,9 +66,11 @@ def test_role_mapping_takes_highest():
     assert role_from_features(["security.admin"]) is Role.ADMIN
 
 
-def test_role_mapping_ignores_unrelated_features():
+def test_no_security_feature_is_denied_in_both_modes(tiered):
+    """沒有任何 security.* 一律擋下 —— full 模式也不能變成人人可進。"""
     assert role_from_features(["nav.dashboards", "settings.roles"]) is None
     assert role_from_features([]) is None
+    assert role_from_features(["nav.dashboards"], mode="full") is None
 
 
 # ─────────────── ROS session 解析 ───────────────
@@ -132,16 +151,25 @@ def test_api_rejects_inactive_user(client):
     assert r.status_code == 403
 
 
-def test_viewer_feature_grants_only_viewer_permissions(client):
+def test_console_feature_grants_full_access(client):
+    """現況（role_mode=full）：勾了 security.console 就是完整權限。"""
     with patch.object(ros.requests, "get", return_value=_me(["security.console"])):
         r = client.get("/api/session", cookies={"authjs.session-token": "abc"})
         assert r.status_code == 200
         body = r.json()
-        assert body["role"] == "viewer"
+        assert body["role"] == "admin"
         assert body["auth_source"] == "ros"
-        assert "view_overview" in body["permissions"]
-        assert "use_explorer" not in body["permissions"]
-        assert "use_sql_console" not in body["permissions"]
+        for perm in ("view_overview", "use_explorer", "use_sql_console",
+                     "export_evidence", "view_audit_log"):
+            assert perm in body["permissions"], f"full 模式應包含 {perm}"
+
+
+def test_tiered_mode_restricts_viewer(client, tiered):
+    """切成 tiered 後，只有 security.console 的人不能用 Log Explorer。"""
+    with patch.object(ros.requests, "get", return_value=_me(["security.console"])):
+        r = client.get("/api/session", cookies={"authjs.session-token": "abc"})
+        assert r.json()["role"] == "viewer"
+        assert "use_explorer" not in r.json()["permissions"]
 
         ros.clear_cache()
         denied = client.post("/api/explorer",

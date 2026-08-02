@@ -81,8 +81,16 @@ GROUP BY 內算出（`exprs.BRAND_MAP`），不另外查一次 ClickHouse；事�
 
 - 事件的去重鍵（`entity_key`）維持編號，名稱只進 `entity_label`；品牌改名不會
   讓同一個品牌被當成新事件。
-- 本功能上線前建立的事件沒有保留明細，UI 會標明「此筆沒有保留逐品牌明細」；
-  仍在持續中的事件會在下一次命中時自動補上。
+- 展不開的地方（Slack 告警、快速查詢解讀、事件的證據矩陣）改為在句子裡直接
+  帶出最大的幾個品牌。
+- 本功能上線前建立的事件沒有保留明細，已 resolved 的不會再被 tick 更新，用
+  回填指令補（重跑該事件的命中視窗，只寫 `context_json`，不動任何判定欄位；
+  品牌數對不上就跳過不寫）：
+
+  ```bash
+  uv run python -m console.checker.backfill_brands --dry-run   # 先看結果
+  uv run python -m console.checker.backfill_brands             # 寫入
+  ```
 - 名稱批次查詢並快取 6 小時（`config/settings.yaml` 的 `brands`）。
 - **查不到不假裝**：編號在 MySQL 沒有對應顯示「（查無品牌）（編號）」；MySQL
   不可用顯示「（品牌名稱查詢失敗）（編號）」。兩者語意不同，不可混為一談。
@@ -110,11 +118,21 @@ uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse 與 MyS
 子路徑（`/security`）時，瀏覽器會把 ROS 的 session cookie 一併送來，主控台轉發給
 ROS 的 `/api/auth/me` 換取身分與 feature。
 
-| ROS feature | 主控台角色 |
+**現階段不分級**：ROS 勾了 `security.console` 就有完整權限，沒勾就進不來。
+
+分級機制仍在程式裡（Viewer / Analyst / Admin）。要啟用時在 ROS 的
+`lib/features.ts` 加回 `security.analyst`、`security.admin` 兩個 key，
+再把 `config/settings.yaml` 的 `ros.role_mode` 從 `full` 切成 `tiered`，
+程式不必改：
+
+| ROS feature | tiered 模式的角色 |
 |---|---|
 | `security.console` | Viewer — 總覽、事件、快速查詢、資料健康、稽查模式 |
 | `security.analyst` | Analyst — ＋Log Explorer、遮罩明細、判定、匯出 |
 | `security.admin` | Admin — ＋唯讀 SQL、規則與 Allowlist、操作稽核 |
+
+稽查若問到「權限是否分離」（一般人不該能開唯讀 SQL、匯出明細），屆時再切
+tiered 才答得出來。
 
 三種狀況在畫面上刻意分開：**未登入**（導向 ROS 登入頁）、**已登入但無權限**
 （顯示無權限頁與登入中的 email）、**ROS 不可用**（回 503，不放行也不誤導使用者

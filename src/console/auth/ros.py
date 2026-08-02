@@ -70,6 +70,12 @@ def enabled() -> bool:
     return bool(base_url()) and bool(_cfg().get("enabled", True))
 
 
+def role_mode() -> str:
+    """full = 進得來就是完整權限；tiered = 依 feature 分 Viewer/Analyst/Admin。"""
+    mode = str(_cfg().get("role_mode", "full")).lower()
+    return mode if mode in ("full", "tiered") else "full"
+
+
 def login_url(next_path: str = "/") -> str:
     """ROS 登入頁；登入完成後導回主控台的 next_path。
 

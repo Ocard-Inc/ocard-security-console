@@ -14,8 +14,12 @@ import { tooltipHTML } from './tooltip.js';
  * @param {object}  spec.rowsRef      非響應式的 { current: rows } 持有者。
  *                                    tooltip 在被呼叫的當下才讀它，所以 options
  *                                    可以完全不依賴資料數值（見 ApexChart.js 的契約）。
- * @param {Function} spec.tooltipRows (row, index) => [{name, value, color, dashed?, muted?}]
- * @param {Function=} spec.tooltipNote (row) => string|null
+ * @param {Function} spec.tooltipRows  (row, index) => [{name, value, color, dashed?, muted?}]
+ * @param {Function=} spec.tooltipTitle (row) => string
+ *                                     預設用 row.label；各頁的 row 形狀不一致
+ *                                     （總覽有 label，Explorer 與事件詳細只有 bucket），
+ *                                     所以要能覆寫。tooltip 裡放完整時間戳比軸上的縮寫有用。
+ * @param {Function=} spec.tooltipNote  (row) => string|null
  * @param {Array}   spec.colors       依序列順序的顏色
  * @param {Array}   spec.strokeWidth  依序列順序的線寬（0 = 不畫線，給 rangeArea 用）
  * @param {Array}   spec.dashArray    依序列順序的虛線樣式
@@ -25,6 +29,7 @@ import { tooltipHTML } from './tooltip.js';
 export function timeSeriesOptions(spec) {
   const {
     rowsRef, tooltipRows, tooltipNote,
+    tooltipTitle = row => row.label,
     colors, strokeWidth, dashArray,
     dense = false, showMarkers = false, type = 'line',
   } = spec;
@@ -82,7 +87,7 @@ export function timeSeriesOptions(spec) {
         const row = rowsRef.current?.[dataPointIndex];
         if (!row) return '';
         return tooltipHTML({
-          title: row.label,
+          title: tooltipTitle(row),
           rows: tooltipRows(row, dataPointIndex).filter(Boolean),
           note: tooltipNote ? tooltipNote(row) : null,
         });

@@ -1,26 +1,63 @@
 // 異常事件詳細頁（設計稿 9 節）：核心判定 → 趨勢 → 證據矩陣 → 資料限制 → 調查判定
-import { api, post, num, mult, multColor, shortTime, duration, lineChart, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
+import ApexChart from '../charts/ApexChart.js';
+import { token } from '../charts/tokens.js';
+import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
 
 const JUDGEMENTS = ['已確認攻擊', '合法整合', '誤報', '證據不足', '保持觀察'];
 
 export default {
   props: ['evtNo', 'canJudge'],
   emits: ['back'],
-  components: { BrandBreakdown },
+  components: { BrandBreakdown, ApexChart },
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
     judge: '', reason: '', evidence: '', nextStep: '', submitting: false, submitted: null,
     SEV_LABEL, SOURCE_LABEL, JUDGEMENTS,
   }),
   computed: {
-    chart() {
-      const rows = this.e?.trend?.rows || [];
-      if (!rows.length) return null;
-      return lineChart(rows.map(r => ({ ...r, label: r.bucket.slice(6) })),
-        [{ key: 'count', label: '請求量', color: '#B42318' }],
-        { medianKey: 'median', p95Key: 'p95', height: 220 });
+    trendRows() { return this.e?.trend?.rows || []; },
+    hasTrend() { return this.trendRows.length > 0; },
+    // 這個事件的基線資料是否存在。全部是 null 時就不畫帶，也不畫基準線。
+    hasBaseline() {
+      return this.trendRows.some(r => r.median != null && r.p95 != null);
     },
+    trendSeries() {
+      const rows = this.trendRows.map(r => ({ ...r, label: r.bucket.slice(6) }));
+      const count = {
+        name: '請求量', type: 'line',
+        data: rows.map(r => ({ x: r.label, y: r.count })),
+      };
+      // 基準帶在最前面 = 畫在最底層，資料線疊在上面
+      return this.hasBaseline
+        ? [...baselineSeries(rows, { medianKey: 'median', p95Key: 'p95' }), count]
+        : [count];
+    },
+    trendOptions() {
+      const band = token('--chart-band');
+      const baseline = token('--chart-baseline');
+      const event = token('--chart-event');
+      return timeSeriesOptions({
+        rowsRef: this._rows,
+        type: this.hasBaseline ? 'rangeArea' : 'line',
+        colors: this.hasBaseline ? [band, baseline, event] : [event],
+        strokeWidth: this.hasBaseline ? [0, 1, 2.5] : [2.5],
+        dashArray: this.hasBaseline ? [0, 4, 0] : [0],
+        showMarkers: this.trendRows.length <= 40,
+        tooltipTitle: row => row.bucket,
+        tooltipRows: row => [
+          { name: '請求量', value: num(row.count), color: event },
+          this.hasBaseline
+            ? { name: '同時段 median', value: num(row.median), color: baseline, muted: true }
+            : null,
+          this.hasBaseline
+            ? { name: '同時段 P95', value: num(row.p95), color: baseline, muted: true }
+            : null,
+        ],
+      });
+    },
+    trendSignature() { return `evt|${this.evtNo}|${this.hasBaseline}`; },
     contextRows() {
       const c = this.e?.context || {};
       const skip = new Set(['metric']);
@@ -31,8 +68,11 @@ export default {
     num, mult, multColor, shortTime, duration,
     async load() {
       this.loading = true; this.error = null;
-      try { this.e = await api('/events/' + this.evtNo); }
-      catch (err) { this.error = err.message; }
+      try {
+        this.e = await api('/events/' + this.evtNo);
+        // tooltip 讀這個非響應式持有者（見 ApexChart.js 的契約）
+        this._rows.current = (this.e?.trend?.rows || []).map(r => ({ ...r, label: r.bucket.slice(6) }));
+      } catch (err) { this.error = err.message; }
       this.loading = false;
     },
     async submitJudge() {
@@ -51,6 +91,7 @@ export default {
       return typeof v === 'number' ? num(v) : String(v);
     },
   },
+  created() { this._rows = { current: [] }; },
   mounted() { this.load(); },
   watch: { evtNo() { this.load(); this.submitted = null; } },
   template: `
@@ -142,20 +183,14 @@ export default {
             <button :class="{on:showTable}" @click="showTable=true">表格</button>
           </div>
         </div>
-        <template v-if="chart && !showTable">
-          <svg :viewBox="'0 0 '+chart.W+' '+chart.H" style="width:100%;display:block">
-            <rect v-if="chart.band" :x="chart.padL" :y="chart.band.y"
-                  :width="chart.W-chart.padL-chart.padR" :height="chart.band.height" fill="#EFF4FB"></rect>
-            <line v-if="chart.medianY!==null" :x1="chart.padL" :y1="chart.medianY"
-                  :x2="chart.W-chart.padR" :y2="chart.medianY" stroke="#98A2B3" stroke-dasharray="4 4"></line>
-            <path :d="chart.paths[0].d" fill="none" stroke="#B42318" stroke-width="2.5"></path>
-            <text v-for="(l,i) in chart.xLabels" :key="i" :x="l.x" :y="chart.H-6"
-                  font-size="10" fill="#667085" text-anchor="middle">{{ l.text }}</text>
-            <text :x="chart.padL" y="14" font-size="10" fill="#667085">
-              虛線 = 同時段 median · 灰帶 = P95 範圍</text>
-          </svg>
+        <template v-if="hasTrend && !showTable">
+          <ApexChart :series="trendSeries" :options="trendOptions" :signature="trendSignature"
+                     :height="240" aria-label="事件請求量趨勢，含同時段基線；詳細數值請切換表格檢視" />
+          <div v-if="hasBaseline" class="muted" style="font-size:11px;margin-top:4px">
+            虛線 = 同時段 median · 淡帶 = median–P95 範圍（逐時間桶）
+          </div>
         </template>
-        <table v-else-if="chart" style="font-size:12.5px">
+        <table v-else-if="hasTrend" style="font-size:12.5px">
           <thead><tr><th>時間桶</th><th class="right">請求量</th>
             <th class="right">median</th><th class="right">P95</th></tr></thead>
           <tbody>
@@ -166,7 +201,7 @@ export default {
           </tbody>
         </table>
         <div v-else class="muted" style="padding:20px 0;font-size:13px">{{ e.trend.note }}</div>
-        <div v-if="chart" class="muted" style="font-size:11.5px;margin-top:6px">{{ e.trend.note }}</div>
+        <div v-if="hasTrend" class="muted" style="font-size:11.5px;margin-top:6px">{{ e.trend.note }}</div>
       </div>
     </div>
 

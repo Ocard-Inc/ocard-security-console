@@ -76,6 +76,8 @@ export default {
         dashArray: [0],
         dense,
         showMarkers: !dense,
+        // 軸上是縮寫（08-03 00:10），tooltip 給完整時間戳
+        tooltipTitle: row => row.bucket,
         tooltipRows: row => [
           { name: '請求量', value: num(row.count), color: token('--chart-explorer') },
         ],

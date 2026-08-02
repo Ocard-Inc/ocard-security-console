@@ -33,19 +33,11 @@ export function horizontalBarOptions(spec) {
         distributed: false,               // 顏色由每筆的 fillColor 決定
       },
     },
-    dataLabels: {
-      enabled: true,
-      textAnchor: 'start',
-      offsetX: 6,
-      formatter: v => num(v),             // 只回傳純字串，不可回傳標記
-      style: {
-        colors: [token('--chart-axis-text')],
-        fontSize: '11px',
-        fontWeight: 500,
-        fontFamily: token('--chart-font-num'),
-      },
-      dropShadow: { enabled: false },
-    },
+    // 不在長條上標數字。ApexCharts 橫向長條的 dataLabel 是「畫在長條內部」，
+    // 深色填滿上放深色文字會看不見，改成白色又會在短長條上被裁掉。
+    // 而且 dataviz 的規則本來就是「不要每一個標記都標數字」——
+    // 精確值由 hover tooltip、x 軸刻度與下方表格三處提供，不缺這一個。
+    dataLabels: { enabled: false },
     xaxis: {
       crosshairs: { show: false },        // 長條圖不用十字準星，每根自己是命中區
       tooltip: { enabled: false },
@@ -66,7 +58,7 @@ export function horizontalBarOptions(spec) {
       ...base.grid,
       xaxis: { lines: { show: true } },
       yaxis: { lines: { show: false } },
-      padding: { top: 0, right: 40, bottom: 0, left: 6 },  // 右邊留給 dataLabel
+      padding: { top: 0, right: 12, bottom: 0, left: 6 },
     },
     tooltip: {
       enabled: true,

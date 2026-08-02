@@ -121,6 +121,18 @@ def test_breakdown_survives_mysql_outage(monkeypatch):
     assert out == [{"brand": 1180, "label": f"{brands.UNAVAILABLE_NAME}（1180）", "count": 42}]
 
 
+def test_top_summary_is_one_line_for_places_that_cannot_expand():
+    top = [{"brand": 7340, "label": "台灣和民集團（7340）", "count": 4000},
+           {"brand": 1180, "label": "wa10 瓦城（1180）", "count": 646},
+           {"brand": 475, "label": "築間餐飲集團（475）", "count": 12},
+           {"brand": 1, "label": "Ocard 小館（1）", "count": 3}]
+    assert brands.top_summary(top) == (
+        "台灣和民集團（7340） 4,000 次、wa10 瓦城（1180） 646 次、築間餐飲集團（475） 12 次")
+    assert brands.top_summary(top, 1) == "台灣和民集團（7340） 4,000 次"
+    assert brands.top_summary([]) == ""
+    assert brands.top_summary(None) == ""
+
+
 @pytest.mark.skipif(mysql_config() is None, reason="未設定 MYSQL_HOST")
 def test_real_lookup_against_mysql():
     """實際對照 MySQL：7340 是 README 記載的 7/16 事件品牌。"""

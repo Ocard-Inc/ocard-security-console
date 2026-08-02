@@ -215,7 +215,9 @@ def _login_success_anomaly(p: dict) -> dict:
     note = ("此時間範圍內登入成功量都在同時段基線範圍內。" if not peak or peak["multiple"] < 2
             else f"{peak['bucket']} 登入成功 {peak['login_success']} 次，為同時段 median "
                  f"（{peak['median']}）的 {peak['multiple']} 倍，涉及 {peak['sources']} 個來源、"
-                 f"{peak['brands']} 個品牌。")
+                 f"{peak['brands']} 個品牌"
+                 + (f"（最多的是 {brands.top_summary(peak['brand_top'])}）"
+                    if peak["brand_top"] else "") + "。")
     return _result(["bucket", "login_success", "sources", "brands", "median", "p95", "multiple"],
                    rows, note, time_range=f"{s} ~ {e}")
 
@@ -294,7 +296,9 @@ def _orderlist_traversal(p: dict) -> dict:
         note = (f"{len(trav)} 個操作者呈現大量查閱特徵。最高者 {top['actor_fp']} 於 "
                 f"{top['route']} 查閱 {top['count']:,} 次"
                 + (f"，為同時段 median（{top['median']}）的 {top['multiple']:,.0f} 倍" if top["multiple"] else "")
-                + f"，涉及 {top['brands']} 個品牌。")
+                + f"，涉及 {top['brands']} 個品牌"
+                + (f"（最多的是 {brands.top_summary(top['brand_top'])}）"
+                   if top["brand_top"] else "") + "。")
     else:
         note = "未觀察到大量查閱特徵；此範圍內的 orderlist 存取量都在同時段基線範圍內。"
     return _result(["route", "actor_fp", "count", "brands", "unique_paths",
