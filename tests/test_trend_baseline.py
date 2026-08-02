@@ -75,3 +75,44 @@ def test_legacy_login_fields_still_present(buckets):
     b = buckets[-1]
     assert b["login_median"] == b["login_success_median"]
     assert b["login_p95"] == b["login_success_p95"]
+
+
+# ── start 也必須對齊分桶格線 ───────────────────────────────────────────────
+# 「今天」的分鐘數是現算的（例如 125），不見得是分桶的倍數。以前只對齊了 end，
+# start = end - minutes 就會落在格線之間，zero-fill 產生的每個 cursor 全部偏移，
+# 與 ClickHouse 回傳的桶起點永遠對不上 —— 13 個桶全部讀成 0，而且不會報錯。
+
+@pytest.mark.parametrize("minutes", [125, 164, 97, 233])
+def test_odd_window_lengths_are_not_all_zero(client, minutes):
+    """分鐘數不是分桶倍數時，整段不可以變成 0。"""
+    r = client.get(f"/api/overview?minutes={minutes}")
+    assert r.status_code == 200
+    buckets = r.json()["trend"]["buckets"]
+    assert buckets
+    assert sum(b["api"] for b in buckets) > 0, (
+        f"minutes={minutes} 的整段 api 都是 0 —— start 沒有對齊分桶格線？")
+
+
+@pytest.mark.parametrize("minutes", [125, 164, 1440, 10080])
+def test_bucket_starts_are_on_the_grid(client, minutes):
+    from console.core import timewin
+    t = client.get(f"/api/overview?minutes={minutes}").json()["trend"]
+    b = t["bucket_minutes"]
+    for row in t["buckets"]:
+        dt = timewin.parse(row["bucket"])
+        assert timewin.align_bucket(dt, b) == dt, (
+            f"{row['bucket']} 不在 {b} 分鐘的格線上")
+
+
+def test_multiday_window_labels_include_the_date(client):
+    """7 天 × 120 分桶會有 84 個標籤，只寫 %H:%M 的話僅 12 種相異值，分不出哪一天。"""
+    buckets = client.get("/api/overview?minutes=10080").json()["trend"]["buckets"]
+    labels = [b["label"] for b in buckets]
+    assert len(set(labels)) == len(labels), "跨日視窗的 x 標籤必須唯一"
+    assert "/" in labels[0], f"跨日視窗的標籤要帶日期，目前是 {labels[0]!r}"
+
+
+def test_single_day_window_labels_stay_short(client):
+    labels = [b["label"] for b in
+              client.get("/api/overview?minutes=360").json()["trend"]["buckets"]]
+    assert "/" not in labels[0], f"單日視窗不需要日期，目前是 {labels[0]!r}"

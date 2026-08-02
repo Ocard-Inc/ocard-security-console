@@ -1,17 +1,33 @@
 // 異常事件清單 + 快速預覽 Drawer（設計稿 8 節）
 import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
+import RangePicker from '../components/range-picker.js';
+
+// 這一頁的時間語意是「待辦積壓」，不是即時監測 —— 所以用自己的一組預設
+// （30／90 天在這裡有意義，1 小時沒有）。key, 顯示文字, 小時數。
+const RANGES = [
+  ['24h', '最近 24 小時', 24],
+  ['7d', '最近 7 天', 168],
+  ['30d', '最近 30 天', 720],
+  ['90d', '最近 90 天', 2160],
+];
 
 export default {
   props: ['initialFilter'],
   emits: ['open-event'],
-  components: { BrandBreakdown },
+  components: { BrandBreakdown, RangePicker },
   data: () => ({
     data: null, loading: true, error: null, rules: [],
     // unjudged 是布林：false 代表「不過濾」，所以送出時要跳過（見 load()）
     f: { severity: '', status: '', rule_id: '', source: '', keyword: '', unjudged: false, hours: 168 },
-    drawer: null, SEV_LABEL, SOURCE_LABEL,
+    drawer: null, range: '7d', RANGES, SEV_LABEL, SOURCE_LABEL,
   }),
+  watch: {
+    range(key) {
+      this.f.hours = RANGES.find(r => r[0] === key)?.[2] ?? 168;
+      this.load();
+    },
+  },
   methods: {
     num, mult, multColor, shortTime, duration,
     async load() {
@@ -79,12 +95,7 @@ export default {
           <option value="">資料來源：全部</option>
           <option v-for="(l,k) in SOURCE_LABEL" :key="k" :value="k === 'all' ? '' : k">{{ l }}</option>
         </select>
-        <select v-model.number="f.hours" @change="load">
-          <option :value="24">最近 24 小時</option>
-          <option :value="168">最近 7 天</option>
-          <option :value="720">最近 30 天</option>
-          <option :value="2160">最近 90 天</option>
-        </select>
+        <RangePicker v-model="range" :presets="RANGES" />
         <input type="text" v-model="f.keyword" @keyup.enter="load"
                placeholder="事件編號 / 規則 / fingerprint" style="width:220px">
       </div>

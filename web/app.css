@@ -184,6 +184,114 @@ select, input[type=text], input[type=number], textarea {
 textarea { resize: vertical; }
 label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; color: var(--text-3); }
 
+/* 頁面頂端的篩選列。時間這類最常動的控制項要放在它所影響的內容「上方」的一列，
+   不要塞進側欄或卡片標題裡 —— 藏起來就等於沒有。 */
+.filter-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--card-bg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 14px; margin-bottom: 14px;
+  font-size: 12.5px;
+}
+.filter-bar-label { color: var(--text-2); }
+.filter-bar-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 2px; }
+
+/* 時間區間選取器（components/range-picker.js）。
+   預設列成一列一列而不是日曆格 —— 沒有人想跟月曆搏鬥去選「最近 6 小時」；
+   日曆收在分隔線之後，只有真的要絕對區間時才用到。 */
+.rangepick { position: relative; display: inline-block; }
+.rangepick-btn { display: inline-flex; align-items: center; gap: 8px; }
+.rangepick-caret { color: var(--text-2); font-size: 10px; }
+/* 往「右」展開（left:0），不是往左（right:0）。
+   .content 是 overflow:auto 的捲動容器，會裁掉超出邊界的絕對定位子孫；
+   往左展開時彈窗會越過 content 左緣被切掉，看起來就像被左側導覽蓋住
+   —— 實測在 Log Explorer 的左欄會被裁掉 100px。往右展開則永遠落在內容區內。 */
+.rangepick-pop {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 40;
+  min-width: 232px; background: #fff; border: 1px solid var(--line);
+  border-radius: 9px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 5px;
+}
+.rangepick-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border: none; background: none; border-radius: 6px;
+  font: inherit; font-size: 13px; color: var(--text-1); text-align: left;
+}
+/* hover 只是淡淡一層，不能跟「已選取」搶 */
+.rangepick-row:hover { background: var(--line-soft); }
+.rangepick-row.sel { font-weight: 700; }
+.rangepick-check { width: 14px; flex: none; font-weight: 700; color: var(--link); }
+.rangepick-sep { height: 1px; background: var(--line); margin: 5px 0; }
+.rangepick-custom { padding: 4px 9px 6px; }
+.rangepick-custom-h { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.rangepick-custom label {
+  display: block; font-size: 11.5px; color: var(--text-2); margin-bottom: 6px;
+}
+.rangepick-custom input { display: block; width: 100%; margin-top: 3px; }
+.rangepick-hint { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+
+/* 品牌選擇器（components/brand-picker.js）。
+   命名與版面刻意對齊上面的 .rangepick-* —— 同一種「輸入框下方展開清單」的東西。 */
+.brandpick { position: relative; }
+.brandpick-input { width: 100%; }
+/* 已選狀態不是 input，是一枚可清除的標籤：選定之後就不該還能編輯文字，
+   否則使用者會以為改字就能換品牌，但實際送出的仍是舊編號。 */
+.brandpick-sel {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid #D0D5DD; border-radius: 7px; padding: 5px 6px 5px 9px;
+  background: #fff; font-size: 12.5px;
+}
+.brandpick-sel-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brandpick-x {
+  flex: none; border: none; background: none; cursor: pointer; padding: 0 3px;
+  color: var(--text-2); font-size: 12px; line-height: 1;
+}
+.brandpick-x:hover { color: var(--text-1); }
+/* 往「右」展開（left:0）的理由同 .rangepick-pop：.content 是 overflow:auto 的
+   捲動容器，往左展開會被 Log Explorer 左欄的邊界裁掉。 */
+.brandpick-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40;
+  max-height: 260px; overflow-y: auto;
+  background: #fff; border: 1px solid var(--line); border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 4px;
+}
+.brandpick-row {
+  display: block; width: 100%; text-align: left; border: none; background: none;
+  border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12.5px;
+  color: var(--text-1); cursor: pointer;
+}
+/* 鍵盤與滑鼠共用同一個 .on —— 兩者不該有各自的高亮，否則會同時亮兩列 */
+.brandpick-row.on { background: var(--line-soft); }
+.brandpick-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brandpick-meta { display: block; font-size: 11px; color: var(--text-2); font-family: var(--mono); }
+/* 停用／已刪除用文字標示，不是只換顏色 —— 同 charts 的第二編碼原則 */
+.brandpick-off { color: var(--warn); font-family: inherit; }
+.brandpick-hint { padding: 7px 8px; font-size: 11.5px; color: var(--text-2); }
+.brandpick-hint.bad { color: var(--danger); }
+
+/* Endpoint 建議選擇器（components/endpoint-picker.js）。形狀同 .brandpick-*，
+   但沒有「已選標籤」—— endpoint 是自由前綴字串，選完仍要能繼續編輯。 */
+.eppick { position: relative; }
+.eppick-input { width: 100%; }
+.eppick-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40;
+  max-height: 280px; overflow-y: auto;
+  background: #fff; border: 1px solid var(--line); border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 4px;
+}
+.eppick-row {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  border: none; background: none; border-radius: 6px; padding: 5px 8px;
+  font: inherit; font-size: 12px; color: var(--text-1); cursor: pointer;
+}
+.eppick-row.on { background: var(--line-soft); }
+.eppick-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono);
+}
+/* 次數靠右且不換行：這一欄是拿來比大小的，對齊比省空間重要 */
+.eppick-count { flex: none; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.eppick-hint { padding: 7px 8px; font-size: 11.5px; color: var(--text-2); }
+.eppick-hint.bad { color: var(--danger); }
+
 .skel { background: #EAECF0; border-radius: 10px; animation: skpulse 1.4s infinite; }
 .empty-box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 60px; text-align: center; }
 

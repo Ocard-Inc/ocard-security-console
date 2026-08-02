@@ -2,19 +2,32 @@
 import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
+import RangePicker from '../components/range-picker.js';
 import { token } from '../charts/tokens.js';
 import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
 
 const JUDGEMENTS = ['已確認攻擊', '合法整合', '誤報', '證據不足', '保持觀察'];
 
+// 趨勢圖的區間：預設是「往事件視窗前後各再拉多久」（分鐘），
+// 另有自訂絕對區間。必須與 routes.EVENT_TREND_PADDINGS 一致。
+// RangePicker 的格式是 [key, 顯示文字, 值]。
+const PADS = [
+  ['30m', '前後 30 分', 30],
+  ['3h', '前後 3 小時', 180],
+  ['12h', '前後 12 小時', 720],
+  ['24h', '前後 24 小時', 1440],
+  ['2d', '前後 2 天', 2880],
+];
+
 export default {
   props: ['evtNo', 'canJudge'],
   emits: ['back'],
-  components: { BrandBreakdown, ApexChart },
+  components: { BrandBreakdown, ApexChart, RangePicker },
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
+    range: '30m', customStart: '', customEnd: '',
     judge: '', reason: '', evidence: '', nextStep: '', submitting: false, submitted: null,
-    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS,
+    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, PADS,
   }),
   computed: {
     trendRows() { return this.e?.trend?.rows || []; },
@@ -23,8 +36,15 @@ export default {
     hasBaseline() {
       return this.trendRows.some(r => r.median != null && r.p95 != null);
     },
+    // bucket 是 "08/02 19:30"。單日內只顯示時刻比較清爽；一旦跨日就必須保留
+    // 日期，否則往前拉 2 天會看到同一組時刻重複好幾輪，分不出是哪一天。
+    trendLabels() {
+      const days = new Set(this.trendRows.map(r => r.bucket.slice(0, 5)));
+      return days.size > 1 ? (b => b) : (b => b.slice(6));
+    },
     trendSeries() {
-      const rows = this.trendRows.map(r => ({ ...r, label: r.bucket.slice(6) }));
+      const toLabel = this.trendLabels;
+      const rows = this.trendRows.map(r => ({ ...r, label: toLabel(r.bucket) }));
       const count = {
         name: '請求量', type: 'line',
         data: rows.map(r => ({ x: r.label, y: r.count })),
@@ -57,7 +77,23 @@ export default {
         ],
       });
     },
-    trendSignature() { return `evt|${this.evtNo}|${this.hasBaseline}`; },
+    trendSignature() { return `evt|${this.evtNo}|${this.range}|${this.hasBaseline}`; },
+    isCustom() { return this.range === 'custom' && !!this.customStart && !!this.customEnd; },
+    // 自訂區間含今天時，右界會被夾到資料實際落地的時間 —— 要講出來
+    rangeClamped() {
+      if (!this.isCustom || !this.trendRows.length) return false;
+      // rows 的 bucket 是 "MM/DD HH:MM"，補上年份才好比
+      const last = `${this.customEnd.slice(0, 4)}/${this.trendRows[this.trendRows.length - 1].bucket}`;
+      return last < `${this.customEnd.slice(0, 4)}/${this.customEnd.slice(5, 16).replace('-', '/')}`;
+    },
+    windowQuery() {
+      if (this.isCustom) {
+        return `start=${encodeURIComponent(this.customStart)}`
+             + `&end=${encodeURIComponent(this.customEnd)}`;
+      }
+      const pad = PADS.find(p => p[0] === this.range)?.[2] ?? 30;
+      return `pad_minutes=${pad}`;
+    },
     contextRows() {
       const c = this.e?.context || {};
       // brand_top 已在上方「涉及品牌」以可展開的明細呈現，這裡再倒一次只是雜訊
@@ -70,9 +106,11 @@ export default {
     async load() {
       this.loading = true; this.error = null;
       try {
-        this.e = await api('/events/' + this.evtNo);
-        // tooltip 讀這個非響應式持有者（見 ApexChart.js 的契約）
-        this._rows.current = (this.e?.trend?.rows || []).map(r => ({ ...r, label: r.bucket.slice(6) }));
+        this.e = await api(`/events/${this.evtNo}?${this.windowQuery}`);
+        // tooltip 讀這個非響應式持有者（見 ApexChart.js 的契約）；
+        // label 要與 trendSeries 用同一套規則，否則跨日時兩邊對不上
+        const toLabel = this.trendLabels;
+        this._rows.current = (this.e?.trend?.rows || []).map(r => ({ ...r, label: toLabel(r.bucket) }));
       } catch (err) { this.error = err.message; }
       this.loading = false;
     },
@@ -88,6 +126,11 @@ export default {
       } catch (err) { this.error = err.message; }
       this.submitting = false;
     },
+    applyCustomRange({ start, end }) {
+      this.customStart = start;
+      this.customEnd = end;
+      this.load();
+    },
     formatValue(v) {
       if (typeof v === 'number') return num(v);
       // 陣列／物件走 String() 會變成 [object Object]；未來 context 多出結構化欄位
@@ -98,7 +141,11 @@ export default {
   },
   created() { this._rows = { current: [] }; },
   mounted() { this.load(); },
-  watch: { evtNo() { this.load(); this.submitted = null; } },
+  watch: {
+    evtNo() { this.load(); this.submitted = null; },
+    // 'custom' 由 applyCustomRange 自己觸發，避免 start/end 還沒填好就查
+    range(key) { if (key !== 'custom') this.load(); },
+  },
   template: `
 <div>
   <div v-if="loading" class="skel" style="height:400px"></div>
@@ -181,8 +228,19 @@ export default {
 
       <!-- 趨勢 -->
       <div class="card">
-        <div style="display:flex;align-items:center;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
           <div class="card-h">事件趨勢</div>
+          <!-- 事件視窗常常只有一兩個小時，只看前後 30 分鐘看不出事件之前長什麼樣。
+               預設是「往前後各再拉多久」，也可以直接指定絕對區間。
+               分桶由後端依總長自動選。 -->
+          <RangePicker v-model="range" :presets="PADS" allow-custom
+                       :start="customStart" :end="customEnd"
+                       @apply-custom="applyCustomRange" />
+          <span v-if="e.trend.bucket_minutes && trendRows.length" class="muted"
+                style="font-size:11.5px">
+            {{ trendRows[0].bucket }} ~ {{ trendRows[trendRows.length-1].bucket }} ·
+            {{ e.trend.bucket_minutes }} 分鐘分桶<span v-if="rangeClamped"
+              style="color:var(--warn)"> · 右界止於已落地的資料</span></span>
           <div class="toggle" style="margin-left:auto">
             <button :class="{on:!showTable}" @click="showTable=false">圖表</button>
             <button :class="{on:showTable}" @click="showTable=true">表格</button>

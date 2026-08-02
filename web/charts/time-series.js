@@ -28,8 +28,12 @@ import { niceMax } from './format.js';
  * @param {boolean=} spec.showMarkers 點數少時顯示資料點
  * @param {boolean=} spec.compact     小倍數面板：更少刻度、更緊的內距、不畫 x 軸線
  * @param {string=}  spec.id          ApexCharts 的 chart.id
- * @param {string=}  spec.group       同一個 group 的圖表會同步準星 —— 小倍數的關鍵，
- *                                    滑鼠移到任一面板，四個面板的準星一起動
+ * @param {string=}  spec.group       同步準星用。**只有在同群組的圖表設定完全一樣時
+ *                                    才可以用**：ApexCharts 會把 updateOptions
+ *                                    廣播給整個群組，設定不同的話最後一個 update 的
+ *                                    圖表會覆蓋掉其他人的 tooltip.custom 與顏色。
+ *                                    總覽的四個小倍數面板就是因為這樣而拿掉 group
+ *                                    （見 pages/overview.js 的說明）。
  */
 export function timeSeriesOptions(spec) {
   const {

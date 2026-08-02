@@ -2,8 +2,13 @@
 import { api, num, mult, multColor, clockTime, duration, shortTime, SEV_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
+import RangePicker, { presetMinutes } from '../components/range-picker.js';
 import { token } from '../charts/tokens.js';
 import { timeSeriesOptions } from '../charts/time-series.js';
+
+// 排名在 7 天視窗要 3 秒以上（sources 的 JSONExtract 掃 19M 列）。
+// 超過這個界線就不再跟著 30 秒計時器自動重跑 —— 那等於自我壓測。
+const AUTO_REFRESH_MAX_MINUTES = 1440;
 import { horizontalBarOptions, barHeight, multipleFill } from '../charts/bar.js';
 
 const SEV_META = {
@@ -33,19 +38,52 @@ const PANELS = [
   { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
 ];
 
-// 同一個 group 的圖表會同步準星：滑鼠移到任一面板，四個面板的準星一起動，
-// tooltip 則各自顯示自己那條線的值。
-const TREND_GROUP = 'ov-trend';
+// ★ 這裡刻意「不」用 ApexCharts 的 chart.group。
+//
+// group 原本是為了同步準星，但它同時做了兩件我們不要的事：
+//   1. 一次秀出四個 tooltip —— 四個浮動視窗同時彈出，各自貼在自己的小面板上。
+//   2. **把 updateOptions 廣播給同群組的所有圖表。** 切換時間區間時四個面板會
+//      依序 update，最後一個（登入失敗）的設定就覆蓋掉全部，包含 tooltip.custom。
+//      症狀：切過區間之後，四個面板的 tooltip 全部顯示「登入失敗」的數字。
+//      實測 07/30 08:00 那一桶，API 面板的 tooltip 顯示 22 —— 那是 login_failed
+//      的值（median 12／P95 23 也完全吻合），API 真正的值是 49,974。
+//
+// 初次載入不會壞，因為那時走的是 new ApexCharts()、沒有廣播；所以這個 bug
+// 只在「切換過區間之後」才出現，正好對應回報的現象。
+//
+// 四個面板的 x 類別與寬度本來就一致，視覺上已經對齊；為了同步準星換來四個
+// 互相打架又會顯示錯誤資料的 tooltip，並不划算。
 
 export default {
-  props: ['minutes', 'reloadToken'],
+  props: ['reloadToken'],
   emits: ['open-event', 'goto'],
-  components: { BrandBreakdown, ApexChart },
+  components: { BrandBreakdown, ApexChart, RangePicker },
   data: () => ({
     data: null, reloading: false, error: null, showTable: false, showRankTable: false, rankTab: 0,
+    // 區間由本頁自己持有（以前在全域 header，但只有這一頁收得到）。
+    range: '6h', customStart: '', customEnd: '',
     SEV_META, RANK_TABS, PANELS, SEV_LABEL,
   }),
   computed: {
+    isCustom() { return this.range === 'custom' && !!this.customStart && !!this.customEnd; },
+    // 自訂區間下 minutes 只用來決定「排名要不要夾在 24 小時」與自動更新的門檻
+    minutes() {
+      if (!this.isCustom) return presetMinutes(this.range);
+      const ms = new Date(this.customEnd.replace(' ', 'T'))
+               - new Date(this.customStart.replace(' ', 'T'));
+      return Math.max(10, Math.round(ms / 60000));
+    },
+    windowQuery() {
+      return this.isCustom
+        ? `start=${encodeURIComponent(this.customStart)}&end=${encodeURIComponent(this.customEnd)}`
+        : `minutes=${this.minutes || 60}`;
+    },
+    // 選了含今天的區間時，右界會被夾到「資料實際落地的時間」。
+    // 不講的話，選到今天卻只看到幾小時前，會以為系統壞了。
+    rangeClamped() {
+      return this.isCustom && this.data
+        && this.data.trend.end < this.customEnd;
+    },
     buckets() { return this.data?.trend.buckets || []; },
 
     /**
@@ -78,7 +116,6 @@ export default {
           options: timeSeriesOptions({
             rowsRef: this._rows,
             id: 'ov-' + p.key,
-            group: TREND_GROUP,
             compact: true,
             colors: hasBase ? [color, baselineColor] : [color],
             strokeWidth: hasBase ? [2, 1] : [2],
@@ -181,7 +218,7 @@ export default {
     async load() {
       this.reloading = true;
       try {
-        const d = await api(`/overview?minutes=${this.minutes || 60}`);
+        const d = await api(`/overview?${this.windowQuery}`);
         // tooltip 讀這兩個非響應式持有者，所以 options 可以完全不依賴資料數值
         this._rows.current = d.trend.buckets;
         this.data = d;
@@ -194,6 +231,11 @@ export default {
      * 面板標頭的數字。P95 只出現在這裡與 tooltip —— 它不畫進圖裡（見 panels() 的說明）。
      * 用 HTML 標頭而不是 ApexCharts 的 title，才帶得動這串即時數字。
      */
+    applyCustomRange({ start, end }) {
+      this.customStart = start;
+      this.customEnd = end;
+      this.load();
+    },
     panelMeta(key) {
       const b = this.latestBucket;
       if (!b) return { current: '—', baseline: '', multiple: null };
@@ -212,8 +254,13 @@ export default {
   },
   mounted() { this.load(); },
   watch: {
-    minutes() { this.load(); },
-    reloadToken() { this.load(); },
+    // 'custom' 由 applyCustomRange 自己觸發，避免在 start/end 還沒填好時就查
+    range(key) { if (key !== 'custom') this.load(); },
+    // 30 秒計時器只送訊號，要不要真的重查由這裡決定 ——
+    // 寬視窗的 /overview 要好幾秒，配 30 秒計時器等於自我壓測。
+    reloadToken() {
+      if (this.minutes <= AUTO_REFRESH_MAX_MINUTES) this.load();
+    },
     // 換排名分頁時同步更新 tooltip 讀的那份資料
     rankTab() { this._rankRows.current = this.rankRows; },
   },
@@ -266,7 +313,13 @@ export default {
       <strong>{{ data.monitor.label }}</strong>　{{ data.monitor.note }}
     </div>
 
-    <!-- 第一列：狀態摘要 -->
+    <!-- 第一列：狀態摘要。
+         這一列與下面的健康／注意／待判定都**不吃**趨勢圖的時間區間，
+         各自標明自己的窗 —— 不標的話，把選單從 header 搬到頁面上只是換個地方誤導。 -->
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+      <div class="card-h">事件摘要</div>
+      <span class="muted" style="font-size:12px">固定近 24 小時（與下方趨勢圖的時間區間無關）</span>
+    </div>
     <div class="grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
       <div v-for="c in data.severity_cards" :key="c.severity" class="card"
            :style="{borderTop:'3px solid '+SEV_META[c.severity].bar, padding:'14px 16px', cursor:'pointer'}"
@@ -295,10 +348,16 @@ export default {
 
     <!-- 第二列：即時趨勢 -->
     <div class="card" style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;margin-bottom:10px">
-        <div class="card-h">最近 {{ minutes || 60 }} 分鐘 Request 趨勢</div>
-        <div class="muted" style="font-size:12px;margin-left:10px">
-          {{ data.trend.bucket_minutes }} 分鐘分桶 · 對照 28 天同時段 median 與 P95</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <div class="card-h">Request 趨勢</div>
+        <RangePicker v-model="range" allow-custom :start="customStart" :end="customEnd"
+                     @apply-custom="applyCustomRange" />
+        <div class="muted" style="font-size:12px">
+          {{ data.trend.start.slice(5,16) }} ~ {{ data.trend.end.slice(5,16) }} ·
+          {{ data.trend.bucket_minutes }} 分鐘分桶（依區間自動調整）· 對照 28 天同時段基線
+          <span v-if="rangeClamped" style="color:var(--warn)">
+            · 右界止於目前已落地的資料（資料有 6 分鐘落地延遲）</span>
+        </div>
         <div class="toggle" style="margin-left:auto">
           <button :class="{on:!showTable}" @click="showTable=false">圖表</button>
           <button :class="{on:showTable}" @click="showTable=true">表格</button>
@@ -354,7 +413,10 @@ export default {
     <!-- 第三列：需要注意 + 資料來源健康 -->
     <div class="grid" style="grid-template-columns:3fr 2fr;margin-bottom:16px">
       <div class="card">
-        <div class="card-h" style="margin-bottom:12px">目前最需要注意</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px">
+          <div class="card-h">目前最需要注意</div>
+          <span class="muted" style="font-size:11.5px">不限時間（進行中的事件與未判定的積壓）</span>
+        </div>
         <div v-if="data.attention.length" style="display:flex;flex-direction:column;gap:10px">
           <div v-for="e in data.attention" :key="e.evt_no" @click="$emit('open-event', e.evt_no)"
                style="display:flex;gap:12px;align-items:flex-start;padding:11px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer">
@@ -407,8 +469,9 @@ export default {
       </div>
 
       <div class="card">
-        <div style="display:flex;align-items:center;margin-bottom:12px">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px">
           <div class="card-h">資料來源健康</div>
+          <span class="muted" style="font-size:11.5px">今日累計</span>
           <a @click="$emit('goto','health')" style="margin-left:auto;font-size:12px">詳細 →</a>
         </div>
         <div style="display:flex;flex-direction:column;gap:8px">
@@ -436,7 +499,8 @@ export default {
                 @click="rankTab=i">{{ t.label }}</button>
         <span class="muted" style="font-size:12px;margin-left:auto">
           最近 {{ rankWindowLabel }}，對照 28 天同時段基線
-          <template v-if="rankWindowClamped">（趨勢為 {{ minutes || 60 }} 分鐘）</template>
+          <template v-if="rankWindowClamped">
+            （排名查詢較貴，上限 24 小時；趨勢圖仍為完整區間）</template>
         </span>
         <div class="toggle">
           <button :class="{on:!showRankTable}" @click="showRankTable=false">圖表</button>

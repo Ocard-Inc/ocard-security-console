@@ -134,3 +134,216 @@ def test_events_unjudged_default_off(client):
     a = client.get("/api/events").json()["total"]
     b = client.get("/api/events?unjudged=false").json()["total"]
     assert a == b
+
+
+# ── 自適應分桶 ────────────────────────────────────────────────────────────
+# 固定 10 分鐘分桶時「最近 1 小時」只有 6 個點、「最近 7 天」有 1008 個點。
+# 桶數對不上預期通常代表 timewin.align_bucket 與 ClickHouse 的格線錯位 ——
+# 那個 bug 不會報錯，只會讓整張圖靜靜變成一條 0，所以這裡連桶數一起驗。
+
+def test_bucket_ladder_one_hour(client):
+    t = client.get("/api/overview?minutes=60").json()["trend"]
+    assert t["bucket_minutes"] == 5
+    assert len(t["buckets"]) == 12
+
+
+def test_bucket_ladder_seven_days(client):
+    t = client.get("/api/overview?minutes=10080").json()["trend"]
+    assert t["bucket_minutes"] == 120
+    assert len(t["buckets"]) == 84
+
+
+def test_wide_window_still_has_baselines_and_sane_multiples(client):
+    """分桶變粗時基線也要跟著換粒度，否則會冒出假的 12 倍。"""
+    buckets = client.get("/api/overview?minutes=10080").json()["trend"]["buckets"]
+    for name in ("api", "backend", "login_success", "login_failed"):
+        assert any(b[f"{name}_median"] is not None for b in buckets), (
+            f"{name} 在 120 分鐘分桶下沒有基線 —— calibrate 是否漏算這個粒度？")
+    mults = [b["api_multiple"] for b in buckets if b["api_multiple"] is not None]
+    assert mults, "應該要有倍數"
+    # 用 10 分鐘的基線比 120 分鐘的桶會系統性地放大約 12 倍；
+    # 這個上限抓得寬鬆，只是要擋掉「整段都被放大」那種粒度錯配。
+    assert sum(m > 12 for m in mults) < len(mults) / 2, (
+        f"超過一半的桶倍數 > 12，疑似基線粒度與分桶不匹配：{mults[:8]}")
+
+
+def test_no_all_zero_trend_from_grid_misalignment(client):
+    """格線錯位的症狀就是每個桶都查不到資料 → 整段變成 0。"""
+    buckets = client.get("/api/overview?minutes=10080").json()["trend"]["buckets"]
+    assert sum(b["api"] for b in buckets) > 0, "7 天視窗的 API 總量不可能是 0"
+
+
+def test_event_trend_padding_widens_the_window(client):
+    """事件視窗常常只有一兩小時，只看前後 30 分鐘看不出事件之前的脈絡。"""
+    narrow = client.get("/api/events/EVT-0001?pad_minutes=30").json()["trend"]
+    wide = client.get("/api/events/EVT-0001?pad_minutes=720").json()["trend"]
+    assert narrow["rows"] and wide["rows"]
+    # 拉寬之後分桶會變粗，但涵蓋的時間一定更長
+    assert wide["bucket_minutes"] >= narrow["bucket_minutes"]
+    span = lambda t: len(t["rows"]) * t["bucket_minutes"]
+    assert span(wide) > span(narrow)
+
+
+def test_event_trend_does_not_extend_into_the_future(client):
+    """往後拉的區間很容易超過現在，那段永遠是 0，看起來像流量歸零。"""
+    from console.core import timewin
+    rows = client.get("/api/events/EVT-0001?pad_minutes=2880").json()["trend"]["rows"]
+    now = timewin.effective_now()
+    for r in rows:
+        # bucket 是 "%m/%d %H:%M"，補上年份再比（事件都在今年）
+        stamp = f"{now.year}/{r['bucket']}"
+        assert stamp <= now.strftime("%Y/%m/%d %H:%M"), f"{r['bucket']} 在未來"
+
+
+def test_event_trend_is_zero_filled(client):
+    """沒有零填的話空桶會消失，category 軸依索引等距排列，安靜時段會被壓縮成直線。"""
+    t = client.get("/api/events/EVT-0001?pad_minutes=180").json()["trend"]
+    from console.core import timewin
+    b = t["bucket_minutes"]
+    stamps = [timewin.parse(f"2026/{r['bucket']}".replace("/", "-", 1)
+                            .replace("/", "-", 1)) for r in t["rows"]]
+    gaps = {int((b2 - b1).total_seconds() // 60) for b1, b2 in zip(stamps, stamps[1:])}
+    assert gaps <= {b}, f"桶之間應等距 {b} 分鐘，實際有 {gaps}"
+
+
+# ── 自訂絕對區間 ──────────────────────────────────────────────────────────
+# 自訂區間會產生任意長度的視窗（例如 13:07~09:23），正是以前「今天」害整張圖
+# 變成一條 0 的那個情境 —— start 沒對齊分桶格線。這組測試守著它。
+
+def test_custom_range_overview(client):
+    r = client.get("/api/overview",
+                   params={"start": "2026-07-16 00:00:00", "end": "2026-07-16 06:00:00"})
+    assert r.status_code == 200, r.text
+    t = r.json()["trend"]
+    assert t["start"] == "2026-07-16 00:00:00"
+    assert t["end"] == "2026-07-16 06:00:00"
+    assert sum(b["api"] for b in t["buckets"]) > 0, "自訂區間整段都是 0 —— start 沒對齊？"
+
+
+def test_custom_range_with_odd_boundaries_is_aligned(client):
+    """邊界故意不落在格線上，回傳的每個桶起點仍必須對齊。"""
+    from console.core import timewin
+    r = client.get("/api/overview",
+                   params={"start": "2026-08-01 13:07:00", "end": "2026-08-02 09:23:00"})
+    assert r.status_code == 200
+    t = r.json()["trend"]
+    b = t["bucket_minutes"]
+    for row in t["buckets"]:
+        dt = timewin.parse(row["bucket"])
+        assert timewin.align_bucket(dt, b) == dt, f"{row['bucket']} 不在 {b} 分鐘格線上"
+    assert sum(x["api"] for x in t["buckets"]) > 0
+
+
+def test_custom_range_validation(client):
+    bad = [
+        ({"start": "2026-08-02 10:00:00", "end": "2026-08-02 09:00:00"}, "start 晚於 end"),
+        ({"start": "2026-01-01 00:00:00", "end": "2026-08-01 00:00:00"}, "超過上限天數"),
+        ({"start": "不是時間", "end": "2026-08-02 09:00:00"}, "無法解析"),
+    ]
+    for params, why in bad:
+        assert client.get("/api/overview", params=params).status_code == 400, why
+    # 只給一半視同沒給，回退成 minutes
+    assert client.get("/api/overview", params={"start": "2026-08-02 09:00:00"}).status_code == 200
+
+
+def test_custom_range_event_trend(client):
+    r = client.get("/api/events/EVT-0001",
+                   params={"start": "2026-08-01 00:00:00", "end": "2026-08-03 00:00:00"})
+    assert r.status_code == 200
+    rows = r.json()["trend"]["rows"]
+    assert rows and rows[0]["bucket"].startswith("08/01")
+
+
+def test_three_day_preset(client):
+    """新的「最近 3 天」= 4320 分鐘，應落在 120 分鐘分桶、36 個點。"""
+    t = client.get("/api/overview?minutes=4320").json()["trend"]
+    assert t["bucket_minutes"] == 120
+    assert len(t["buckets"]) == 36
+
+
+def test_whole_day_range_is_not_truncated(client):
+    """自訂區間只選日期，結束一律是 23:59:59。
+
+    右界必須**向上**取整到完整的桶 —— 向下取整的話 120 分鐘分桶會退到 22:00，
+    當天最後兩小時整段消失，而且不會有任何錯誤訊息。
+    """
+    t = client.get("/api/overview",
+                   params={"start": "2026-07-16 00:00:00",
+                           "end": "2026-07-16 23:59:59"}).json()["trend"]
+    b = t["bucket_minutes"]
+    assert len(t["buckets"]) == 1440 // b, (
+        f"整天應該有 {1440 // b} 個 {b} 分鐘的桶，實際 {len(t['buckets'])} 個")
+    assert t["start"] == "2026-07-16 00:00:00"
+    assert t["end"] == "2026-07-17 00:00:00", "右界要涵蓋到當天最後一刻"
+
+
+def test_multi_day_range_is_not_truncated(client):
+    t = client.get("/api/overview",
+                   params={"start": "2026-07-15 00:00:00",
+                           "end": "2026-07-17 23:59:59"}).json()["trend"]
+    b = t["bucket_minutes"]
+    assert len(t["buckets"]) == 3 * 1440 // b
+    assert t["end"] == "2026-07-18 00:00:00"
+
+
+# ─────────────────────── 品牌選擇器（GET /api/brands）───────────────────────
+
+def test_brands_endpoint_searches_by_name(client):
+    rows = client.get("/api/brands", params={"q": "瓦城"}).json()["rows"]
+    assert rows
+    assert all("idx" in b and "name" in b and "status" in b for b in rows)
+
+
+def test_brands_endpoint_searches_by_id(client):
+    rows = client.get("/api/brands", params={"q": "1180"}).json()["rows"]
+    assert rows[0]["idx"] == 1180
+
+
+def test_brands_endpoint_blank_query_is_empty(client):
+    assert client.get("/api/brands", params={"q": ""}).json()["rows"] == []
+    assert client.get("/api/brands").json()["rows"] == []
+
+
+def test_brands_endpoint_rejects_out_of_range_limit(client):
+    assert client.get("/api/brands", params={"q": "a", "limit": 0}).status_code == 422
+    assert client.get("/api/brands", params={"q": "a", "limit": 999}).status_code == 422
+
+
+def test_brands_endpoint_respects_limit(client):
+    rows = client.get("/api/brands", params={"q": "a", "limit": 5}).json()["rows"]
+    assert len(rows) <= 5
+
+
+# ───────────────────── endpoint 建議（GET /api/endpoints）─────────────────────
+
+_EP_WIN = {"start": "2026-08-01 00:00:00", "end": "2026-08-02 00:00:00"}
+
+
+def test_endpoints_endpoint_returns_sorted_rows(client):
+    body = client.get("/api/endpoints", params={"source": "api", **_EP_WIN}).json()
+    counts = [r["count"] for r in body["rows"]]
+    assert counts and counts == sorted(counts, reverse=True)
+    assert body["total"] == len(body["rows"])
+
+
+def test_endpoints_endpoint_rejects_auth_with_400(client):
+    """迴歸：ods_auth_log 沒有 function 欄位，以前這條路徑會生出壞 SQL 回 502。"""
+    r = client.get("/api/endpoints", params={"source": "auth", **_EP_WIN})
+    assert r.status_code == 400, r.text
+
+
+def test_endpoints_endpoint_rejects_bad_window(client):
+    r = client.get("/api/endpoints", params={
+        "source": "api", "start": "2026-08-02 00:00:00", "end": "2026-08-01 00:00:00"})
+    assert r.status_code == 400
+
+
+def test_endpoints_endpoint_requires_window(client):
+    assert client.get("/api/endpoints", params={"source": "api"}).status_code == 400
+
+
+def test_explorer_auth_endpoint_filter_is_400_not_502(client):
+    """同一個 bug 的另一個入口。"""
+    r = client.post("/api/explorer", json={
+        "source": "auth", "analysis": "trend", "endpoint": "login", **_EP_WIN})
+    assert r.status_code == 400, r.text

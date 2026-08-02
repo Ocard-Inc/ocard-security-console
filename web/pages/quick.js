@@ -1,19 +1,22 @@
 // 快速查詢（設計稿 11 節）：16 模板 / 4 分類 → 填參數 → 執行 → 結果與解讀
 import { post, api, num, pct } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
+import { toInputValue, toWallClock } from '../components/range-picker.js';
 
+// time: true 的欄位改用原生 datetime-local —— 點一下就有日曆與時鐘，
+// 不必自己打 2026-08-01 00:00:00。它是無時區的，跟資料庫存的台北牆鐘天生對應。
 const INPUT_FIELDS = {
   '時間': [
-    { key: 'start', label: '開始時間', ph: '2026-08-01 00:00:00' },
-    { key: 'end', label: '結束時間', ph: '2026-08-01 01:00:00' },
+    { key: 'start', label: '開始時間', time: true },
+    { key: 'end', label: '結束時間', time: true },
   ],
   'endpoint': [{ key: 'endpoint', label: 'Endpoint', ph: 'Api2/TransDetail', mono: true }],
   'source_fp': [{ key: 'source_fp', label: 'Source fingerprint', ph: 'src_XXXXXXXXXXXX', mono: true }],
   '兩個時間': [
-    { key: 'start_a', label: '日期 A 開始', ph: '2026-06-25 21:00:00' },
-    { key: 'end_a', label: '日期 A 結束', ph: '2026-06-25 22:00:00' },
-    { key: 'start_b', label: '日期 B 開始', ph: '2026-07-25 21:00:00' },
-    { key: 'end_b', label: '日期 B 結束', ph: '2026-07-25 22:00:00' },
+    { key: 'start_a', label: '日期 A 開始', time: true },
+    { key: 'end_a', label: '日期 A 結束', time: true },
+    { key: 'start_b', label: '日期 B 開始', time: true },
+    { key: 'end_b', label: '日期 B 結束', time: true },
   ],
 };
 
@@ -28,6 +31,7 @@ export default {
     },
   },
   methods: {
+    toInputValue, toWallClock,
     num, pct,
     select(t) {
       this.sel = t; this.result = null; this.error = null; this.params = {};
@@ -94,7 +98,10 @@ export default {
     <div class="card" style="padding:14px 16px;margin-bottom:12px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;font-size:12.5px">
       <div v-for="fd in fields" :key="fd.key">
         <div class="muted" style="margin-bottom:3px">{{ fd.label }}</div>
-        <input type="text" v-model="params[fd.key]" :placeholder="fd.ph"
+        <input v-if="fd.time" type="datetime-local" step="1" style="width:200px"
+               :value="toInputValue(params[fd.key])"
+               @change="params[fd.key] = toWallClock($event.target.value)">
+        <input v-else type="text" v-model="params[fd.key]" :placeholder="fd.ph"
                :class="{mono: fd.mono}" style="width:180px">
       </div>
       <div v-if="!fields.length" class="muted">此模板不需要輸入參數。</div>
