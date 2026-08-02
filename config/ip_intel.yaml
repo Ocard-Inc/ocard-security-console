@@ -1,0 +1,70 @@
+# 來源型態的人工清單。
+#
+# 這裡放**離線範圍檔涵蓋不到、或需要覆寫**的網段。比對時「前綴越長越優先，
+# 同長度時本檔優先」，所以要覆寫自動分類就寫一個等長或更長的前綴。
+#
+# 自動涵蓋的部分不要重複寫在這裡（AWS／GCP／Oracle／DigitalOcean／Linode 的官方
+# 範圍檔，以及 data/cloud_ranges/asn-*.json 的 ASN 公告前綴）—— 重複只會讓
+# 兩份資料日後不一致。
+#
+# source_type 的值：
+#   hosting      資料中心／雲端主機商。報告最強的單一訊號 ——「真人不會從資料中心登入後台」
+#   vpn          商業或消費級 VPN／匿名代理出口，真實來源不可稽核
+#   residential  住宅或企業寬頻。**這不是「安全」**，只是「不是機房」
+#   office       我方自己的辦公室出口（內部人員代操）
+#   cdn_proxy    CDN／反向代理的位址，代表取 IP 的邏輯取到了代理跳點
+#
+# 改這個檔要重啟 server（ranges 的索引有 lru_cache）。
+
+networks:
+  # ── 我方自己的出口 ────────────────────────────────────────────────
+  # 報告 R7：辦公室出口曾使用 395 個客戶帳號登入、共 916,684 次，
+  # 日誌中無法區分「客服代操」與「帳號被盜」。實測 94 天內 316 個帳號。
+  #
+  # 標成 office 只是讓報告讀得懂它是什麼；**真正的抑制要靠 allowlist**
+  # （SQLite 的 allowlist 表，由 sweep/report.allowlisted_fps() 讀取），
+  # 否則它會穩定佔據「憑證集中」榜首、把該查的境外機房 IP 壓到後面。
+  # 用 `uv run python -m console.intel.refresh --seed-allowlist` 播種。
+  - cidr: 1.34.41.218/32
+    source_type: office
+    org: Ocard 辦公室出口（中華電信 HiNet）
+    region: TW
+    note: 內部人員代操客戶後台的共用出口。高帳號數屬預期，不是憑證外流。
+
+  # ── 台灣固網（明確標為住宅／企業寬頻，避免被誤讀為未知）────────────
+  # 這幾段是報告中反覆出現的台灣 ISP，標出來的目的是讓「不是機房」變成
+  # 一個明確的結論，而不是 unknown。清單刻意保守，只列報告實際涉及的網段。
+  - cidr: 1.34.0.0/16
+    source_type: residential
+    org: 中華電信 HiNet
+    region: TW
+  - cidr: 125.227.0.0/16
+    source_type: residential
+    org: 中華電信 HiNet
+    region: TW
+    note: 報告事件 8（單一 IP 操作 48 個 countess* 系列帳號）的來源網段。
+  - cidr: 61.216.0.0/16
+    source_type: residential
+    org: 中華電信 HiNet
+    region: TW
+  - cidr: 111.248.0.0/16
+    source_type: residential
+    org: 中華電信 HiNet
+    region: TW
+    note: 報告事件 2（doremi000）的來源網段。
+  - cidr: 49.158.0.0/16
+    source_type: residential
+    org: 聯合寬頻
+    region: TW
+
+  # ── 企業雲端安全代理 ──────────────────────────────────────────────
+  # 報告附錄 A：出現在 XFF 鏈中屬正常企業網路行為，非異常。
+  # 標成 cdn_proxy 而非 vpn —— 它是公司統一出口，不是個人隱匿來源。
+  - cidr: 136.226.0.0/16
+    source_type: cdn_proxy
+    org: Zscaler
+    note: 企業級雲端安全代理。出現在多段 XFF 鏈中屬正常，不應視為異常來源。
+  - cidr: 165.225.0.0/16
+    source_type: cdn_proxy
+    org: Zscaler
+    note: 同上。

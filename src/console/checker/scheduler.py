@@ -53,10 +53,20 @@ def run_catchup_and_tick() -> dict:
 
 
 def run_daily() -> None:
-    """每日檢查：基線重算 + known_sources 增量 + 基線年齡檢查。"""
+    """每日檢查：基線重算 + known_sources 增量 + 來源情報更新 + 基線年齡檢查。"""
+    from console.intel import refresh as intel_refresh
     from console.rules import baseline as bl
     result = calibrate.calibrate()
     calibrate.seed_known_sources()
+
+    # 來源情報（機房／VPN 分類）。純離線比對，不發網路請求。
+    # 失敗不影響基線 —— 期間掃描會自動跳過需要情報的探針並明確註明，
+    # 而基線與五分鐘檢查完全不依賴它。
+    try:
+        intel_refresh.refresh()
+    except Exception:
+        logger.exception("來源情報更新失敗（不影響基線與五分鐘檢查）")
+
     now_str = timewin.fmt(timewin.taipei_now())
     with db.tx() as conn:
         conn.execute(
