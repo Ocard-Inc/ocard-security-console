@@ -1,0 +1,188 @@
+/* ──────────────────────────────────────────────────────────
+   Ocard Design System — Colors & Type
+   Source of truth for any HTML/JSX surface.
+   Brand: Ocard / Ocard for Business — Taiwan customer-engagement (顧客經營) leader.
+   ────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+
+:root {
+  /* ─── BRAND PALETTE ─── */
+  --ocard-yellow:       #FFEA00;  /* primary brand accent — hexagon, CTAs, key-number highlights */
+  --ocard-yellow-deep:  #E6D200;  /* darker yellow — borders/contrast against light yellow surfaces */
+  --ocard-yellow-soft:  #FFF7B2;  /* tinted yellow — subtle backgrounds, highlight pills */
+  --ocard-charcoal:     #333333;  /* SECONDARY brand color — primary text, dark logo fill, anchor of every layout */
+
+  /* ─── NEUTRALS ─── */
+  --ink-900: #111111;             /* near-black panels (client logo wall, dark-mode hero) */
+  --ink-800: #1F1F1F;
+  --ink-700: #333333;             /* primary text */
+  --ink-500: #555555;
+  --ink-400: #888888;             /* muted text, footers, captions */
+  --ink-300: #B5B5B5;
+  --ink-200: #E0E0E0;             /* dividers, card outlines */
+  --ink-100: #F0F0F0;
+  --ink-50:  #F5F5F5;             /* card / alt-row background */
+  --paper:   #FFFFFF;
+
+  /* ─── SEMANTIC ─── */
+  --bg:           var(--paper);
+  --bg-alt:       var(--ink-50);
+  --bg-dark:      var(--ink-900);
+  --fg-1:         var(--ink-700);   /* primary text */
+  --fg-2:         var(--ink-400);   /* secondary text */
+  --fg-on-yellow: var(--ink-700);   /* dark text on yellow */
+  --fg-on-dark:   var(--paper);     /* white text on near-black */
+  --accent:       var(--ocard-yellow);
+  --accent-deep:  var(--ocard-yellow-deep);
+  --border:       var(--ink-200);
+  --separator:    var(--ink-200);
+
+  /* status (used sparingly — Ocard avoids confetti palettes) */
+  --success: #2D9A5F;
+  --warning: #E89B00;
+  --danger:  #D64545;
+  --info:    #2563D9;
+
+  /* ─── TYPOGRAPHY FAMILIES ─── */
+  --font-en:     'Montserrat', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+  --font-zh:     'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+  --font-mix:    'Noto Sans TC', 'Montserrat', system-ui, sans-serif; /* ZH + EN mixed */
+  --font-num:    'Montserrat', system-ui, sans-serif;                  /* big stat numbers */
+
+  /* ─── TYPE TOKENS ─── */
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-bold:    700;
+  --weight-black:   900;
+
+  --leading-tight:  1.15;
+  --leading-snug:   1.3;
+  --leading-normal: 1.5;
+  --leading-loose:  1.7;
+
+  /* type SCALE — designed for B2B web + 1920×1080 deck use */
+  --fs-display:    72px;  /* big stats / KPI hero */
+  --fs-h1:         48px;  /* deck cover, marketing hero */
+  --fs-h2:         32px;  /* slide titles, page titles */
+  --fs-h3:         22px;  /* section headers */
+  --fs-h4:         18px;  /* card titles */
+  --fs-body-lg:    17px;
+  --fs-body:       15px;
+  --fs-small:      13px;
+  --fs-caption:    11px;
+
+  /* ─── SPACING (4-pt base) ─── */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-20: 80px;
+
+  /* ─── RADII ─── */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+
+  /* ─── ELEVATION (subtle — Ocard prefers crisp borders over glow) ─── */
+  --shadow-1: 0 1px 2px rgba(0,0,0,.04), 0 0 0 1px rgba(0,0,0,.04);
+  --shadow-2: 0 2px 8px rgba(0,0,0,.06), 0 0 0 1px rgba(0,0,0,.04);
+  --shadow-3: 0 8px 24px rgba(0,0,0,.08);
+  --shadow-yellow: 0 6px 18px rgba(255,234,0,.35);
+
+  /* ─── MOTION ─── */
+  --ease-out:  cubic-bezier(.2,.7,.2,1);
+  --ease-in-out: cubic-bezier(.65,0,.35,1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 360ms;
+}
+
+/* ─── SEMANTIC ELEMENT STYLES ─── */
+html, body {
+  font-family: var(--font-mix);
+  font-size: var(--fs-body);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-normal);
+  color: var(--fg-1);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, .h1 {
+  font-family: var(--font-mix);
+  font-size: var(--fs-h1);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.01em;
+  color: var(--fg-1);
+}
+h2, .h2 {
+  font-family: var(--font-mix);
+  font-size: var(--fs-h2);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.005em;
+  color: var(--fg-1);
+}
+h3, .h3 {
+  font-family: var(--font-mix);
+  font-size: var(--fs-h3);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-snug);
+  color: var(--fg-1);
+}
+h4, .h4 {
+  font-family: var(--font-mix);
+  font-size: var(--fs-h4);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-snug);
+  color: var(--fg-1);
+}
+
+p, .body {
+  font-size: var(--fs-body);
+  line-height: var(--leading-normal);
+  color: var(--fg-1);
+}
+
+.body-lg { font-size: var(--fs-body-lg); line-height: var(--leading-normal); }
+.small   { font-size: var(--fs-small); color: var(--fg-2); }
+.caption { font-size: var(--fs-caption); color: var(--fg-2); letter-spacing: .02em; }
+
+.stat-number {
+  font-family: var(--font-num);
+  font-size: var(--fs-display);
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--fg-1);
+}
+
+/* yellow underline / highlight motif */
+.accent-underline {
+  background-image: linear-gradient(transparent 60%, var(--ocard-yellow) 60%);
+  background-repeat: no-repeat;
+  padding: 0 .12em;
+}
+
+/* tiny yellow square — recurring brand glyph */
+.accent-bar {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  background: var(--ocard-yellow);
+  margin-right: .5em;
+  vertical-align: middle;
+  border-radius: 1px;
+}

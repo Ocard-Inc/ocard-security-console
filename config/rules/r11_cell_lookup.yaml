@@ -1,0 +1,23 @@
+id: R11
+name: GetUserByCell 大量使用
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+sql: |
+  SELECT concat(controller, '/', function) AS endpoint,
+         count() AS metric, uniq(_brand) AS brands
+  FROM ods_api_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND function IN ('GetUserByCell', 'GetUserByCell_v2', 'VerifyCell')
+  GROUP BY endpoint
+  HAVING metric >= 500
+threshold:
+  static_floor: 1000
+  baseline_key: "api_endpoint_60m:{endpoint}"
+  stat: p95
+  factor: 2
+entity:
+  - {col: endpoint, fp: null}
+note: 手機條件查詢屬個資敏感操作（常態 GetUserByCell_v2 ~2,400–4,400/hr）

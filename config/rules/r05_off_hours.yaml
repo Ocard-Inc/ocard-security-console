@@ -1,0 +1,24 @@
+id: R05
+name: 非上班時間敏感操作
+severity: P2
+source: backend
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+off_hours_only: true
+sql: |
+  SELECT acc, ip, count() AS metric, uniq(_brand) AS brands
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND acc IS NOT NULL AND acc != ''
+    AND arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/') IN
+        ('orderlist/detail', 'orderlist/delivery', 'orderlist/summary',
+         'customer/profile', 'customer/voucherList', 'point/get-analysis-data')
+  GROUP BY acc, ip
+  HAVING metric >= 50
+threshold:
+  static_floor: 50
+entity:
+  - {col: acc, fp: actor}
+  - {col: ip, fp: src}
+note: 7/16 攻擊始於 00:13；23:00–08:00 對敏感 route 的高頻操作

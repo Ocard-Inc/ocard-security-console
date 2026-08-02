@@ -1,0 +1,26 @@
+id: R01
+name: Backend 單帳號高頻請求
+severity: P1
+source: backend
+kind: sql_threshold
+window_minutes: 10
+cooldown_minutes: 60
+sql: |
+  SELECT acc, ip, count() AS metric,
+         uniqExact(arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/')) AS uniq_routes,
+         uniq(_brand) AS brands
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND acc IS NOT NULL AND acc != ''
+  GROUP BY acc, ip
+  HAVING metric >= 400
+threshold:
+  static_floor: 800
+  baseline_key: backend_acc_10m
+  population: true
+  stat: p99
+  factor: 8
+entity:
+  - {col: acc, fp: actor}
+  - {col: ip, fp: src}
+note: 對應 7/16-17 攻擊模式（單帳號 10 分鐘 ~5,800 次 vs 常態 p99≈116）

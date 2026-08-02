@@ -1,0 +1,33 @@
+id: R03
+name: API 單一來源大量讀取
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+sql: |
+  SELECT src, concat(controller, '/', function) AS endpoint,
+         count() AS metric, uniq(_brand) AS brands
+  FROM (
+    SELECT multiIf(JSONExtractString(headers, 'X-real-ip') != '', JSONExtractString(headers, 'X-real-ip'),
+                   JSONExtractString(headers, 'x-real-ip') != '', JSONExtractString(headers, 'x-real-ip'),
+                   trim(BOTH ' ' FROM splitByChar(',', if(JSONExtractString(headers, 'X-forwarded-for') != '',
+                        JSONExtractString(headers, 'X-forwarded-for'),
+                        JSONExtractString(headers, 'x-forwarded-for')))[1])) AS src,
+           controller, function, _brand
+    FROM ods_api_log
+    WHERE create_time >= %(start)s AND create_time < %(end)s
+  )
+  WHERE src != ''
+  GROUP BY src, endpoint
+  HAVING metric >= 2000
+threshold:
+  static_floor: 4000
+  baseline_key: api_src_60m
+  population: true
+  stat: p99
+  factor: 3
+entity:
+  - {col: src, fp: src}
+  - {col: endpoint, fp: null}
+note: 單一來源逐筆讀取（設計稿案例 C：Api2/TransDetail）；來源 IP 由 forwarded header 推導屬未驗證來源

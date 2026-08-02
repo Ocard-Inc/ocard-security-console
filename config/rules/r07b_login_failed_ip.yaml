@@ -1,0 +1,21 @@
+id: R07B
+name: 登入失敗暴力嘗試（來源）
+severity: P1
+source: admin
+kind: sql_threshold
+window_minutes: 15
+cooldown_minutes: 60
+sql: |
+  SELECT ip, count() AS metric, uniq(acc) AS accs
+  FROM ods_admin_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND ((function = 'Boss_initial/auth_v2' AND action = 'login_failed')
+      OR (function = 'login' AND action = 'failed'))
+    AND ip != ''
+  GROUP BY ip
+  HAVING metric >= 20
+threshold:
+  static_floor: 20
+entity:
+  - {col: ip, fp: src}
+note: 部分登入紀錄無 IP（顯示「來源 IP 不可用」），此規則僅涵蓋有 IP 的失敗

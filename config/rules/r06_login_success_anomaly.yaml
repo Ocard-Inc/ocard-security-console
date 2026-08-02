@@ -1,0 +1,22 @@
+id: R06
+name: 登入成功異常
+severity: P1
+source: admin
+kind: sql_threshold
+window_minutes: 10
+cooldown_minutes: 60
+sql: |
+  SELECT 'Boss_initial/auth_v2' AS endpoint, count() AS metric,
+         uniq(ip) AS ips, uniq(_brand) AS brands
+  FROM ods_admin_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND function = 'Boss_initial/auth_v2' AND action = 'login_success'
+  HAVING metric >= 60
+threshold:
+  static_floor: 160
+  baseline_key: boss_login_success_10m
+  stat: p95
+  factor: 2
+entity:
+  - {col: endpoint, fp: null}
+note: 已驗證 7/30 21:40 案例（352 vs 同時段 median 52 / p95 80）

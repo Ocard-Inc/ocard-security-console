@@ -1,0 +1,23 @@
+id: R09
+name: API error 異常
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 5
+cooldown_minutes: 60
+sql: |
+  SELECT 'api_error' AS scope, countIf(has_error = 1) AS metric, count() AS total
+  FROM ods_api_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+  HAVING metric >= 15
+threshold:
+  static_floor: 20
+  baseline_key: api_error_5m
+  stat: p99
+  factor: 3
+ratio:
+  den_col: total
+  min_ratio: 0.005
+entity:
+  - {col: scope, fp: null}
+note: 常態 error 比例 ~0.02%，5 分鐘 p99=11 次

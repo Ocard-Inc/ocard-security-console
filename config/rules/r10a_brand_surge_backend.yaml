@@ -1,0 +1,22 @@
+id: R10A
+name: 單品牌後台流量暴增
+severity: P2
+source: backend
+kind: sql_threshold
+window_minutes: 15
+cooldown_minutes: 120
+sql: |
+  SELECT _brand, count() AS metric, uniq(acc) AS accs, uniq(ip) AS ips
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+  GROUP BY _brand
+  HAVING metric >= 1500
+threshold:
+  static_floor: 3000
+  baseline_key: brand_backend_15m
+  population: true
+  stat: p99
+  factor: 5
+entity:
+  - {col: _brand, fp: null}
+note: 7/16 品牌 7340 被集中打（~8,800/15 分）

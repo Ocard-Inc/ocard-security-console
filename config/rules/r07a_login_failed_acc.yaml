@@ -1,0 +1,21 @@
+id: R07A
+name: 登入失敗暴力嘗試（帳號）
+severity: P1
+source: admin
+kind: sql_threshold
+window_minutes: 15
+cooldown_minutes: 60
+sql: |
+  SELECT acc, count() AS metric, uniq(ip) AS ips
+  FROM ods_admin_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND ((function = 'Boss_initial/auth_v2' AND action = 'login_failed')
+      OR (function = 'login' AND action = 'failed'))
+    AND acc IS NOT NULL AND acc != ''
+  GROUP BY acc
+  HAVING metric >= 10
+threshold:
+  static_floor: 10
+entity:
+  - {col: acc, fp: actor}
+note: 常態單帳號 7 天最多失敗 46 次，15 分鐘內 10 次即異常

@@ -1,0 +1,88 @@
+# Ocard Security Log Console
+
+ClickHouse log 即時異常監測主控台與稽查查詢平台。監測 `ods_admin_log`、
+`ods_backend_sys_log`、`ods_api_log`、`ods_auth_log` 四張表。
+
+## 快速開始
+
+```powershell
+uv sync                                    # 安裝依賴（Python 3.12）
+cp .env.example .env                       # 填入 CLICKHOUSE_* 與 FP_SECRET
+uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線與來源播種
+.\scripts\restart_server.ps1               # 啟動（含五分鐘檢查排程）
+```
+
+開啟 http://127.0.0.1:8600 。`PYTHONPATH` 需含 `src`（restart_server.ps1 已設定）。
+
+## 架構
+
+| 層 | 位置 | 說明 |
+|---|---|---|
+| 查詢 | `src/console/core/ch.py` | thread-local ClickHouse client、三層 timeout、SELECT-only 守衛 |
+| 遮罩 | `src/console/core/masking.py` | HMAC fingerprint（`src_`/`actor_`/`token_`/`resource_`）與文字清洗 |
+| 時間 | `src/console/core/timewin.py` | 台北牆鐘時間、視窗計算、資料落地延遲補償 |
+| 規則 | `config/rules/*.yaml` + `src/console/rules/` | 宣告式規則、基線門檻、逐規則錯誤隔離 |
+| 排程 | `src/console/checker/` | 五分鐘檢查、每日基線重算、歷史 replay |
+| 狀態 | `src/console/store/` | SQLite WAL：事件、稽核、基線、known_sources、心跳 |
+| API | `src/console/api/` | FastAPI；權限於 server 端強制 |
+| 前端 | `web/` | Vue 3 ESM，無建置流程；vendor 檔本地化 |
+
+## 資料特性（實測，非假設）
+
+- **ClickHouse 伺服器時區為 UTC，但 `create_time` 存台北牆鐘時間。** 所有查詢邊界
+  由 Python 端算好以完整字串（含秒）傳參，絕不在 SQL 端用 `now()`。
+- 資料由 MongoDB 同步，**落地延遲約 5 分鐘**；監測視窗右界固定退 6 分鐘。
+- 四張表的 sorting key 都不含時間，僅有月分區 → 查詢一律必須帶 `create_time` 範圍。
+- `ods_backend_sys_log` 的 `_new` / `_new2` 變體已於 7/30 停寫，不可使用。
+- `orderlist/detail` 的訂單識別在 POST body 而非 URL，該 route 的 unique 路徑比例
+  恆為 0，**不可作為遍歷判定依據**。
+- `ods_api_log` 的 `has_error` 只在出錯時設值，NULL 屬正常（非欄位缺漏）。
+- `ods_admin_log` 約 14% 登入紀錄沒有 IP；登入事件以 `acc` 識別、操作事件以 `_admin` 識別。
+- API 來源 IP 由 forwarded header（`X-real-ip` / `X-forwarded-for`，X 大寫）推導，
+  屬「未驗證來源」。
+
+## 規則集
+
+16 條規則（`config/rules/`）。門檻 = `max(靜態地板, 28 天同時段基線 × 倍率)`。
+
+`population: true` 的規則（R01/R03/R10A/R10B）其基線是**跨對象的分布**（例如所有來源
+各自的量），不是該對象自身歷史，因此不計算「相對自身」的倍數 —— 拿大來源除以典型
+來源會得到上千倍的誤導數字。這類事件改以「是否超出群體高分位」呈現。
+
+### 回測結果
+
+| 情境 | 結果 |
+|---|---|
+| 7/16 攻擊（00:13 起） | 00:25 觸發 R01（4,646 次，門檻 928）、R02（orderlist/detail 4,558 次為 median 20 的 228 倍）、R10A（品牌 7340）；00:15 觸發 R08A 新來源 |
+| 7/30 登入尖峰 21:40 | 21:45 觸發 R06（316 次 vs 同時段 median 52 / P95 80，6.1 倍） |
+| 8/1 正常日（全天） | 12 件（P1 僅 1 件）。R03 的 4 件為固定批次整合，應以 Allowlist 處理 |
+
+重跑回測：
+
+```bash
+uv run python -m console.checker.replay --start "2026-07-16 00:00" --end "2026-07-16 01:30"
+```
+
+replay 為 dry-run，不寫入事件也不更新 known_sources。
+
+## 遮罩
+
+UI、API 回應與告警一律不含原始 IP、帳號、token、headers/params 原文、訂單號、
+會員 ID、手機或 Email。fingerprint 為 HMAC-SHA256（`FP_SECRET`）不可逆雜湊，
+可作篩選與跨頁關聯鍵。系統沒有「顯示完整 token」的功能，Security Admin 也沒有。
+
+`tests/test_masking_audit.py` 會掃描各端點的實際回應，比對已知的真實識別值與
+IP／手機／Email 樣式，確保沒有洩漏。
+
+## 測試
+
+```bash
+uv run pytest -q          # 含遮罩稽核；會實際連線 ClickHouse
+```
+
+## 尚未實作（後續階段）
+
+- Slack 告警送出（程式已就緒，待填 `SLACK_WEBHOOK_URL`）與 Task Scheduler 常駐部署
+- SQL Console、調查案件、規則與 Allowlist 管理、操作稽核檢視頁（稽核紀錄已在寫入）
+- 證據包匯出（Excel）與 audit CLI
+- Google SSO（目前以 `X-Dev-Role` header 切換角色）

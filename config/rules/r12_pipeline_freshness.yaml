@@ -1,0 +1,8 @@
+id: R12
+name: 資料管線失速
+severity: P2
+source: all
+kind: freshness
+window_minutes: 120
+cooldown_minutes: 60
+note: 任一 log 表 max(create_time) 落後牆鐘超過 freshness.alert_minutes（防「沉默＝正常」假象）

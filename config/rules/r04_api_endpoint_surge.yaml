@@ -1,0 +1,22 @@
+id: R04
+name: API endpoint 流量異常
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+sql: |
+  SELECT concat(controller, '/', function) AS endpoint,
+         count() AS metric, uniq(_brand) AS brands
+  FROM ods_api_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+  GROUP BY endpoint
+  HAVING metric >= 1000
+threshold:
+  static_floor: 2000
+  baseline_key: "api_endpoint_60m:{endpoint}"
+  stat: p95
+  factor: 2
+entity:
+  - {col: endpoint, fp: null}
+note: 對照 28 天同時段基線的 endpoint 級流量監測（使用者指定需求）

@@ -1,0 +1,93 @@
+# Ocard Security Log Console — 全域設定
+app:
+  host: 127.0.0.1
+  port: 8600
+  env_label: Production
+
+time:
+  timezone: Asia/Taipei
+  # 資料由 Mongo 同步進 ClickHouse 約 5 分鐘落地延遲，再加 1 分安全邊際
+  lag_buffer_minutes: 6
+  # 五分鐘檢查對齊邊界
+  tick_minutes: 5
+
+business_hours:
+  start: 8   # 08:00（含）
+  end: 23    # 23:00（不含）→ 23:00–08:00 視為非上班時間
+
+data_sources:
+  # UI 顯示名稱 → ClickHouse 表
+  admin:
+    label: Admin Log
+    table: ods_admin_log
+  backend:
+    label: Backend System Log
+    table: ods_backend_sys_log
+  api:
+    label: API Log
+    table: ods_api_log
+  auth:
+    label: Auth Log
+    table: ods_auth_log
+    sensitive: true
+
+freshness:
+  # 資料健康狀態閾值（分鐘）— 依設計稿 14.3
+  ok: 5
+  notice: 10
+  stale: 30
+  # 規則 R12：落後超過此分鐘數告警
+  alert_minutes: 20
+
+baseline:
+  window_days: 28
+  seed_days: 90            # known_sources 播種範圍
+  recalc_hour: 6           # 每日檢查時刻（台北）
+  max_age_days: 14         # 基線超齡警告
+  # 已知事件污染窗，計算基線時排除（台北牆鐘）
+  exclusion_windows:
+    - ["2026-07-15 23:00:00", "2026-07-18 00:00:00"]   # 7/16-17 orderlist/detail 大量遍歷事件
+    - ["2026-07-30 21:30:00", "2026-07-30 22:30:00"]   # 7/30 Boss 登入成功尖峰
+
+sensitive_routes:
+  # backend_sys_log route 前綴（前 2 段）— R02/R05 監測對象
+  - orderlist/detail
+  - orderlist/delivery
+  - orderlist/summary
+  - customer/profile
+  - customer/voucherList
+  - point/get-analysis-data
+
+internal_accounts:
+  # 內部/高權限帳號，新來源首見時升級為 critical
+  prefixes: ["ocard"]
+  accounts: ["andrew_c", "market", "wu-tau"]
+
+alerting:
+  cooldown_minutes: 60
+  resolve_after_ticks: 3
+  max_catchup_hours: 2
+  daily_summary_hour: 9
+
+audit_export:
+  max_range_days: 62
+  detail_row_limit: 500000
+
+sql_console:
+  auto_limit: 1000
+  timeout_seconds: 30
+  allowed_tables:
+    - ods_admin_log
+    - ods_backend_sys_log
+    - ods_api_log
+    - ods_auth_log
+  forbidden_output_columns:
+    - token
+    - headers
+    - params
+    - post_params
+    - get_params
+    - response
+    - acc
+    - ip
+    - order_number

@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/ocard-design-system-019dcb09-6fd6-7ec0-983d-51e950b1ec16/colors_and_type.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F7F8FA;font-family:'Noto Sans TC',system-ui,sans-serif;color:#101828;-webkit-font-smoothing:antialiased}
+a{color:#175CD3;text-decoration:none}a:hover{color:#1849A9;text-decoration:underline}
+@keyframes skpulse{0%,100%{opacity:.55}50%{opacity:1}}
+table{border-collapse:collapse}
+button{font-family:'Noto Sans TC',system-ui,sans-serif}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#D0D5DD;border-radius:5px;border:2px solid #F7F8FA}
+</style>
+</helmet>
+<div style="display:flex;height:100vh;overflow:hidden;font-size:14px">
+<sc-if value="{{ scLogin }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#F7F8FA">
+    <div style="width:400px;background:#fff;border:1px solid #E4E7EC;border-radius:14px;padding:44px 40px;text-align:center;box-shadow:0 1px 3px rgba(16,24,40,.06)">
+      <div style="width:52px;height:52px;margin:0 auto 18px;background:#FFEA00;border-radius:14px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#333">O</div>
+      <div style="font-size:22px;font-weight:700">Security Log Console</div>
+      <div style="color:#667085;margin:8px 0 28px;font-size:13px">供 Ocard 內部資安監控與事件調查使用</div>
+      <button onClick="{{ loginGo }}" style="width:100%;padding:11px;background:#101828;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer">使用 Google 帳號登入</button>
+      <div style="color:#667085;font-size:12px;margin-top:16px">僅限經授權的 Ocard／OLIS 內部帳號</div>
+    </div>
+  </div>
+</sc-if>
+<sc-if value="{{ scNoperm }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;align-items:center;justify-content:center">
+    <div style="width:440px;background:#fff;border:1px solid #E4E7EC;border-radius:14px;padding:40px;text-align:center">
+      <div style="width:44px;height:44px;margin:0 auto 16px;border-radius:50%;background:#FEF0C7;display:flex;align-items:center;justify-content:center;color:#B54708;font-weight:700;font-size:18px">!</div>
+      <div style="font-size:19px;font-weight:700">你尚未取得資安監控權限</div>
+      <div style="color:#667085;font-size:13px;margin:10px 0 4px">目前登入帳號：vinek@olis.com.tw</div>
+      <div style="color:#667085;font-size:13px;margin-bottom:24px">請聯繫 Security Admin 為你指派 Viewer、Analyst 或 Admin 角色後再試。</div>
+      <button onClick="{{ loginGo }}" style="padding:10px 18px;background:#fff;border:1px solid #D0D5DD;border-radius:8px;font-size:13px;cursor:pointer">返回其他 Ocard ROS 功能</button>
+    </div>
+  </div>
+</sc-if>
+<sc-if value="{{ scApp }}" hint-placeholder-val="{{ true }}">
+  <div style="width:232px;flex:none;background:#101828;color:#98A2B3;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:10px;padding:18px 18px 16px;border-bottom:1px solid rgba(255,255,255,.08)">
+      <div style="width:30px;height:30px;background:#FFEA00;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;color:#333;font-size:15px">O</div>
+      <div><div style="color:#fff;font-weight:700;font-size:13.5px;line-height:1.2">Security Log Console</div><div style="font-size:11px;color:#667085">Ocard 內部資安監控</div></div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:10px 8px;display:flex;flex-direction:column;gap:2px">
+      <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="9">
+        <div onClick="{{ n.go }}" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:7px;cursor:pointer;font-size:13.5px;background:{{ n.bg }};color:{{ n.fg }};border-left:3px solid {{ n.bar }}" style-hover="background:rgba(255,255,255,.06)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;width:16px;text-align:center;opacity:.7">{{ n.icon }}</span>{{ n.label }}
+          <sc-if value="{{ n.badge }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;background:#B42318;color:#fff;font-size:10.5px;font-weight:700;border-radius:999px;padding:1px 7px">{{ n.badge }}</span></sc-if>
+        </div>
+      </sc-for>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,.08);font-size:12px">
+      <div style="color:#E4E7EC">{{ userName }}</div>
+      <div style="color:#667085">{{ roleLabel }}</div>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:60px;flex:none;background:#fff;border-bottom:1px solid #E4E7EC;display:flex;align-items:center;gap:14px;padding:0 20px">
+      <div style="font-size:16px;font-weight:700">{{ pageTitle }}</div>
+      <span style="background:#FEF3F2;color:#B42318;border:1px solid #FECDCA;font-size:11px;font-weight:700;padding:2px 8px;border-radius:5px">Production</span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:12px;font-size:12.5px;color:#667085">
+        <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 8px;font-size:12.5px;color:#101828;background:#fff">
+          <option>最近 10 分鐘</option><option>最近 30 分鐘</option><option selected>最近 1 小時</option><option>最近 6 小時</option><option>今天</option><option>昨天</option><option>最近 7 天</option><option>自訂時間</option>
+        </select>
+        <span>2026/07/31 16:40–17:40（Asia/Taipei）</span>
+        <span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:{{ freshDot }}"></span>資料至 {{ freshTime }}</span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" checked>自動更新</label>
+        <button style="border:1px solid #D0D5DD;background:#fff;border-radius:7px;padding:6px 10px;font-size:12.5px;cursor:pointer">重新整理</button>
+      </div>
+    </div>
+    <sc-if value="{{ showStaleBanner }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:none;background:#FFFAEB;border-bottom:1px solid #FEDF89;color:#B54708;padding:9px 20px;font-size:13px;display:flex;gap:8px;align-items:center">
+        <strong>資料延遲</strong>Admin Log 已延遲 14 分鐘。此期間的登入異常判斷可能不完整。
+        <a href="#" onClick="{{ goHealth }}" style="margin-left:auto;font-weight:500">查看資料健康 →</a>
+      </div>
+    </sc-if>
+    <div style="flex:1;overflow-y:auto;padding:20px;min-height:0">
+      <sc-if value="{{ uiLoading }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div style="color:#667085;font-size:13px">正在查詢原始 log…</div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
+            <div style="height:110px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s infinite"></div>
+            <div style="height:110px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .1s infinite"></div>
+            <div style="height:110px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .2s infinite"></div>
+            <div style="height:110px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .3s infinite"></div>
+            <div style="height:110px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .4s infinite"></div>
+          </div>
+          <div style="height:260px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .2s infinite"></div>
+          <div style="height:200px;background:#EAECF0;border-radius:10px;animation:skpulse 1.4s .4s infinite"></div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ uiEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:60px;text-align:center">
+          <div style="font-size:15px;font-weight:700;margin-bottom:6px">此時間範圍沒有符合條件的事件</div>
+          <div style="color:#667085;font-size:13px">監測仍持續執行中；「沒有事件」不等於「系統安全」。可放寬時間範圍或清除篩選條件。</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ uiError }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#FEF3F2;border:1px solid #FECDCA;border-radius:10px;padding:24px;margin-bottom:16px">
+          <div style="font-weight:700;color:#B42318;margin-bottom:6px">部分監測查詢失敗，現在無法判定是否沒有異常</div>
+          <div style="font-size:13px;color:#912018;line-height:1.7">Admin Log 查詢 timeout（30 秒）；API 與 Backend 資料已更新，因此登入異常結果不完整。<br>失敗時間：2026/07/31 17:38　·　錯誤類型：查詢 timeout　·　<a href="#" onClick="{{ goHealth }}">查看執行紀錄 →</a></div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ uiDenied }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:60px;text-align:center">
+          <div style="width:40px;height:40px;margin:0 auto 14px;border-radius:50%;background:#F2F4F7;display:flex;align-items:center;justify-content:center;color:#475467;font-weight:700">×</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:6px">權限不足</div>
+          <div style="color:#667085;font-size:13px">你目前的角色（{{ roleLabel }}）無法使用此功能。需要 Security Admin 為你調整權限。</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ uiShow }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ uiStale }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#FFFAEB;border:1px solid #FEDF89;border-radius:8px;color:#B54708;padding:10px 14px;font-size:13px;margin-bottom:16px">顯示的是 17:20 的最後成功結果；目前資料來源已延遲 18 分鐘。</div>
+        </sc-if>
+        <sc-if value="{{ pgOverview }}" hint-placeholder-val="{{ true }}">
+          <sc-if value="{{ ovNormal }}" hint-placeholder-val="{{ false }}">
+            <div style="background:#ECFDF3;border:1px solid #A6F4C5;border-radius:8px;color:#027A48;padding:10px 14px;font-size:13px;margin-bottom:16px">目前沒有達到 P0／P1 門檻的事件。最近一次檢查完成於 17:40，三個 ClickHouse 資料來源均正常更新。</div>
+          </sc-if>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px">
+            <sc-for list="{{ sevCards }}" as="c" hint-placeholder-count="4">
+              <div onClick="{{ c.go }}" style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid {{ c.bar }};border-radius:10px;padding:14px 16px;cursor:pointer" style-hover="border-color:#98A2B3;box-shadow:0 1px 3px rgba(16,24,40,.08)">
+                <div style="font-size:12px;color:#667085;font-weight:500">{{ c.label }}</div>
+                <div style="font-size:30px;font-weight:700;line-height:1.2;color:{{ c.numColor }};font-family:Montserrat,'Noto Sans TC',sans-serif">{{ c.count }}</div>
+                <div style="font-size:12px;color:#667085">{{ c.diff }}</div>
+                <div style="font-size:12px;margin-top:4px;color:{{ c.ongoingColor }}">{{ c.ongoing }}</div>
+              </div>
+            </sc-for>
+            <div style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid {{ monBar }};border-radius:10px;padding:14px 16px">
+              <div style="font-size:12px;color:#667085;font-weight:500">監測狀態</div>
+              <div style="font-size:16px;font-weight:700;margin:6px 0 4px;color:{{ monColor }}">{{ monLabel }}</div>
+              <div style="font-size:12px;color:#667085;line-height:1.6">五分鐘檢查：17:40 完成<br>每日檢查：07/31 06:00 完成</div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;margin-bottom:16px">
+            <div style="display:flex;align-items:center;margin-bottom:10px">
+              <div style="font-weight:700;font-size:14px">最近 60 分鐘 Request 趨勢</div>
+              <div style="font-size:12px;color:#667085;margin-left:10px">10 分鐘分桶 · 對照 28 天同時段 median 與 P95</div>
+              <div style="margin-left:auto;display:flex;border:1px solid #D0D5DD;border-radius:7px;overflow:hidden;font-size:12px">
+                <button onClick="{{ ovShowChart }}" style="padding:5px 12px;border:none;cursor:pointer;background:{{ ovChartBg }};color:{{ ovChartFg }}">圖表</button>
+                <button onClick="{{ ovShowTable }}" style="padding:5px 12px;border:none;border-left:1px solid #D0D5DD;cursor:pointer;background:{{ ovTableBg }};color:{{ ovTableFg }}">表格</button>
+              </div>
+            </div>
+            <sc-if value="{{ ovChart }}" hint-placeholder-val="{{ true }}">
+              <svg viewBox="0 0 720 210" style="width:100%;height:auto;display:block">
+                <rect x="40" y="30" width="660" height="28" fill="#EFF4FB"></rect>
+                <line x1="40" y1="42" x2="700" y2="42" stroke="#98A2B3" stroke-dasharray="4 4" stroke-width="1"></line>
+                <line x1="40" y1="185" x2="700" y2="185" stroke="#E4E7EC"></line>
+                <polyline points="40,49 172,42 304,45 436,34 568,39 700,35" fill="none" stroke="#175CD3" stroke-width="2"></polyline>
+                <polyline points="40,130 172,129 304,131 436,126 568,127 700,126" fill="none" stroke="#7A5AF8" stroke-width="2"></polyline>
+                <polyline points="40,173 172,172 304,173 436,172 568,173 700,172" fill="none" stroke="#027A48" stroke-width="2"></polyline>
+                <polyline points="40,179 172,178 304,179 436,178 568,179 700,179" fill="none" stroke="#B42318" stroke-width="2" stroke-dasharray="2 3"></polyline>
+                <text x="40" y="200" font-size="10" fill="#667085">16:40</text><text x="304" y="200" font-size="10" fill="#667085">17:00</text><text x="568" y="200" font-size="10" fill="#667085">17:20</text><text x="676" y="200" font-size="10" fill="#667085">17:40</text>
+                <text x="40" y="20" font-size="10" fill="#667085">灰帶 = API 歷史 P95 範圍 · 虛線 = median 850</text>
+              </svg>
+              <div style="display:flex;gap:18px;font-size:12px;color:#475467;margin-top:6px;flex-wrap:wrap">
+                <span><span style="display:inline-block;width:14px;height:3px;background:#175CD3;vertical-align:middle;margin-right:5px"></span>API request（目前 905 / median 850 / P95 980 · 1.06×）</span>
+                <span><span style="display:inline-block;width:14px;height:3px;background:#7A5AF8;vertical-align:middle;margin-right:5px"></span>Backend request（335 / 320 / 390 · 1.05×）</span>
+                <span><span style="display:inline-block;width:14px;height:3px;background:#027A48;vertical-align:middle;margin-right:5px"></span>登入成功（47 / 44 / 64 · 1.07×）</span>
+                <span><span style="display:inline-block;width:14px;height:3px;background:#B42318;vertical-align:middle;margin-right:5px"></span>登入失敗（6 / 7 / 15 · 0.86×）</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ovTableOn }}" hint-placeholder-val="{{ false }}">
+              <table style="width:100%;font-size:12.5px">
+                <thead><tr style="color:#667085;text-align:left"><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC">時間桶</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">API</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">Backend</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">登入成功</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">登入失敗</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">API median</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">API P95</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">超出倍數</th></tr></thead>
+                <tbody>
+                  <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">16:40–16:50</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">820</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">310</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">44</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">6</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">980</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">0.96×</td></tr>
+                  <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">16:50–17:00</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">860</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">320</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">46</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">8</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">980</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">1.01×</td></tr>
+                  <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">17:00–17:10</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">845</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">305</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">43</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">5</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">980</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">0.99×</td></tr>
+                  <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">17:10–17:20</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">910</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">340</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">48</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">9</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">980</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">1.07×</td></tr>
+                  <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">17:20–17:30</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">880</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">330</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">45</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">7</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">980</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">1.04×</td></tr>
+                  <tr><td style="padding:7px 10px">17:30–17:40</td><td style="text-align:right;padding:7px 10px">905</td><td style="text-align:right;padding:7px 10px">335</td><td style="text-align:right;padding:7px 10px">47</td><td style="text-align:right;padding:7px 10px">6</td><td style="text-align:right;padding:7px 10px">850</td><td style="text-align:right;padding:7px 10px">980</td><td style="text-align:right;padding:7px 10px">1.06×</td></tr>
+                </tbody>
+              </table>
+            </sc-if>
+          </div>
+          <div style="display:grid;grid-template-columns:3fr 2fr;gap:14px;margin-bottom:16px">
+            <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+              <div style="font-weight:700;margin-bottom:12px;font-size:14px">目前最需要注意</div>
+              <sc-if value="{{ ovHasP1 }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <sc-for list="{{ attentionList }}" as="a" hint-placeholder-count="3">
+                    <div onClick="{{ a.go }}" style="display:flex;gap:12px;align-items:flex-start;padding:11px 12px;border:1px solid #E4E7EC;border-radius:8px;cursor:pointer" style-hover="border-color:#98A2B3;background:#FCFCFD">
+                      <span style="flex:none;font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:{{ a.sevBg }};color:{{ a.sevFg }};border:1px solid {{ a.sevBd }}">▲ {{ a.sev }}</span>
+                      <div style="min-width:0;flex:1">
+                        <div style="font-weight:500;font-size:13.5px">{{ a.rule }}　<span style="color:#667085;font-weight:400">{{ a.reason }}</span></div>
+                        <div style="font-size:12px;color:#667085;margin-top:3px;font-family:'IBM Plex Mono',monospace">{{ a.endpoint }}</div>
+                      </div>
+                      <div style="flex:none;text-align:right;font-size:12px;color:#667085">{{ a.brands }} 品牌 · {{ a.dur }}<br><span style="color:{{ a.stColor }}">{{ a.status }}</span></div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ ovNormal }}" hint-placeholder-val="{{ false }}">
+                <div style="color:#667085;font-size:13px;padding:20px 0">目前沒有未處理的 P0／P1 事件。P2／P3 觀察事件請至異常事件頁查看。</div>
+              </sc-if>
+            </div>
+            <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+              <div style="display:flex;align-items:center;margin-bottom:12px"><div style="font-weight:700;font-size:14px">資料來源健康</div><a href="#" onClick="{{ goHealth }}" style="margin-left:auto;font-size:12px">詳細 →</a></div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <sc-for list="{{ healthList }}" as="h" hint-placeholder-count="5">
+                  <div style="display:flex;align-items:center;gap:10px;font-size:12.5px;padding:7px 10px;background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px">
+                    <span style="flex:none;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:{{ h.bg }};color:{{ h.fg }}">{{ h.st }}</span>
+                    <span style="font-weight:500">{{ h.name }}</span>
+                    <span style="margin-left:auto;color:#667085">{{ h.info }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+            <div style="display:flex;gap:6px;margin-bottom:12px;align-items:center">
+              <div style="font-weight:700;font-size:14px;margin-right:8px">風險排名</div>
+              <sc-for list="{{ rankTabs }}" as="t" hint-placeholder-count="4">
+                <button onClick="{{ t.go }}" style="border:1px solid {{ t.bd }};background:{{ t.bg }};color:{{ t.fg }};border-radius:999px;padding:5px 13px;font-size:12.5px;cursor:pointer">{{ t.label }}</button>
+              </sc-for>
+            </div>
+            <table style="width:100%;font-size:12.5px">
+              <thead><tr style="color:#667085;text-align:left"><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC">#</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC">{{ rankColName }}</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">目前值（60 分）</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">28 天同時段 median</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">P95</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">倍數</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC">備註</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ rankRows }}" as="r" hint-placeholder-count="5">
+                  <tr style-hover="background:#FCFCFD">
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;color:#667085">{{ r.i }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:12px">{{ r.name }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;text-align:right;font-weight:500">{{ r.cur }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;text-align:right;color:#667085">{{ r.med }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;text-align:right;color:#667085">{{ r.p95 }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;text-align:right;font-weight:700;color:{{ r.xColor }}">{{ r.x }}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #F2F4F7;color:#667085">{{ r.note }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+        <sc-if value="{{ pgEvents }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;margin-bottom:14px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 8px;font-size:12.5px;background:#fff"><option>嚴重度：全部</option><option>P0</option><option selected="{{ evFilterP1 }}">P1</option><option>P2</option><option>P3</option></select>
+              <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 8px;font-size:12.5px;background:#fff"><option>狀態：全部</option><option>新事件</option><option>調查中</option><option>已結案</option></select>
+              <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 8px;font-size:12.5px;background:#fff"><option>規則：全部</option><option>R02 orderlist/detail 大量遍歷</option><option>R06 登入成功異常</option><option>R11 GetUserByCell 大量使用</option></select>
+              <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 8px;font-size:12.5px;background:#fff"><option>資料來源：全部</option><option>Admin Log</option><option>Backend System Log</option><option>API Log</option><option>Auth Log</option></select>
+              <input placeholder="品牌 / endpoint / fingerprint" style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 10px;font-size:12.5px;width:220px">
+              <label style="font-size:12.5px;color:#475467;display:flex;gap:4px;align-items:center"><input type="checkbox">僅新來源</label>
+              <label style="font-size:12.5px;color:#475467;display:flex;gap:4px;align-items:center"><input type="checkbox">跨品牌</label>
+              <label style="font-size:12.5px;color:#475467;display:flex;gap:4px;align-items:center"><input type="checkbox">持續中</label>
+            </div>
+            <sc-if value="{{ evFilterP1 }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:6px;margin-top:10px;align-items:center;font-size:12px">
+                <span style="color:#667085">已套用：</span>
+                <span style="background:#EFF4FB;border:1px solid #B2CCFF;color:#175CD3;border-radius:999px;padding:3px 10px;display:flex;gap:6px;align-items:center">嚴重度 = P1<span onClick="{{ evClearFilter }}" style="cursor:pointer;font-weight:700">×</span></span>
+              </div>
+            </sc-if>
+          </div>
+          <div style="display:flex;gap:16px;font-size:12.5px;color:#667085;margin-bottom:10px;padding:0 2px">
+            <span>共 <strong style="color:#101828">{{ evCount }}</strong> 筆事件</span><span>P1：<strong style="color:#B42318">2</strong></span><span>P2：<strong style="color:#B54708">3</strong></span><span>P3：<strong style="color:#3E4784">2</strong></span><span>持續中：<strong style="color:#101828">1</strong></span>
+          </div>
+          <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden">
+            <table style="width:100%;font-size:12.5px">
+              <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">嚴重度</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">事件編號</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">發生 → 最後出現</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">規則</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">異常對象</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC;text-align:right">Request 數</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC;text-align:right">基線倍數</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC;text-align:right">品牌</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">持續</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">案件狀態</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">負責人</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC"></th></tr></thead>
+              <tbody>
+                <sc-for list="{{ evRows }}" as="e" hint-placeholder-count="6">
+                  <tr style-hover="background:#FCFCFD">
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:{{ e.sevBg }};color:{{ e.sevFg }};border:1px solid {{ e.sevBd }};white-space:nowrap">▲ {{ e.sev }}</span></td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><a href="#" onClick="{{ e.open }}" style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ e.id }}</a></td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:#475467;white-space:nowrap">{{ e.time }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7">{{ e.rule }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><div style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ e.target }}</div><div style="color:#667085;font-size:11.5px;margin-top:2px">{{ e.target2 }}</div></td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;text-align:right;font-weight:500">{{ e.req }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;text-align:right;font-weight:700;color:{{ e.xColor }}">{{ e.x }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;text-align:right">{{ e.brands }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:{{ e.durColor }}">{{ e.dur }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7">{{ e.case }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:#475467">{{ e.owner }}</td>
+                    <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><button onClick="{{ e.preview }}" style="border:1px solid #D0D5DD;background:#fff;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">預覽</button></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+        <sc-if value="{{ pgEventDetail }}" hint-placeholder-val="{{ false }}">
+  <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:5px;background:#B42318;color:#fff">▲ P1 高風險</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#475467">EVT-2607</span>
+      <div style="font-size:17px;font-weight:700">Boss 登入成功量超過歷史同時段 5.2 倍</div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button onClick="{{ goCaseDetail }}" style="padding:8px 14px;background:#fff;border:1px solid #D0D5DD;border-radius:8px;font-size:13px;cursor:pointer">查看案件 CASE-031</button>
+        <button onClick="{{ openExport }}" style="padding:8px 14px;background:#101828;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">匯出證據</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:22px;margin-top:10px;font-size:12.5px;color:#667085;flex-wrap:wrap">
+      <span>開始：2026/07/30 21:40</span><span>最後出現：2026/07/30 21:50</span><span>狀態：<strong style="color:#B54708">調查中</strong></span><span>負責人：陳柏元</span><span>觸發規則：<a href="#" onClick="{{ goRules }}">R06 登入成功異常</a></span>
+    </div>
+    <sc-if value="{{ exportToast }}" hint-placeholder-val="{{ false }}"><div style="margin-top:10px;background:#ECFDF3;border:1px solid #A6F4C5;color:#027A48;border-radius:7px;padding:8px 12px;font-size:12.5px">證據包已匯出（遮罩版）。此操作已寫入操作稽核。</div></sc-if>
+  </div>
+  <div style="display:grid;grid-template-columns:2fr 3fr;gap:14px;margin-bottom:14px">
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:10px">核心判定</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-bottom:12px">
+        <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:10px 4px"><div style="font-size:11px;color:#667085">目前值</div><div style="font-weight:700;font-size:22px;font-family:Montserrat,sans-serif;color:#B42318">352</div></div>
+        <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:10px 4px"><div style="font-size:11px;color:#667085">median</div><div style="font-weight:700;font-size:22px;font-family:Montserrat,sans-serif">44</div></div>
+        <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:10px 4px"><div style="font-size:11px;color:#667085">倍數</div><div style="font-weight:700;font-size:22px;font-family:Montserrat,sans-serif;color:#B42318">8.0×</div></div>
+      </div>
+      <table style="width:100%;font-size:12.5px;margin-bottom:12px">
+        <tbody>
+          <tr><td style="padding:5px 0;color:#667085">P95 / P99</td><td style="text-align:right;font-weight:500">64 / 67</td></tr>
+          <tr><td style="padding:5px 0;color:#667085">歷史最高值（28 天）</td><td style="text-align:right;font-weight:500">68</td></tr>
+          <tr><td style="padding:5px 0;color:#667085">實際門檻（max(P95×2, 下限 80)）</td><td style="text-align:right;font-weight:500">128</td></tr>
+          <tr><td style="padding:5px 0;color:#667085">連續超標時間桶</td><td style="text-align:right;font-weight:500">1 桶（21:40–21:50）</td></tr>
+        </tbody>
+      </table>
+      <div style="background:#FCFCFD;border-left:3px solid #FFEA00;border-radius:0 7px 7px 0;padding:10px 12px;font-size:12.5px;color:#475467;line-height:1.7">2026/07/30 21:40–21:50，<code style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">Boss_initial/auth_v2</code> 登入成功 352 次。歷史同時段中位數為 44、P95 為 64、最高為 68。本次為中位數的 8 倍，涉及 103 個來源及 69 個品牌，因此觸發 R06「登入成功異常」。</div>
+    </div>
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+      <div style="display:flex;align-items:center;margin-bottom:8px">
+        <div style="font-weight:700;font-size:14px">事件趨勢（07/30 21:00–22:30）</div>
+        <div style="margin-left:auto;display:flex;gap:6px;font-size:12px">
+          <select style="border:1px solid #D0D5DD;border-radius:6px;padding:4px 6px;font-size:12px;background:#fff"><option>10 分鐘分桶</option><option>1 小時分桶</option></select>
+          <div style="display:flex;border:1px solid #D0D5DD;border-radius:6px;overflow:hidden">
+            <button onClick="{{ evShowChart }}" style="padding:4px 10px;border:none;cursor:pointer;background:{{ evcBg }};color:{{ evcFg }}">圖表</button>
+            <button onClick="{{ evShowTable }}" style="padding:4px 10px;border:none;border-left:1px solid #D0D5DD;cursor:pointer;background:{{ evtBg }};color:{{ evtFg }}">表格</button>
+          </div>
+        </div>
+      </div>
+      <sc-if value="{{ evChart }}" hint-placeholder-val="{{ true }}">
+        <svg viewBox="0 0 720 240" style="width:100%;display:block">
+          <rect x="40" y="168" width="660" height="17" fill="#EFF4FB"></rect>
+          <line x1="40" y1="178" x2="700" y2="178" stroke="#98A2B3" stroke-dasharray="4 4"></line>
+          <line x1="333" y1="20" x2="333" y2="200" stroke="#B42318" stroke-dasharray="3 3" opacity=".5"></line>
+          <line x1="480" y1="20" x2="480" y2="200" stroke="#667085" stroke-dasharray="3 3" opacity=".5"></line>
+          <polyline points="40,179 113,177 187,178 260,176 333,110 407,24 480,52 553,140 627,171 700,177" fill="none" stroke="#B42318" stroke-width="2.5"></polyline>
+          <circle cx="407" cy="24" r="4" fill="#B42318"></circle>
+          <text x="337" y="32" font-size="10" fill="#B42318">事件開始 21:40</text>
+          <text x="484" y="32" font-size="10" fill="#667085">結束 21:50</text>
+          <text x="410" y="18" font-size="11" font-weight="700" fill="#B42318">352</text>
+          <text x="40" y="215" font-size="10" fill="#667085">21:00</text><text x="333" y="215" font-size="10" fill="#667085">21:40</text><text x="672" y="215" font-size="10" fill="#667085">22:30</text>
+          <text x="40" y="14" font-size="10" fill="#667085">虛線 = median 44 · 灰帶 = P95 範圍（30–64）</text>
+        </svg>
+      </sc-if>
+      <sc-if value="{{ evTableOn }}" hint-placeholder-val="{{ false }}">
+        <table style="width:100%;font-size:12.5px">
+          <thead><tr style="color:#667085;text-align:left"><th style="padding:6px 10px;border-bottom:1px solid #E4E7EC">時間桶</th><th style="padding:6px 10px;border-bottom:1px solid #E4E7EC;text-align:right">登入成功</th><th style="padding:6px 10px;border-bottom:1px solid #E4E7EC;text-align:right">median</th><th style="padding:6px 10px;border-bottom:1px solid #E4E7EC;text-align:right">P95</th><th style="padding:6px 10px;border-bottom:1px solid #E4E7EC;text-align:right">倍數</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:6px 10px;border-bottom:1px solid #F2F4F7">21:30–21:40</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">48</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">44</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">64</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">1.1×</td></tr>
+            <tr style="background:#FFFBFA"><td style="padding:6px 10px;border-bottom:1px solid #F2F4F7;font-weight:700">21:40–21:50</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7;font-weight:700;color:#B42318">352</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">44</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">64</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7;font-weight:700;color:#B42318">8.0×</td></tr>
+            <tr><td style="padding:6px 10px;border-bottom:1px solid #F2F4F7">21:50–22:00</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">196</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">44</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">64</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #F2F4F7">4.5×</td></tr>
+            <tr><td style="padding:6px 10px">22:00–22:10</td><td style="text-align:right;padding:6px 10px">84</td><td style="text-align:right;padding:6px 10px">44</td><td style="text-align:right;padding:6px 10px">64</td><td style="text-align:right;padding:6px 10px">1.9×</td></tr>
+          </tbody>
+        </table>
+      </sc-if>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div style="background:#FFFBFA;border:1px solid #FECDCA;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;color:#B42318;margin-bottom:10px;font-size:14px">支持攻擊的證據</div>
+      <div style="font-size:13px;color:#475467;line-height:2">· 登入量為歷史 median 的 8 倍（352 vs 44）<br>· 同時段出現登入失敗尖峰（23 次，median 5）<br>· 涉及 103 個不同來源，遠高於平常的 12–18 個</div>
+    </div>
+    <div style="background:#F6FEF9;border:1px solid #A6F4C5;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;color:#027A48;margin-bottom:10px;font-size:14px">支持正常行為的證據</div>
+      <div style="font-size:13px;color:#475467;line-height:2">· 登入成功遠多於失敗（352 : 23）<br>· 單一來源最多失敗 9 次，未達暴力破解門檻（20）<br>· 事件於 20 分鐘內明顯下降並回到基線</div>
+    </div>
+  </div>
+  <div style="background:#F8F9FC;border:1px solid #D5D9EB;border-radius:10px;padding:14px 18px;margin-bottom:14px;font-size:13px;color:#3E4784">
+    <strong>資料限制</strong>　目前缺少 device fingerprint 與完整帳號識別，因此無法確認這些成功登入是否來自同一批裝置。Admin Log 部分登入紀錄沒有 IP（顯示「來源 IP 不可用」）；API 來源 IP 由 forwarded header 推導，屬「未驗證來源」。
+  </div>
+  <div style="display:grid;grid-template-columns:3fr 2fr;gap:14px;margin-bottom:14px">
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:12px">關聯時間軸（07/30）</div>
+      <div style="display:flex;flex-direction:column">
+        <sc-for list="{{ timeline }}" as="t" hint-placeholder-count="7">
+          <div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #F2F4F7;font-size:12.5px;align-items:baseline">
+            <span style="flex:none;font-family:'IBM Plex Mono',monospace;color:#667085;width:44px">{{ t.time }}</span>
+            <span style="flex:none;font-size:11px;font-weight:500;padding:2px 8px;border-radius:5px;background:{{ t.tagBg }};color:{{ t.tagFg }};width:70px;text-align:center">{{ t.tag }}</span>
+            <span style="color:#344054">{{ t.text }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:10px">涉及對象（遮罩／彙總）</div>
+      <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap">
+        <sc-for list="{{ scopeTabs }}" as="t" hint-placeholder-count="5"><button onClick="{{ t.go }}" style="border:1px solid {{ t.bd }};background:{{ t.bg }};color:{{ t.fg }};border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer">{{ t.label }}</button></sc-for>
+      </div>
+      <table style="width:100%;font-size:12px">
+        <thead><tr style="color:#667085;text-align:left"><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC">{{ scopeCol }}</th><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC;text-align:right">登入成功</th><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC;text-align:right">占比</th></tr></thead>
+        <tbody>
+          <sc-for list="{{ scopeRows }}" as="r" hint-placeholder-count="5">
+            <tr><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ r.name }}</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;text-align:right">{{ r.v }}</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;text-align:right;color:#667085">{{ r.p }}</td></tr>
+          </sc-for>
+        </tbody>
+      </table>
+      <div style="font-size:11.5px;color:#667085;margin-top:8px">fingerprint 為不可逆識別值，非原始資料。點擊可複製或套用篩選。</div>
+    </div>
+  </div>
+  <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;margin-bottom:14px">
+    <div style="font-weight:700;font-size:14px;margin-bottom:12px">調查判定</div>
+    <sc-if value="{{ notJudged }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+        <sc-for list="{{ judgeBtns }}" as="j" hint-placeholder-count="5"><button onClick="{{ j.go }}" style="border:1px solid {{ j.bd }};background:{{ j.bg }};color:{{ j.fg }};border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer">{{ j.label }}</button></sc-for>
+      </div>
+      <sc-if value="{{ judgeAttack }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#FFFBFA;border:1px solid #FECDCA;border-radius:7px;padding:9px 12px;font-size:12.5px;color:#B42318;margin-bottom:12px">「已確認攻擊」提交前需再次確認。本系統不會執行任何自動封鎖、停權或 token 撤銷；後續處置請於案件中記錄。</div>
+      </sc-if>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px">
+        <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">判定理由（必填）</div><textarea style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;height:64px;font-family:'Noto Sans TC',sans-serif;resize:vertical" placeholder="為什麼做出此判定"></textarea></div>
+        <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">主要證據（必填）</div><textarea style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;height:64px;font-family:'Noto Sans TC',sans-serif;resize:vertical" placeholder="引用的查詢或數據"></textarea></div>
+        <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">下一步或處置（必填）</div><textarea style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;height:64px;font-family:'Noto Sans TC',sans-serif;resize:vertical" placeholder="例如：通知平台團隊、持續觀察 48 小時"></textarea></div>
+      </div>
+      <button onClick="{{ submitJudge }}" style="padding:9px 18px;background:#101828;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">提交判定</button>
+    </sc-if>
+    <sc-if value="{{ judged }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#ECFDF3;border:1px solid #A6F4C5;border-radius:7px;padding:12px 14px;font-size:13px;color:#027A48">判定已提交：<strong>{{ judgeLabel }}</strong>（2026/07/31 17:41 · 陳柏元）。已寫入案件 CASE-031 調查時間軸與操作稽核。</div>
+    </sc-if>
+  </div>
+</sc-if>
+<sc-if value="{{ pgExplorer }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="width:280px;flex:none;background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;font-size:12.5px">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">Filter Builder</div>
+      <div style="display:flex;flex-direction:column;gap:9px">
+        <div><div style="color:#667085;margin-bottom:3px">資料來源</div><select style="width:100%;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option selected>API Log</option><option>Admin Log</option><option>Backend System Log</option><option>API Log Raw</option><option>Auth Log</option></select></div>
+        <div><div style="color:#667085;margin-bottom:3px">時間範圍</div><select style="width:100%;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option>07/25 21:00–22:00</option><option>最近 1 小時</option><option>自訂時間</option></select></div>
+        <div><div style="color:#667085;margin-bottom:3px">品牌</div><input value="食時創新餐飲" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px"></div>
+        <div><div style="color:#667085;margin-bottom:3px">Controller / Function</div><input value="Api2 / TransDetail" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;font-family:'IBM Plex Mono',monospace"></div>
+        <div><div style="color:#667085;margin-bottom:3px">Source fingerprint</div><input value="src_BB9735634D3A" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12px;font-family:'IBM Plex Mono',monospace"></div>
+        <div><div style="color:#667085;margin-bottom:3px">Platform / Result</div><div style="display:flex;gap:6px"><select style="flex:1;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option>全部</option><option>POS</option><option>Webhook</option></select><select style="flex:1;border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option>全部</option><option>成功</option><option>失敗</option></select></div></div>
+        <div style="display:flex;flex-direction:column;gap:5px;color:#475467">
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox">只看有 error</label>
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox">跨品牌來源</label>
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox">新來源（28 天內首次）</label>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:14px">
+        <button onClick="{{ exRun }}" style="flex:1;padding:8px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:12.5px;cursor:pointer">執行查詢</button>
+        <button style="padding:8px 10px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">清除</button>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:10px;font-size:12px"><a href="#">儲存為查詢模板</a><a href="#">複製查詢連結</a></div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+        <span style="color:#667085">分析方式</span>
+        <select style="border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option>Request 趨勢</option><option>Endpoint 排名</option><option>品牌排名</option><option>來源排名</option><option>Actor 排名</option><option>失敗／錯誤分析</option><option>Unique resource 分析</option><option selected>遮罩後明細</option></select>
+        <span style="color:#667085">分桶</span>
+        <select style="border:1px solid #D0D5DD;border-radius:6px;padding:6px;font-size:12.5px;background:#fff"><option>1 分鐘</option><option>5 分鐘</option><option selected>10 分鐘</option><option>1 小時</option><option>1 天</option></select>
+        <div style="display:flex;border:1px solid #D0D5DD;border-radius:6px;overflow:hidden;margin-left:auto">
+          <button onClick="{{ exShowAgg }}" style="padding:6px 12px;border:none;cursor:pointer;background:{{ exaBg }};color:{{ exaFg }}">聚合圖表</button>
+          <button onClick="{{ exShowDetail }}" style="padding:6px 12px;border:none;border-left:1px solid #D0D5DD;cursor:pointer;background:{{ exdBg }};color:{{ exdFg }}">遮罩明細</button>
+        </div>
+        <button style="border:1px solid #D0D5DD;background:#fff;border-radius:6px;padding:6px 12px;font-size:12.5px;cursor:pointer">匯出遮罩資料</button>
+      </div>
+      <sc-if value="{{ exAgg }}" hint-placeholder-val="{{ true }}">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;margin-bottom:12px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:4px">Api2/TransDetail Request 趨勢 · 食時創新餐飲 · 07/25 21:00–22:00</div>
+          <div style="font-size:12px;color:#667085;margin-bottom:10px">src_BB9735634D3A 單一來源占 92%；品牌總量（灰線）仍在 28 天基線內。</div>
+          <svg viewBox="0 0 720 220" style="width:100%;display:block">
+            <rect x="40" y="120" width="660" height="40" fill="#EFF4FB"></rect>
+            <line x1="40" y1="140" x2="700" y2="140" stroke="#98A2B3" stroke-dasharray="4 4"></line>
+            <polyline points="40,150 150,145 260,60 370,42 480,48 590,55 700,130" fill="none" stroke="#DC6803" stroke-width="2.5"></polyline>
+            <polyline points="40,138 150,136 260,132 370,128 480,130 590,133 700,137" fill="none" stroke="#667085" stroke-width="2"></polyline>
+            <text x="40" y="14" font-size="10" fill="#667085">橘線 = src_BB97… 讀取量 · 灰線 = 品牌總量 · 虛線 = 品牌 28 天 median · 灰帶 = P95 範圍</text>
+            <text x="40" y="195" font-size="10" fill="#667085">21:00</text><text x="370" y="195" font-size="10" fill="#667085">21:30</text><text x="676" y="195" font-size="10" fill="#667085">22:00</text>
+          </svg>
+        </div>
+      </sc-if>
+      <sc-if value="{{ exDetail }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden;margin-bottom:12px">
+          <table style="width:100%;font-size:12px">
+            <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">時間</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">來源</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">品牌</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Endpoint template</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Source fp</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Actor fp</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Result</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Resource fp</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ exRows }}" as="r" hint-placeholder-count="6">
+                <tr style-hover="background:#FCFCFD">
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px;white-space:nowrap">{{ r.time }}</td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;color:#667085">API Log</td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7">食時創新餐飲</td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">Api2/TransDetail</td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7"><span title="不可逆識別值，非原始資料。點擊複製" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#F2F4F7;border-radius:5px;padding:2px 7px;cursor:pointer">src_BB9735634D3A</span></td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#F2F4F7;border-radius:5px;padding:2px 7px;cursor:pointer">actor_4F7B88B97114</span></td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;color:#027A48">成功</td>
+                  <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#667085">{{ r.res }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+          <div style="padding:9px 14px;background:#F8F9FC;border-top:1px solid #E4E7EC;font-size:11.5px;color:#3E4784">明細已遮罩：不顯示原始 IP、headers、params、token、訂單號、會員 ID、手機或 Email。params 僅顯示大小與欄位類別。</div>
+        </div>
+      </sc-if>
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:10px 16px;display:flex;gap:18px;font-size:12px;color:#667085;flex-wrap:wrap">
+        <span>執行時間 1.8 秒</span><span>回傳 4,812 筆（顯示前 500，已截斷）</span><span>時間範圍 07/25 21:00–22:00（Asia/Taipei）</span><span>去重：以事件 ID 去重</span><span>資料最新時間 17:39</span>
+      </div>
+    </div>
+    <div style="width:230px;flex:none;background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;font-size:12px;color:#475467">
+      <div style="font-weight:700;font-size:13px;color:#101828;margin-bottom:8px">欄位說明與資料限制</div>
+      <div style="line-height:1.8">
+        <strong>來源 IP</strong>：多數由 forwarded header 推導，標示為「未驗證來源」，不可作為單 IP 判斷依據。<br><br>
+        <strong>params</strong>：大量非合法 JSON，僅呈現大小、欄位類別與 fingerprint。<br><br>
+        <strong>Backend System Log</strong>：歷史資料可能重複，已以事件 ID 去重。<br><br>
+        <strong>Auth Log</strong>：最高敏感等級，只提供遮罩摘要。
+      </div>
+    </div>
+  </div>
+</sc-if>
+<sc-if value="{{ pgQuick }}" hint-placeholder-val="{{ false }}">
+  <sc-if value="{{ qqList }}" hint-placeholder-val="{{ true }}">
+    <div style="font-size:12.5px;color:#667085;margin-bottom:12px">固定查詢模板：稽查人員臨時提問時，可在 1–3 分鐘內找到可驗證答案。所有執行都會寫入操作稽核。</div>
+    <sc-for list="{{ qqCats }}" as="c" hint-placeholder-count="4">
+      <div style="margin-bottom:18px">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;border-left:3px solid #FFEA00;padding-left:9px">{{ c.name }}</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+          <sc-for list="{{ c.items }}" as="t" hint-placeholder-count="2">
+            <div onClick="{{ t.go }}" style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:12px 14px;cursor:pointer" style-hover="border-color:#98A2B3;box-shadow:0 1px 3px rgba(16,24,40,.08)">
+              <div style="font-weight:500;font-size:13px">{{ t.name }}</div>
+              <div style="font-size:12px;color:#667085;margin:4px 0 8px">{{ t.desc }}</div>
+              <div style="display:flex;gap:10px;font-size:11.5px;color:#98A2B3;flex-wrap:wrap"><span>輸入：{{ t.input }}</span><span>來源：{{ t.src }}</span><span>約 {{ t.eta }}</span></div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </sc-if>
+  <sc-if value="{{ qqRunView }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <a href="#" onClick="{{ qqBack }}" style="font-size:13px">← 返回模板</a>
+      <div style="font-weight:700;font-size:15px">比較兩個日期的異常模式</div>
+      <span style="font-size:12px;color:#667085">來源：API Log · 預計 5–10 秒</span>
+    </div>
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;margin-bottom:12px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;font-size:12.5px">
+      <div><div style="color:#667085;margin-bottom:3px">日期 A</div><input value="2026/06/25 21:00–22:00" style="border:1px solid #D0D5DD;border-radius:6px;padding:7px 9px;font-size:12.5px;width:170px"></div>
+      <div><div style="color:#667085;margin-bottom:3px">日期 B</div><input value="2026/07/25 21:00–22:00" style="border:1px solid #D0D5DD;border-radius:6px;padding:7px 9px;font-size:12.5px;width:170px"></div>
+      <div><div style="color:#667085;margin-bottom:3px">Endpoint</div><input value="Api2/TransDetail" style="border:1px solid #D0D5DD;border-radius:6px;padding:7px 9px;font-size:12.5px;width:170px;font-family:'IBM Plex Mono',monospace"></div>
+      <div><div style="color:#667085;margin-bottom:3px">品牌</div><input value="食時創新餐飲" style="border:1px solid #D0D5DD;border-radius:6px;padding:7px 9px;font-size:12.5px;width:140px"></div>
+      <button onClick="{{ qqExec }}" style="padding:8px 18px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer">執行</button>
+    </div>
+    <sc-if value="{{ qqRanOn }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;margin-bottom:12px">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">查詢結果</div>
+        <table style="width:100%;font-size:12.5px;margin-bottom:12px">
+          <thead><tr style="color:#667085;text-align:left"><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC">指標</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">06/25 21:00–22:00</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">07/25 21:00–22:00</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">28 天 median</th><th style="padding:7px 10px;border-bottom:1px solid #E4E7EC;text-align:right">P95</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">TransDetail request（品牌總量）</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">2,940</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">3,120</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">2,850</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">3,400</td></tr>
+            <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">最大單一來源占比</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;font-weight:700;color:#B54708">91%（src_BB97…）</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;font-weight:700;color:#B54708">92%（src_BB97…）</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">88%</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">93%</td></tr>
+            <tr><td style="padding:7px 10px;border-bottom:1px solid #F2F4F7">Unique resource 比例</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">99.2%（逐筆讀取）</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7">99.4%（逐筆讀取）</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">98.9%</td><td style="text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;color:#667085">99.6%</td></tr>
+            <tr><td style="padding:7px 10px">error 比例</td><td style="text-align:right;padding:7px 10px">0.3%</td><td style="text-align:right;padding:7px 10px">0.2%</td><td style="text-align:right;padding:7px 10px;color:#667085">0.4%</td><td style="text-align:right;padding:7px 10px;color:#667085">1.1%</td></tr>
+          </tbody>
+        </table>
+        <div style="background:#FCFCFD;border-left:3px solid #FFEA00;border-radius:0 7px 7px 0;padding:10px 12px;font-size:12.5px;color:#475467;line-height:1.7"><strong>解讀</strong>　兩個日期都是同一來源 src_BB9735634D3A 在 21:00–22:00 逐筆大量讀取交易明細，模式重複且規律；品牌總量（3,120）仍在 28 天基線（median 2,850、P95 3,400）內。行為特徵較接近固定批次整合，而非攻擊，但該來源不在 Allowlist。</div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button onClick="{{ qqMark }}" style="padding:8px 14px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:12.5px;cursor:pointer">標記「合法整合／待驗證」</button>
+          <button style="padding:8px 14px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">建立事件</button>
+          <button style="padding:8px 14px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">加入案件</button>
+          <button onClick="{{ goExplorer }}" style="padding:8px 14px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">在 Log Explorer 繼續分析</button>
+        </div>
+        <sc-if value="{{ qqMarked }}" hint-placeholder-val="{{ false }}"><div style="margin-top:10px;background:#ECFDF3;border:1px solid #A6F4C5;color:#027A48;border-radius:7px;padding:8px 12px;font-size:12.5px">已標記為「合法整合／待驗證」，建議建立 Allowlist 申請並由品牌 Owner 確認整合來源。</div></sc-if>
+      </div>
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:10px 16px;display:flex;gap:18px;font-size:12px;color:#667085;flex-wrap:wrap">
+        <span>執行時間 6.2 秒</span><span>掃描 2 個時間範圍</span><span>去重：事件 ID</span><span>已寫入操作稽核（query hash：qh_8842A1）</span>
+      </div>
+    </sc-if>
+  </sc-if>
+</sc-if>
+<sc-if value="{{ pgSql }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="width:230px;flex:none;background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;font-size:12px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px">允許查詢的資料表</div>
+      <div style="display:flex;flex-direction:column;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#475467">
+        <span>ocard.ods_admin_log</span><span>ocard.ods_backend_sys_log</span><span>ocard.ods_api_log</span><span>api_log</span><span>api_log_20260730</span><span>auth_log <span style="color:#B42318">敏感</span></span>
+      </div>
+      <div style="border-top:1px solid #E4E7EC;margin:10px 0;padding-top:10px;color:#667085;line-height:1.7;font-family:'Noto Sans TC',sans-serif">禁止輸出欄位：token、secret、password、cookie、原始 IP、手機、Email、會員 ID、訂單號。查詢原始 log 必須帶 <code style="font-family:'IBM Plex Mono',monospace">create_time</code> 條件。</div>
+      <button onClick="{{ sqlLoadBad }}" style="width:100%;padding:6px;margin-bottom:6px;background:#fff;border:1px solid #D0D5DD;border-radius:6px;font-size:11.5px;cursor:pointer">範例：缺時間條件</button>
+      <button onClick="{{ sqlLoadGood }}" style="width:100%;padding:6px;background:#fff;border:1px solid #D0D5DD;border-radius:6px;font-size:11.5px;cursor:pointer">範例：加上時間條件</button>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="background:#101828;border-radius:10px;padding:14px 16px;margin-bottom:12px">
+        <div style="display:flex;margin-bottom:10px;align-items:center"><span style="color:#98A2B3;font-size:11.5px;font-family:'IBM Plex Mono',monospace">read-only SQL · auto LIMIT 1000 · timeout 30s</span>
+          <div style="margin-left:auto;display:flex;gap:8px"><button style="padding:5px 12px;background:transparent;border:1px solid #344054;color:#98A2B3;border-radius:6px;font-size:12px;cursor:pointer">格式化</button><button style="padding:5px 12px;background:transparent;border:1px solid #344054;color:#98A2B3;border-radius:6px;font-size:12px;cursor:pointer">儲存私人查詢</button><button onClick="{{ sqlExec }}" style="padding:5px 14px;background:{{ sqlExecBg }};border:none;color:{{ sqlExecFg }};border-radius:6px;font-size:12px;font-weight:700;cursor:{{ sqlExecCur }}">執行</button></div>
+        </div>
+        <pre style="margin:0;font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#E4E7EC;white-space:pre-wrap">{{ sqlText }}</pre>
+      </div>
+      <sc-if value="{{ sqlRanOn }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden;margin-bottom:12px">
+          <table style="width:100%;font-size:12px">
+            <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">bucket_10m</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">login_success</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">distinct_source_fp</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">distinct_brand</th></tr></thead>
+            <tbody>
+              <tr><td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">2026-07-30 21:30</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">48</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">15</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">14</td></tr>
+              <tr style="background:#FFFBFA"><td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:700">2026-07-30 21:40</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7;font-weight:700;color:#B42318">352</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7;font-weight:700">103</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7;font-weight:700">69</td></tr>
+              <tr><td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">2026-07-30 21:50</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">196</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">64</td><td style="text-align:right;padding:7px 12px;border-bottom:1px solid #F2F4F7">48</td></tr>
+              <tr><td style="padding:7px 12px;font-family:'IBM Plex Mono',monospace;font-size:11.5px">2026-07-30 22:00</td><td style="text-align:right;padding:7px 12px">84</td><td style="text-align:right;padding:7px 12px">30</td><td style="text-align:right;padding:7px 12px">27</td></tr>
+            </tbody>
+          </table>
+          <div style="padding:9px 14px;background:#FCFCFD;border-top:1px solid #E4E7EC;display:flex;gap:16px;font-size:11.5px;color:#667085;flex-wrap:wrap">
+            <span>4 rows（未截斷，上限 1,000）</span><span>執行 0.9 秒</span><span>結果已遮罩</span><span>query hash：qh_5F31D0 已寫入操作稽核</span>
+            <a href="#" style="margin-left:auto">複製遮罩結果</a><a href="#">加入案件</a><a href="#">匯出（需理由）</a>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+    <div style="width:250px;flex:none;background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px 16px;font-size:12px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">安全驗證</div>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <sc-for list="{{ sqlChecks }}" as="c" hint-placeholder-count="6">
+          <div style="display:flex;gap:8px;align-items:baseline"><span style="flex:none;font-weight:700;color:{{ c.color }}">{{ c.mark }}</span><span style="color:#475467">{{ c.text }}</span></div>
+        </sc-for>
+      </div>
+      <sc-if value="{{ sqlBlocked }}" hint-placeholder-val="{{ true }}">
+        <div style="margin-top:12px;background:#FEF3F2;border:1px solid #FECDCA;border-radius:7px;padding:10px 12px;color:#B42318;line-height:1.7">查詢原始 log 必須指定時間範圍，請加入 <code style="font-family:'IBM Plex Mono',monospace">create_time</code> 條件。驗證未通過前無法執行。</div>
+      </sc-if>
+      <sc-if value="{{ sqlPass }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:12px;background:#ECFDF3;border:1px solid #A6F4C5;border-radius:7px;padding:10px 12px;color:#027A48;line-height:1.7">驗證通過。將自動套用 LIMIT 1000、timeout 30 秒；輸出經遮罩處理。</div>
+      </sc-if>
+      <div style="margin-top:12px;border-top:1px solid #E4E7EC;padding-top:10px;color:#667085;line-height:1.7">此 Console 僅允許 SELECT。INSERT、UPDATE、DELETE、CREATE、ALTER 與 DROP 均已阻擋。</div>
+    </div>
+  </div>
+</sc-if>
+<sc-if value="{{ pgCases }}" hint-placeholder-val="{{ false }}">
+  <sc-if value="{{ caseList }}" hint-placeholder-val="{{ true }}">
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden">
+      <table style="width:100%;font-size:12.5px">
+        <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">案件編號</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">標題</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">嚴重度</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">狀態</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">負責人</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC;text-align:right">關聯事件</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">開始</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">最近更新</th><th style="padding:9px 12px;border-bottom:1px solid #E4E7EC">結案</th></tr></thead>
+        <tbody>
+          <sc-for list="{{ caseRows }}" as="c" hint-placeholder-count="3">
+            <tr style-hover="background:#FCFCFD">
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><a href="#" onClick="{{ c.open }}" style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ c.id }}</a></td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;font-weight:500">{{ c.title }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7"><span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:{{ c.sevBg }};color:{{ c.sevFg }};border:1px solid {{ c.sevBd }}">▲ {{ c.sev }}</span></td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:{{ c.stColor }}">{{ c.st }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7">{{ c.owner }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;text-align:right">{{ c.evts }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ c.start }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ c.upd }}</td>
+              <td style="padding:9px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ c.closed }}</td>
+            </tr>
+          </sc-for>
+        </tbody>
+      </table>
+    </div>
+  </sc-if>
+  <sc-if value="{{ caseDetail }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <a href="#" onClick="{{ caseBack }}" style="font-size:13px">← 案件清單</a>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#475467">CASE-031</span>
+      <div style="font-weight:700;font-size:15px">07/30 Boss 登入成功尖峰調查</div>
+      <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:#B42318;color:#fff">▲ P1</span>
+      <span style="font-size:12px;color:#B54708;font-weight:500">調查中</span>
+      <span style="margin-left:auto;font-size:12px;color:#667085">負責人 陳柏元 · 開始 07/30 22:05 · 更新 07/31 17:41</span>
+    </div>
+    <div style="display:grid;grid-template-columns:3fr 2fr;gap:14px">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">案件摘要與影響範圍</div>
+          <div style="font-size:13px;color:#475467;line-height:1.8">07/30 21:40–21:50 `Boss_initial/auth_v2` 登入成功 352 次（median 44，8 倍），涉及 103 個來源、69 個品牌。未觀察到後續敏感 endpoint 異常或後台大量查詢；影響範圍暫定為 Boss 登入面，無資料外洩證據（缺 response bytes，無法計算讀取筆數）。</div>
+        </div>
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">調查時間軸</div>
+          <div style="display:flex;flex-direction:column;font-size:12.5px">
+            <sc-for list="{{ caseTl }}" as="t" hint-placeholder-count="5">
+              <div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #F2F4F7;align-items:baseline">
+                <span style="flex:none;font-family:'IBM Plex Mono',monospace;color:#667085;width:92px">{{ t.time }}</span>
+                <span style="flex:none;color:#475467;width:56px">{{ t.who }}</span>
+                <span style="color:#344054">{{ t.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">已執行查詢與證據附件</div>
+          <table style="width:100%;font-size:12px">
+            <thead><tr style="color:#667085;text-align:left"><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC">類型</th><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC">內容</th><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC">Query hash</th><th style="padding:6px 8px;border-bottom:1px solid #E4E7EC">時間</th></tr></thead>
+            <tbody>
+              <tr><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">模板</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">登入成功異常（07/30 21:00–22:30）</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px">qh_2C90AF</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;color:#667085">07/30 22:08</td></tr>
+              <tr><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">模板</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">登入後 10 分鐘內的 API 行為</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px">qh_77B3E2</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;color:#667085">07/30 22:15</td></tr>
+              <tr><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">SQL</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7">auth_log 10 分鐘桶聚合（遮罩）</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px">qh_5F31D0</td><td style="padding:6px 8px;border-bottom:1px solid #F2F4F7;color:#667085">07/31 09:20</td></tr>
+              <tr><td style="padding:6px 8px">附件</td><td style="padding:6px 8px">EVT-2607 遮罩證據包（PDF）</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:11px">—</td><td style="padding:6px 8px;color:#667085">07/31 17:41</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">支持／反對攻擊證據</div>
+          <div style="color:#B42318;font-weight:500;margin-bottom:4px">支持攻擊</div>
+          <div style="color:#475467;line-height:1.8;margin-bottom:10px">· 8 倍於歷史 median 的登入成功量<br>· 103 個來源異常分散</div>
+          <div style="color:#027A48;font-weight:500;margin-bottom:4px">反對攻擊</div>
+          <div style="color:#475467;line-height:1.8">· 成功:失敗 = 352:23，非暴力破解型態<br>· 20 分鐘內自然回落<br>· 登入後未見敏感 endpoint 異常行為</div>
+        </div>
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">根因 / 處置 / 後續改善</div>
+          <div style="color:#475467;line-height:1.8"><strong>根因（暫定）</strong>：疑似某 POS 廠商於 21:40 批次重連（版本更新後全量重新認證）。等待廠商回覆確認。<br><br><strong>處置</strong>：不執行封鎖；要求廠商提供更新時程證明；來源清單交叉比對 Allowlist。<br><br><strong>後續改善</strong>：建議接入 device fingerprint；為已知 POS 重連模式建立 Allowlist 規則。</div>
+        </div>
+        <div style="background:#F8F9FC;border:1px solid #D5D9EB;border-radius:10px;padding:14px 18px;font-size:12.5px;color:#3E4784">
+          <strong>關聯事件</strong>　EVT-2607（P1 · 調查中）<br>結案需填寫結案摘要，並由 Security Admin 覆核。
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</sc-if>
+<sc-if value="{{ pgHealth }}" hint-placeholder-val="{{ false }}">
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px">
+    <sc-for list="{{ healthCards }}" as="h" hint-placeholder-count="6">
+      <div style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid {{ h.bar }};border-radius:10px;padding:14px 16px;font-size:12.5px">
+        <div style="display:flex;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;font-size:13.5px">{{ h.name }}</div>
+          <span style="margin-left:auto;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:{{ h.bg }};color:{{ h.fg }}">{{ h.st }}</span>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#98A2B3;margin-bottom:8px">{{ h.table }}</div>
+        <table style="width:100%">
+          <tbody>
+            <tr><td style="padding:3px 0;color:#667085">最新事件時間</td><td style="text-align:right;font-weight:500">{{ h.latest }}</td></tr>
+            <tr><td style="padding:3px 0;color:#667085">延遲</td><td style="text-align:right;font-weight:500;color:{{ h.lagColor }}">{{ h.lag }}</td></tr>
+            <tr><td style="padding:3px 0;color:#667085">今天筆數 / 昨天同期</td><td style="text-align:right;font-weight:500">{{ h.today }}</td></tr>
+            <tr><td style="padding:3px 0;color:#667085">28 天 median</td><td style="text-align:right;color:#667085">{{ h.med }}</td></tr>
+            <tr><td style="padding:3px 0;color:#667085">重複率 / 關鍵欄位缺漏</td><td style="text-align:right;color:#667085">{{ h.dup }}</td></tr>
+          </tbody>
+        </table>
+        <div style="margin-top:8px;color:{{ h.noteColor }};font-size:11.5px">{{ h.note }}</div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:grid;grid-template-columns:3fr 2fr;gap:14px">
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:4px">資料品質趨勢（最近 14 天）</div>
+      <div style="font-size:12px;color:#667085;margin-bottom:10px">每日資料量（柱）與延遲分鐘數（線）· 可於右側切換其他指標</div>
+      <svg viewBox="0 0 720 200" style="width:100%;display:block">
+        <line x1="40" y1="170" x2="700" y2="170" stroke="#E4E7EC"></line>
+        <rect x="55" y="80" width="26" height="90" fill="#D1E0FF"></rect><rect x="101" y="74" width="26" height="96" fill="#D1E0FF"></rect><rect x="147" y="84" width="26" height="86" fill="#D1E0FF"></rect><rect x="193" y="70" width="26" height="100" fill="#D1E0FF"></rect><rect x="239" y="78" width="26" height="92" fill="#D1E0FF"></rect><rect x="285" y="66" width="26" height="104" fill="#D1E0FF"></rect><rect x="331" y="76" width="26" height="94" fill="#D1E0FF"></rect><rect x="377" y="72" width="26" height="98" fill="#D1E0FF"></rect><rect x="423" y="60" width="26" height="110" fill="#B2CCFF"></rect><rect x="469" y="75" width="26" height="95" fill="#D1E0FF"></rect><rect x="515" y="70" width="26" height="100" fill="#D1E0FF"></rect><rect x="561" y="79" width="26" height="91" fill="#D1E0FF"></rect><rect x="607" y="68" width="26" height="102" fill="#D1E0FF"></rect><rect x="653" y="73" width="26" height="97" fill="#D1E0FF"></rect>
+        <polyline points="68,150 114,148 160,152 206,146 252,150 298,144 344,150 390,148 436,120 482,146 528,148 574,150 620,96 666,150" fill="none" stroke="#DC6803" stroke-width="2"></polyline>
+        <text x="40" y="14" font-size="10" fill="#667085">藍柱 = 每日筆數 · 橘線 = 平均延遲分鐘（07/29 尖峰 12 分、今日 Admin Log 14 分）</text>
+        <text x="55" y="188" font-size="10" fill="#667085">07/18</text><text x="640" y="188" font-size="10" fill="#667085">07/31</text>
+      </svg>
+    </div>
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:10px">狀態定義與其他品質指標</div>
+      <table style="width:100%;margin-bottom:12px">
+        <tbody>
+          <tr><td style="padding:4px 0"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:#ECFDF3;color:#027A48">正常</span></td><td style="color:#475467">延遲不超過 5 分鐘</td></tr>
+          <tr><td style="padding:4px 0"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:#FFFAEB;color:#B54708">注意</span></td><td style="color:#475467">延遲 6–10 分鐘</td></tr>
+          <tr><td style="padding:4px 0"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:#FEF3F2;color:#B42318">異常</span></td><td style="color:#475467">延遲超過 10 分鐘</td></tr>
+          <tr><td style="padding:4px 0"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:#F2F4F7;color:#475467">停更</span></td><td style="color:#475467">超過 30 分鐘沒有新資料</td></tr>
+          <tr><td style="padding:4px 0"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:#FEF3F2;color:#B42318">查詢失敗</span></td><td style="color:#475467">無法連線或 query timeout</td></tr>
+        </tbody>
+      </table>
+      <table style="width:100%">
+        <tbody>
+          <tr><td style="padding:4px 0;color:#667085">IP 缺漏率（Admin Log）</td><td style="text-align:right;font-weight:500">7.2%</td></tr>
+          <tr><td style="padding:4px 0;color:#667085">Actor 缺漏率（API Log）</td><td style="text-align:right;font-weight:500">3.8%</td></tr>
+          <tr><td style="padding:4px 0;color:#667085">無法解析 payload 比例（API Log）</td><td style="text-align:right;font-weight:500;color:#B54708">41.5%</td></tr>
+          <tr><td style="padding:4px 0;color:#667085">重複率（Backend Log，去重前）</td><td style="text-align:right;font-weight:500">2.9%</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</sc-if>
+<sc-if value="{{ pgRules }}" hint-placeholder-val="{{ false }}">
+  <sc-if value="{{ ruleList }}" hint-placeholder-val="{{ true }}">
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden;margin-bottom:16px">
+      <div style="padding:12px 16px;border-bottom:1px solid #E4E7EC;font-weight:700;font-size:14px">偵測規則</div>
+      <table style="width:100%;font-size:12.5px">
+        <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">規則 ID</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">名稱</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">啟用</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">嚴重度</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">資料來源</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">動態門檻</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">絕對下限</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">最近觸發</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">修改人 / 版本</th></tr></thead>
+      <tbody>
+        <sc-for list="{{ ruleRows }}" as="r" hint-placeholder-count="6">
+          <tr style-hover="background:#FCFCFD">
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7"><a href="#" onClick="{{ r.open }}" style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ r.id }}</a></td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;font-weight:500">{{ r.name }}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7"><span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:{{ r.enBg }};color:{{ r.enFg }}">{{ r.en }}</span></td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7"><span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:{{ r.sevBg }};color:{{ r.sevFg }};border:1px solid {{ r.sevBd }}">{{ r.sev }}</span></td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ r.src }}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ r.formula }}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;text-align:right">{{ r.floor }}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ r.last }}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ r.mod }}</td>
+          </tr>
+        </sc-for>
+      </tbody>
+      </table>
+    </div>
+    <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid #E4E7EC;display:flex;align-items:center"><span style="font-weight:700;font-size:14px">Allowlist</span><button onClick="{{ alOpenDrawer }}" style="margin-left:auto;padding:6px 14px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:12.5px;cursor:pointer">新增 Allowlist</button></div>
+      <table style="width:100%;font-size:12.5px">
+        <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">名稱</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Owner</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Integration</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Endpoint</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Source fp</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">預期頻率</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">生效–到期</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">核准人</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">狀態</th></tr></thead>
+        <tbody>
+          <sc-for list="{{ alRows }}" as="a" hint-placeholder-count="4">
+            <tr style-hover="background:#FCFCFD">
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;font-weight:500"><a href="#" onClick="{{ alOpenDrawer }}">{{ a.name }}</a></td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7">{{ a.owner }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ a.type }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ a.ep }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#F2F4F7;border-radius:5px;padding:2px 7px">{{ a.fp }}</span></td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ a.freq }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7;color:#667085">{{ a.period }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7">{{ a.by }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #F2F4F7"><span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:{{ a.stBg }};color:{{ a.stFg }}">{{ a.st }}</span></td>
+            </tr>
+          </sc-for>
+        </tbody>
+      </table>
+    </div>
+  </sc-if>
+  <sc-if value="{{ ruleDetail }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <a href="#" onClick="{{ ruleBack }}" style="font-size:13px">← 規則清單</a>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#475467">R06</span>
+      <div style="font-weight:700;font-size:15px">登入成功異常</div>
+      <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:#B42318;color:#fff">P1</span>
+      <span style="font-size:12px;color:#667085">v4 · 最近修改 07/12 · 陳柏元</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">規則定義</div>
+        <table style="width:100%">
+          <tbody>
+            <tr><td style="padding:5px 0;color:#667085;width:110px">目的</td><td>偵測單一登入 endpoint 的成功量異常尖峰（撞庫成功、批次盜用 credential）</td></tr>
+            <tr><td style="padding:5px 0;color:#667085">輸入資料</td><td>Auth Log · 10 分鐘桶 · 依 endpoint 聚合</td></tr>
+            <tr><td style="padding:5px 0;color:#667085">計算方式</td><td>目前桶 vs 28 天同時段（同星期別）median / P95</td></tr>
+            <tr><td style="padding:5px 0;color:#667085">動態門檻</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">max(P95 × 2, 絕對下限 80)</td></tr>
+            <tr><td style="padding:5px 0;color:#667085">升級條件</td><td>連續 3 桶超標，或同時觸發 R07 登入失敗 → 升 P0</td></tr>
+            <tr><td style="padding:5px 0;color:#667085">降級條件</td><td>回落至 P95 以下連續 2 桶 → 事件標記「已停止」</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">已知誤報來源與資料限制</div>
+          <div style="color:#475467;line-height:1.8">· POS 廠商版本更新後的批次重連（建議建立 Allowlist）<br>· 連鎖品牌開店尖峰（週五 18:00）<br>· <span style="color:#3E4784">限制：缺 device fingerprint，無法區分同一裝置的批次登入</span></div>
+        </div>
+        <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:16px 18px;font-size:12.5px">
+          <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">歷史觸發與修改歷程</div>
+          <div style="color:#475467;line-height:1.8">最近 28 天觸發 3 次（1 次確認需觀察、2 次誤報）<br>v4 07/12 絕對下限 60 → 80（減少凌晨誤報）· 陳柏元<br>v3 06/28 改用同星期別基線 · 林雅婷</div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ alDrawerOn }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:55" onClick="{{ alCloseDrawer }}"></div>
+    <div style="position:fixed;top:0;right:0;bottom:0;width:400px;background:#fff;z-index:56;box-shadow:-8px 0 24px rgba(16,24,40,.15);padding:20px;overflow-y:auto;box-sizing:border-box">
+      <div style="display:flex;align-items:center;margin-bottom:14px"><div style="font-weight:700;font-size:15px">編輯 Allowlist</div><button onClick="{{ alCloseDrawer }}" style="margin-left:auto;border:none;background:none;font-size:18px;color:#667085;cursor:pointer">×</button></div>
+      <div style="display:flex;flex-direction:column;gap:11px;font-size:12.5px">
+        <div><div style="color:#667085;margin-bottom:3px">名稱</div><input value="食時創新 POS 夜間批次同步" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div>
+        <div style="display:flex;gap:8px"><div style="flex:1"><div style="color:#667085;margin-bottom:3px">Owner</div><input value="林雅婷" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div><div style="flex:1"><div style="color:#667085;margin-bottom:3px">Integration 類型</div><select style="width:100%;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;background:#fff"><option selected>POS 批次</option><option>Webhook</option><option>第三方串接</option></select></div></div>
+        <div><div style="color:#667085;margin-bottom:3px">用途</div><textarea style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;height:56px;font-family:'Noto Sans TC',sans-serif;resize:vertical">每晚 21:00–22:00 逐筆同步交易明細至品牌 ERP</textarea></div>
+        <div><div style="color:#667085;margin-bottom:3px">Endpoint</div><input value="Api2/TransDetail" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px;font-family:'IBM Plex Mono',monospace"></div>
+        <div><div style="color:#667085;margin-bottom:3px">品牌範圍</div><input value="食時創新餐飲（單一品牌）" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div>
+        <div style="display:flex;gap:8px"><div style="flex:1"><div style="color:#667085;margin-bottom:3px">Source fingerprint</div><input value="src_BB9735634D3A" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12px;font-family:'IBM Plex Mono',monospace"></div><div style="flex:1"><div style="color:#667085;margin-bottom:3px">Token fingerprint</div><input value="token_E210EA75F60A" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12px;font-family:'IBM Plex Mono',monospace"></div></div>
+        <div style="display:flex;gap:8px"><div style="flex:1"><div style="color:#667085;margin-bottom:3px">預期頻率</div><input value="≤ 5,000 req / 小時（21:00–22:00）" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div></div>
+        <div style="display:flex;gap:8px"><div style="flex:1"><div style="color:#667085;margin-bottom:3px">生效時間</div><input value="2026/08/01" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div><div style="flex:1"><div style="color:#667085;margin-bottom:3px">到期時間</div><input value="2026/10/31" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:7px;padding:8px;font-size:12.5px"></div></div>
+        <div style="background:#FFFAEB;border:1px solid #FEDF89;border-radius:7px;padding:9px 12px;color:#B54708;font-size:12px">Allowlist 到期前 7 天會顯示警告並通知 Owner 與核准人。</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button onClick="{{ alCloseDrawer }}" style="padding:8px 16px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">取消</button>
+          <button onClick="{{ alCloseDrawer }}" style="padding:8px 16px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:12.5px;cursor:pointer">送出核准（需 Security Admin）</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</sc-if>
+<sc-if value="{{ pgAuditlog }}" hint-placeholder-val="{{ false }}">
+  <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;font-size:12.5px">
+    <input placeholder="操作者" style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 9px;font-size:12.5px;width:130px">
+    <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px;font-size:12.5px;background:#fff"><option>動作：全部</option><option>登入</option><option>查看事件</option><option>開啟遮罩明細</option><option>執行模板</option><option>執行 SQL</option><option>原始資料鑽取</option><option>匯出</option><option>變更事件狀態</option><option>修改規則</option><option>建立或修改 Allowlist</option></select>
+    <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px;font-size:12.5px;background:#fff"><option>資料來源：全部</option><option>API Log</option><option>Auth Log</option></select>
+    <input placeholder="案件編號" style="border:1px solid #D0D5DD;border-radius:7px;padding:6px 9px;font-size:12.5px;width:110px">
+    <select style="border:1px solid #D0D5DD;border-radius:7px;padding:6px;font-size:12.5px;background:#fff"><option>結果：全部</option><option>成功</option><option>失敗</option></select>
+    <label style="display:flex;gap:5px;align-items:center;color:#475467"><input type="checkbox">僅匯出操作</label>
+    <button style="padding:6px 16px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:12.5px;cursor:pointer">查詢</button>
+  </div>
+  <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;overflow:hidden">
+    <table style="width:100%;font-size:12px">
+      <thead><tr style="color:#667085;text-align:left;background:#FCFCFD"><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">時間</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">操作者 / 角色</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">動作</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">目標</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">Query hash</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">查詢時間範圍</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">結果筆數</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC;text-align:right">執行時間</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">案件</th><th style="padding:8px 12px;border-bottom:1px solid #E4E7EC">結果</th></tr></thead>
+      <tbody>
+        <sc-for list="{{ auditRows }}" as="a" hint-placeholder-count="8">
+          <tr style-hover="background:#FCFCFD">
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11.5px;white-space:nowrap">{{ a.time }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7">{{ a.who }}<span style="color:#98A2B3"> · {{ a.role }}</span></td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-weight:500">{{ a.action }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;color:#475467">{{ a.target }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#667085">{{ a.qh }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;color:#667085;white-space:nowrap">{{ a.range }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;text-align:right">{{ a.rows }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;text-align:right;color:#667085">{{ a.dur }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;font-family:'IBM Plex Mono',monospace;font-size:11px">{{ a.case }}</td>
+            <td style="padding:7px 12px;border-bottom:1px solid #F2F4F7;color:{{ a.resColor }}">{{ a.res }}</td>
+          </tr>
+        </sc-for>
+      </tbody>
+    </table>
+  </div>
+</sc-if>
+<sc-if value="{{ pgAuditmode }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="width:260px;flex:none;background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:14px;font-size:12.5px">
+      <div style="display:flex;align-items:center;margin-bottom:10px"><span style="font-weight:700;font-size:13.5px">稽查展示步驟</span><span style="margin-left:auto;color:#667085">{{ amStep }}/12</span></div>
+      <div style="height:5px;background:#F2F4F7;border-radius:3px;margin-bottom:12px"><div style="height:5px;background:#FFEA00;border-radius:3px;width:{{ amPct }}"></div></div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <sc-for list="{{ amSteps }}" as="p" hint-placeholder-count="12">
+          <div onClick="{{ p.go }}" style="display:flex;gap:9px;align-items:center;padding:7px 9px;border-radius:7px;cursor:pointer;background:{{ p.bg }};color:{{ p.fg }}" style-hover="background:#F2F4F7">
+            <span style="flex:none;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;background:{{ p.numBg }};color:{{ p.numFg }}">{{ p.n }}</span>{{ p.name }}
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;margin-bottom:12px">
+        <div style="font-weight:700;font-size:16px">{{ amTitle }}</div>
+        <button style="margin-left:auto;padding:7px 14px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:12.5px;cursor:pointer">退出稽查模式</button>
+      </div>
+      <div style="background:#fff;border:1px solid #E4E7EC;border-radius:10px;padding:18px 20px;margin-bottom:14px;font-size:13px;color:#475467;line-height:1.9">
+        <sc-for list="{{ amBody }}" as="l" hint-placeholder-count="4"><div style="display:flex;gap:9px"><span style="color:#98A2B3;flex:none">·</span><span>{{ l.t }}</span></div></sc-for>
+      </div>
+      <sc-if value="{{ amCases }}" hint-placeholder-val="{{ false }}">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px">
+          <div style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid #B42318;border-radius:10px;padding:14px 16px;font-size:12.5px">
+            <div style="font-weight:700;margin-bottom:6px">案例 A：高信號資料遍歷</div>
+            <div style="color:#667085;line-height:1.8">07/16–07/17 · orderlist/detail<br>逐筆遍歷 18,760 筆（12.4×）<br><strong style="color:#101828">展示目的</strong>：系統能辨識真正高風險大量查閱</div>
+            <a href="#" onClick="{{ goCaseDetailA }}" style="font-size:12px;display:inline-block;margin-top:8px">Replay 事件 →</a>
+          </div>
+          <div style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid #DC6803;border-radius:10px;padding:14px 16px;font-size:12.5px">
+            <div style="font-weight:700;margin-bottom:6px">案例 B：登入異常尖峰</div>
+            <div style="color:#667085;line-height:1.8">07/30 21:40–21:50 · 成功 352（median 44 / P95 64 / 最高 68）· 103 來源 · 69 品牌 · 失敗 23<br><strong style="color:#101828">展示目的</strong>：能說明異常，也保留其他可能原因</div>
+            <a href="#" onClick="{{ goEventB }}" style="font-size:12px;display:inline-block;margin-top:8px">Replay 事件 →</a>
+          </div>
+          <div style="background:#fff;border:1px solid #E4E7EC;border-top:3px solid #4E5BA6;border-radius:10px;padding:14px 16px;font-size:12.5px">
+            <div style="font-weight:700;margin-bottom:6px">案例 C：大量但可能正常</div>
+            <div style="color:#667085;line-height:1.8">06/25、07/25 21:00–22:00 · Api2/TransDetail<br>單一來源逐筆讀取，品牌總量仍在基線<br><strong style="color:#101828">展示目的</strong>：不會只因數字很大就判定攻擊</div>
+            <a href="#" onClick="{{ goQuickC }}" style="font-size:12px;display:inline-block;margin-top:8px">Replay 查詢 →</a>
+          </div>
+        </div>
+      </sc-if>
+      <div style="display:flex;gap:8px">
+        <button onClick="{{ amPrev }}" style="padding:8px 16px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:13px;cursor:pointer">上一步</button>
+        <button onClick="{{ amNext }}" style="padding:8px 16px;background:#101828;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer">下一步</button>
+        <button style="margin-left:auto;padding:8px 16px;background:#fff;border:1px solid #D0D5DD;border-radius:7px;font-size:13px;cursor:pointer">匯出稽查證據摘要（需理由）</button>
+      </div>
+    </div>
+  </div>
+</sc-if>
+      </sc-if>
+    </div>
+  </div>
+  <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="width:380px;flex:none;background:#fff;border-left:1px solid #E4E7EC;display:flex;flex-direction:column;box-shadow:-4px 0 16px rgba(16,24,40,.06)">
+      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #E4E7EC">
+        <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;background:#B42318;color:#fff">▲ P1</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;margin-left:10px;color:#475467">EVT-2607</span>
+        <button onClick="{{ drawerClose }}" style="margin-left:auto;border:none;background:none;font-size:18px;color:#667085;cursor:pointer">×</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:18px">
+        <div style="font-weight:700;font-size:14.5px;line-height:1.5">Boss 登入成功量超過歷史同時段 5.2 倍</div>
+        <div style="font-size:12.5px;color:#667085;margin:6px 0 14px">2026/07/30 21:40–21:50，`Boss_initial/auth_v2` 登入成功 352 次，為 28 天同時段 median（44）的 8 倍。</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;text-align:center">
+          <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:8px 4px"><div style="font-size:11px;color:#667085">目前值</div><div style="font-weight:700;font-size:16px">352</div></div>
+          <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:8px 4px"><div style="font-size:11px;color:#667085">median</div><div style="font-weight:700;font-size:16px">44</div></div>
+          <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:8px 4px"><div style="font-size:11px;color:#667085">P95</div><div style="font-weight:700;font-size:16px">64</div></div>
+          <div style="background:#FCFCFD;border:1px solid #F2F4F7;border-radius:7px;padding:8px 4px"><div style="font-size:11px;color:#667085">倍數</div><div style="font-weight:700;font-size:16px;color:#B42318">8.0×</div></div>
+        </div>
+        <div style="font-size:12px;color:#667085;margin-bottom:4px">最近 60 分鐘趨勢</div>
+        <svg viewBox="0 0 340 90" style="width:100%;border:1px solid #F2F4F7;border-radius:7px;background:#FCFCFD;margin-bottom:14px">
+          <line x1="10" y1="66" x2="330" y2="66" stroke="#98A2B3" stroke-dasharray="3 3"></line>
+          <polyline points="10,68 50,67 90,66 130,64 170,30 210,12 250,22 290,52 330,64" fill="none" stroke="#B42318" stroke-width="2"></polyline>
+          <text x="12" y="82" font-size="9" fill="#667085">21:00</text><text x="300" y="82" font-size="9" fill="#667085">22:20</text>
+        </svg>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;font-size:12px">
+          <div style="border:1px solid #FECDCA;background:#FFFBFA;border-radius:7px;padding:10px"><div style="font-weight:700;color:#B42318;margin-bottom:6px">支持攻擊</div><div style="color:#475467;line-height:1.7">· 登入量為 median 的 8 倍<br>· 涉及 103 個不同來源</div></div>
+          <div style="border:1px solid #A6F4C5;background:#F6FEF9;border-radius:7px;padding:10px"><div style="font-weight:700;color:#027A48;margin-bottom:6px">支持正常</div><div style="color:#475467;line-height:1.7">· 成功遠多於失敗（352:23）<br>· 20 分鐘內明顯下降</div></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onClick="{{ drawerToDetail }}" style="flex:1;padding:9px;background:#101828;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">查看完整原因</button>
+          <button onClick="{{ drawerCreateCase }}" style="flex:1;padding:9px;background:#fff;border:1px solid #D0D5DD;border-radius:8px;font-size:13px;cursor:pointer">建立調查案件</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</sc-if>
+<div style="position:fixed;right:16px;bottom:16px;z-index:50;background:#101828;color:#E4E7EC;border-radius:12px;padding:12px 14px;box-shadow:0 8px 24px rgba(16,24,40,.35);font-size:12px;width:230px">
+  <div style="display:flex;align-items:center;margin-bottom:8px"><span style="font-weight:700;color:#fff">Prototype 控制</span><span style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#FFEA00"></span></div>
+  <div style="color:#98A2B3;margin-bottom:4px">角色</div>
+  <div style="display:flex;gap:4px;margin-bottom:8px">
+    <sc-for list="{{ roleBtns }}" as="b" hint-placeholder-count="3"><button onClick="{{ b.go }}" style="flex:1;padding:4px 0;border-radius:6px;border:1px solid {{ b.bd }};background:{{ b.bg }};color:{{ b.fg }};font-size:11px;cursor:pointer">{{ b.label }}</button></sc-for>
+  </div>
+  <div style="color:#98A2B3;margin-bottom:4px">頁面狀態</div>
+  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+    <sc-for list="{{ uiBtns }}" as="b" hint-placeholder-count="6"><button onClick="{{ b.go }}" style="padding:4px 8px;border-radius:6px;border:1px solid {{ b.bd }};background:{{ b.bg }};color:{{ b.fg }};font-size:11px;cursor:pointer">{{ b.label }}</button></sc-for>
+  </div>
+  <div style="color:#98A2B3;margin-bottom:4px">總覽情境</div>
+  <div style="display:flex;gap:4px;margin-bottom:8px">
+    <sc-for list="{{ ovBtns }}" as="b" hint-placeholder-count="3"><button onClick="{{ b.go }}" style="flex:1;padding:4px 0;border-radius:6px;border:1px solid {{ b.bd }};background:{{ b.bg }};color:{{ b.fg }};font-size:11px;cursor:pointer">{{ b.label }}</button></sc-for>
+  </div>
+  <div style="display:flex;gap:4px">
+    <button onClick="{{ gotoLogin }}" style="flex:1;padding:4px 0;border-radius:6px;border:1px solid #344054;background:transparent;color:#98A2B3;font-size:11px;cursor:pointer">登入頁</button>
+    <button onClick="{{ gotoNoperm }}" style="flex:1;padding:4px 0;border-radius:6px;border:1px solid #344054;background:transparent;color:#98A2B3;font-size:11px;cursor:pointer">無權限頁</button>
+  </div>
+</div>
+<sc-if value="{{ exportOpen }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;inset:0;background:rgba(16,24,40,.5);z-index:60;display:flex;align-items:center;justify-content:center">
+    <div style="width:460px;background:#fff;border-radius:12px;padding:24px">
+      <div style="font-weight:700;font-size:16px;margin-bottom:6px">匯出遮罩後的事件證據包</div>
+      <div style="font-size:12.5px;color:#667085;margin-bottom:14px">EVT-2607 · 內容包含事件摘要、基線比較、證據矩陣與遮罩明細（fingerprint 形式）。不含任何原始 IP、token、帳號或個資。</div>
+      <div style="font-size:12.5px;font-weight:500;margin-bottom:6px">匯出理由（必填）</div>
+      <textarea placeholder="例如：提供 7 月稽查會議之事件證據" style="width:100%;box-sizing:border-box;border:1px solid #D0D5DD;border-radius:8px;padding:10px;font-size:13px;font-family:'Noto Sans TC',sans-serif;height:72px;resize:vertical"></textarea>
+      <div style="background:#FCFCFD;border:1px solid #E4E7EC;border-radius:7px;padding:9px 12px;font-size:12px;color:#475467;margin:10px 0 16px">此次匯出將記錄於操作稽核：操作者、時間、理由、Query hash 與結果筆數。</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onClick="{{ exportClose }}" style="padding:9px 16px;background:#fff;border:1px solid #D0D5DD;border-radius:8px;font-size:13px;cursor:pointer">取消</button>
+        <button onClick="{{ exportConfirm }}" style="padding:9px 16px;background:#101828;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">確認匯出</button>
+      </div>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  state = { screen:'app', page:'overview', role:'admin', ui:'normal', ov:'p1',
+    drawer:false, exportOpen:false, evFilter:'all', ovTable:false, evTab:'chart',
+    rankTab:0, sqlMode:'blocked', sqlRan:false, qqSel:null, qqRan:false,
+    auditStep:1, caseOpen:null, ruleOpen:false, alOpen:false,
+    judge:'', judged:false, exTab:'agg', caseToast:false, exportToast:false, evChartTable:false };
+  go(page){ this.setState({page, drawer:false, ruleOpen:false, caseOpen:this.state.page===page?this.state.caseOpen:null}); }
+  renderVals(){
+    const s=this.state, st=(p)=>()=>this.setState(p);
+    const roleRank={viewer:0,analyst:1,admin:2}[s.role];
+    const pageTitles={overview:'資安總覽',events:'異常事件',eventDetail:'異常事件詳細',explorer:'Log Explorer',quick:'快速查詢',sql:'SQL Console（唯讀）',cases:'調查案件',health:'資料健康',rules:'規則與 Allowlist',auditlog:'操作稽核',auditmode:'稽查模式'};
+    const navDef=[['overview','資安總覽','◎'],['events','異常事件','▲'],['explorer','Log Explorer','⌕'],['quick','快速查詢','≡'],['cases','調查案件','☰'],['auditmode','稽查模式','✓'],['health','資料健康','♡'],['rules','規則與 Allowlist','⚙',2],['sql','SQL Console','>_',2],['auditlog','操作稽核','⊙',2]];
+    const navItems=navDef.filter(n=>n[3]===undefined||roleRank>=n[3]).map(n=>{
+      const active=s.page===n[0]||(n[0]==='events'&&s.page==='eventDetail');
+      return {label:n[1],icon:n[2],go:()=>this.go(n[0]),bg:active?'rgba(255,255,255,.10)':'transparent',fg:active?'#fff':'#98A2B3',bar:active?'#FFEA00':'transparent',badge:n[0]==='events'&&s.ov==='p1'?'1':''};
+    });
+    const roleLabels={viewer:'Security Viewer',analyst:'Security Analyst',admin:'Security Admin'};
+    const sevStyle={P0:{bg:'#7A271A',fg:'#FFF',bd:'#7A271A'},P1:{bg:'#B42318',fg:'#FFF',bd:'#B42318'},P2:{bg:'#FFFAEB',fg:'#B54708',bd:'#FEDF89'},P3:{bg:'#F8F9FC',fg:'#3E4784',bd:'#D5D9EB'}};
+    const p1=s.ov==='p1'||s.ov==='delay';
+    const sevCards=[
+      {label:'P0 緊急事件',count:'0',bar:'#7A271A',numColor:'#101828',diff:'與前一小時相同（0）',ongoing:'—',ongoingColor:'#667085',go:st({page:'events',evFilter:'all'})},
+      {label:'P1 高風險事件',count:p1?'1':'0',bar:'#B42318',numColor:p1?'#B42318':'#101828',diff:p1?'較前一小時 +1':'與前一小時相同（0）',ongoing:p1?'無持續中（已於 21:50 停止）':'—',ongoingColor:p1?'#B54708':'#667085',go:()=>this.setState({page:'events',evFilter:'p1'})},
+      {label:'P2 待驗證事件',count:'3',bar:'#DC6803',numColor:'#101828',diff:'較前一小時 +1',ongoing:'1 件持續中',ongoingColor:'#B54708',go:st({page:'events',evFilter:'all'})},
+      {label:'P3 觀察事件',count:'2',bar:'#4E5BA6',numColor:'#101828',diff:'與前一小時相同',ongoing:'—',ongoingColor:'#667085',go:st({page:'events',evFilter:'all'})}
+    ];
+    const mon={normal:{l:'正常',c:'#027A48',b:'#027A48'},p1:{l:'正常',c:'#027A48',b:'#027A48'},delay:{l:'部分延遲',c:'#B54708',b:'#DC6803'}}[s.ov]||{l:'正常',c:'#027A48',b:'#027A48'};
+    const openDetail=()=>this.setState({page:'eventDetail',drawer:false});
+    const attentionList=[
+      {sev:'P1',...sevStyle.P1,sevBg:sevStyle.P1.bg,sevFg:sevStyle.P1.fg,sevBd:sevStyle.P1.bd,rule:'R06 登入成功異常',reason:'登入成功量為歷史同時段 8 倍',endpoint:'Boss_initial/auth_v2',brands:'69',dur:'10 分鐘',status:'已停止 · 調查中',stColor:'#B54708',go:openDetail},
+      {sev:'P2',sevBg:sevStyle.P2.bg,sevFg:sevStyle.P2.fg,sevBd:sevStyle.P2.bd,rule:'R03 單一來源大量讀取',reason:'單一來源逐筆讀取交易明細',endpoint:'Api2/TransDetail · src_BB9735634D3A',brands:'1',dur:'持續 47 分鐘',status:'持續中 · 待確認',stColor:'#B54708',go:st({page:'events'})},
+      {sev:'P2',sevBg:sevStyle.P2.bg,sevFg:sevStyle.P2.fg,sevBd:sevStyle.P2.bd,rule:'R11 GetUserByCell 大量使用',reason:'手機條件查詢量為 median 2.4 倍',endpoint:'Api2/GetUserByCell',brands:'4',dur:'30 分鐘',status:'已下降 · 觀察中',stColor:'#667085',go:st({page:'events'})}
+    ];
+    const delay=s.ov==='delay';
+    const healthList=[
+      {name:'Admin Log',st:delay?'延遲':'正常',bg:delay?'#FFFAEB':'#ECFDF3',fg:delay?'#B54708':'#027A48',info:delay?'延遲 14 分 · 1,208 筆/時':'延遲 2 分 · 1,208 筆/時'},
+      {name:'Backend System Log',st:'正常',bg:'#ECFDF3',fg:'#027A48',info:'延遲 3 分 · 18,420 筆/時 · 已去重'},
+      {name:'API Log',st:'正常',bg:'#ECFDF3',fg:'#027A48',info:'延遲 1 分 · 54,300 筆/時'},
+      {name:'API Log Raw',st:'正常',bg:'#ECFDF3',fg:'#027A48',info:'延遲 4 分 · 61,900 筆/時'},
+      {name:'Auth Log',st:'正常',bg:'#ECFDF3',fg:'#027A48',info:'延遲 2 分 · 3,340 筆/時 · 遮罩'}
+    ];
+    const rankNames=['高流量 endpoint','高流量品牌','高流量來源','高失敗 actor'];
+    const rankTabs=rankNames.map((n,i)=>({label:n,go:()=>this.setState({rankTab:i}),bg:s.rankTab===i?'#101828':'#fff',fg:s.rankTab===i?'#fff':'#475467',bd:s.rankTab===i?'#101828':'#D0D5DD'}));
+    const rankData=[
+      [['Api2/TransDetail','4,812','1,550','2,900','3.1×','#B54708','src_BB97… 單一來源占 92%'],['Boss_initial/auth_v2','61','44','64','1.4×','#475467','07/30 曾達 8.0×'],['Api2/GetUserByCell','388','160','300','2.4×','#B54708','涉及 4 個品牌'],['Api2/orderlist','2,140','1,980','2,600','1.1×','#475467','—'],['Boss/report_daily','950','900','1,300','1.1×','#475467','已知批次（Allowlist）']],
+      [['食時創新餐飲','5,020','1,700','3,000','3.0×','#B54708','TransDetail 占 96%'],['晨間廚房','2,310','2,100','2,800','1.1×','#475467','—'],['青田茶館','1,880','1,750','2,400','1.1×','#475467','—'],['禾風小館','1,420','1,300','1,900','1.1×','#475467','—'],['木白甜點','980','940','1,300','1.0×','#475467','—']],
+      [['src_BB9735634D3A','4,430','620','1,100','7.1×','#B42318','未驗證來源 · 單品牌'],['src_1A22B3C4D5E6','1,860','1,700','2,200','1.1×','#475467','已知 POS（Allowlist）'],['src_9F8E7D6C5B4A','1,540','1,400','2,000','1.1×','#475467','—'],['src_0C1D2E3F4A5B','990','880','1,300','1.1×','#475467','—'],['src_77A6B5C4D3E2','760','700','1,000','1.1×','#475467','新來源（3 天內）']],
+      [['actor_4F7B88B97114','9 次失敗','2','6','4.5×','#B54708','未達暴力破解門檻（20）'],['actor_C3D2E1F0A9B8','6 次失敗','2','6','3.0×','#475467','—'],['actor_5E6F7A8B9C0D','4 次失敗','1','5','4.0×','#475467','—'],['actor_2B3C4D5E6F7A','3 次失敗','1','4','3.0×','#475467','—'],['actor_8D9E0F1A2B3C','2 次失敗','1','4','2.0×','#475467','—']]
+    ][s.rankTab].map((r,i)=>({i:i+1,name:r[0],cur:r[1],med:r[2],p95:r[3],x:r[4],xColor:r[5],note:r[6]}));
+    const evAll=[
+      {sev:'P1',id:'EVT-2607',time:'07/30 21:40 → 21:50',rule:'R06 登入成功異常',target:'Boss_initial/auth_v2',target2:'103 個來源 · 跨 69 品牌',req:'352',x:'8.0×',xColor:'#B42318',brands:'69',dur:'已停止',durColor:'#667085',case:'調查中',owner:'陳柏元',open:openDetail,preview:st({drawer:true})},
+      {sev:'P2',id:'EVT-2606',time:'07/31 16:53 → 持續',rule:'R03 單一來源大量讀取',target:'Api2/TransDetail',target2:'src_BB9735634D3A · 食時創新餐飲',req:'4,812',x:'3.1×',xColor:'#B54708',brands:'1',dur:'持續中',durColor:'#B54708',case:'待確認',owner:'—',open:openDetail,preview:st({drawer:true})},
+      {sev:'P2',id:'EVT-2605',time:'07/31 15:20 → 15:50',rule:'R11 GetUserByCell 大量使用',target:'Api2/GetUserByCell',target2:'src_0C1D2E3F4A5B · 4 個品牌',req:'388',x:'2.4×',xColor:'#B54708',brands:'4',dur:'已下降',durColor:'#667085',case:'新事件',owner:'—',open:openDetail,preview:st({drawer:true})},
+      {sev:'P2',id:'EVT-2604',time:'07/31 11:05 → 11:40',rule:'R09 API error 異常',target:'Api2/orderlist',target2:'error 比例 6.2%（median 1.1%）',req:'2,140',x:'5.6×',xColor:'#B54708',brands:'12',dur:'已停止',durColor:'#667085',case:'誤報',owner:'林雅婷',open:openDetail,preview:st({drawer:true})},
+      {sev:'P3',id:'EVT-2603',time:'07/31 09:12 → 09:20',rule:'R08 新來源首次出現',target:'Api2/menu_sync',target2:'src_77A6B5C4D3E2 · 木白甜點',req:'112',x:'—',xColor:'#475467',brands:'1',dur:'已停止',durColor:'#667085',case:'觀察',owner:'—',open:openDetail,preview:st({drawer:true})},
+      {sev:'P3',id:'EVT-2602',time:'07/30 23:02 → 23:10',rule:'R08 新來源首次出現',target:'Boss/report_daily',target2:'src_5D4C3B2A1F0E · 青田茶館',req:'46',x:'—',xColor:'#475467',brands:'1',dur:'已停止',durColor:'#667085',case:'觀察',owner:'—',open:openDetail,preview:st({drawer:true})},
+      {sev:'P1',id:'EVT-2599',time:'07/16 22:10 → 07/17 02:40',rule:'R02 orderlist/detail 大量遍歷',target:'orderlist/detail',target2:'src_6E5F4A3B2C1D · 逐筆遍歷 18,760 筆',req:'18,760',x:'12.4×',xColor:'#B42318',brands:'8',dur:'已停止',durColor:'#667085',case:'已結案（已確認攻擊）',owner:'陳柏元',open:openDetail,preview:st({drawer:true})}
+    ];
+    const evRows=(s.evFilter==='p1'?evAll.filter(e=>e.sev==='P1'):evAll).map(e=>({...e,sevBg:sevStyle[e.sev].bg,sevFg:sevStyle[e.sev].fg,sevBd:sevStyle[e.sev].bd}));
+    const roleBtns=['viewer','analyst','admin'].map(r=>({label:{viewer:'Viewer',analyst:'Analyst',admin:'Admin'}[r],go:()=>this.setState({role:r,page:(r!=='admin'&&['rules','sql','auditlog'].includes(s.page))?'overview':s.page}),bg:s.role===r?'#FFEA00':'transparent',fg:s.role===r?'#333':'#98A2B3',bd:s.role===r?'#FFEA00':'#344054'}));
+    const uiDefs=[['normal','正常'],['loading','載入中'],['empty','空狀態'],['error','查詢失敗'],['stale','Stale'],['denied','無權限']];
+    const uiBtns=uiDefs.map(u=>({label:u[1],go:()=>this.setState({ui:u[0]}),bg:s.ui===u[0]?'#FFEA00':'transparent',fg:s.ui===u[0]?'#333':'#98A2B3',bd:s.ui===u[0]?'#FFEA00':'#344054'}));
+    const ovDefs=[['normal','正常'],['p1','存在 P1'],['delay','資料延遲']];
+    const ovBtns=ovDefs.map(u=>({label:u[1],go:()=>this.setState({ov:u[0]}),bg:s.ov===u[0]?'#FFEA00':'transparent',fg:s.ov===u[0]?'#333':'#98A2B3',bd:s.ov===u[0]?'#FFEA00':'#344054'}));
+    return {
+      scLogin:s.screen==='login', scNoperm:s.screen==='noperm', scApp:s.screen==='app',
+      loginGo:st({screen:'app'}), gotoLogin:st({screen:'login'}), gotoNoperm:st({screen:'noperm'}),
+      navItems, userName:'vinek@olis.com.tw', roleLabel:roleLabels[s.role],
+      pageTitle:pageTitles[s.page]||'', freshDot:delay?'#DC6803':'#12B76A', freshTime:delay?'17:26（Admin Log 延遲）':'17:39',
+      showStaleBanner:delay&&s.ui==='normal',
+      uiLoading:s.ui==='loading', uiEmpty:s.ui==='empty', uiError:s.ui==='error', uiDenied:s.ui==='denied',
+      uiShow:s.ui==='normal'||s.ui==='stale', uiStale:s.ui==='stale',
+      pgOverview:s.page==='overview', pgEvents:s.page==='events', pgEventDetail:s.page==='eventDetail',
+      pgExplorer:s.page==='explorer', pgQuick:s.page==='quick', pgSql:s.page==='sql', pgCases:s.page==='cases',
+      pgHealth:s.page==='health', pgRules:s.page==='rules', pgAuditlog:s.page==='auditlog', pgAuditmode:s.page==='auditmode',
+      ovNormal:s.ov==='normal', ovHasP1:p1, sevCards, monLabel:mon.l, monColor:mon.c, monBar:mon.b,
+      ovChart:!s.ovTable, ovTableOn:s.ovTable,
+      ovShowChart:st({ovTable:false}), ovShowTable:st({ovTable:true}),
+      ovChartBg:!s.ovTable?'#101828':'#fff', ovChartFg:!s.ovTable?'#fff':'#475467',
+      ovTableBg:s.ovTable?'#101828':'#fff', ovTableFg:s.ovTable?'#fff':'#475467',
+      attentionList, healthList, rankTabs, rankRows:rankData, rankColName:rankNames[s.rankTab].replace('高流量 ','').replace('高流量','').replace('高失敗 ','')||'項目',
+      evRows, evCount:s.evFilter==='p1'?'2':'7', evFilterP1:s.evFilter==='p1', evClearFilter:st({evFilter:'all'}),
+      drawerOpen:s.drawer, drawerClose:st({drawer:false}), drawerToDetail:openDetail, drawerCreateCase:st({drawer:false,page:'cases',caseOpen:'CASE-031'}),
+      goHealth:st({page:'health'}), goEvents:st({page:'events'}), goExplorer:st({page:'explorer'}), goQuick:st({page:'quick'}), goCases:st({page:'cases'}),
+      exportOpen:s.exportOpen, exportClose:st({exportOpen:false}), exportConfirm:st({exportOpen:false,exportToast:true}),
+      openExport:st({exportOpen:true}),
+      roleBtns, uiBtns, ovBtns,
+      ...this.detailVals(s,st,sevStyle),
+      ...this.moreVals(s,st,sevStyle)
+    };
+  }
+  detailVals(s,st,sevStyle){
+    const timeline=[
+      {time:'21:38',tag:'Auth Log',tagBg:'#FEF3F2',tagFg:'#B42318',text:'登入成功量開始上升（48 → 90/10 分）'},
+      {time:'21:40',tag:'Auth Log',tagBg:'#FEF3F2',tagFg:'#B42318',text:'登入成功 352 次（median 44）；登入失敗 23 次尖峰'},
+      {time:'21:42',tag:'API Log',tagBg:'#EFF4FB',tagFg:'#175CD3',text:'Boss API request 同步上升 1.6×，未見敏感 endpoint 異常'},
+      {time:'21:45',tag:'Backend',tagBg:'#F4F0FF',tagFg:'#6938EF',text:'後台會員查詢量維持基線內（1.05×）'},
+      {time:'21:50',tag:'Auth Log',tagBg:'#FEF3F2',tagFg:'#B42318',text:'登入量開始下降（196/10 分）'},
+      {time:'21:52',tag:'通知',tagBg:'#FFFAEB',tagFg:'#B54708',text:'R06 觸發 P1 告警，通知資安值班'},
+      {time:'22:05',tag:'人員',tagBg:'#F2F4F7',tagFg:'#475467',text:'陳柏元 開始調查，建立案件 CASE-031'},
+      {time:'22:40',tag:'判定',tagBg:'#F2F4F7',tagFg:'#475467',text:'初判「證據不足」，保持觀察並要求補齊 device fingerprint'}
+    ];
+    const scopeNames=['品牌','Endpoint','Source fp','Actor fp','資源類別'];
+    const scopeTab=s.scopeTab||0;
+    const scopeData=[
+      [['食時創新餐飲','18','5.1%'],['晨間廚房','12','3.4%'],['青田茶館','9','2.6%'],['禾風小館','8','2.3%'],['其他 65 個品牌','305','86.6%']],
+      [['Boss_initial/auth_v2','352','100%']],
+      [['src_3C4D5E6F7A8B','14','4.0%'],['src_8B9C0D1E2F3A','11','3.1%'],['src_5F6A7B8C9D0E','9','2.6%'],['其他 100 個來源','318','90.3%']],
+      [['actor_4F7B88B97114','9','2.6%'],['actor_C3D2E1F0A9B8','7','2.0%'],['其他 101 個 actor','336','95.4%']],
+      [['登入 credential（遮罩）','352','100%']]
+    ][scopeTab].map(r=>({name:r[0],v:r[1],p:r[2]}));
+    const judgeOpts=['已確認攻擊','合法整合','誤報','證據不足','保持觀察'];
+    const judgeBtns=judgeOpts.map(j=>({label:j,go:()=>this.setState({judge:j}),bg:s.judge===j?(j==='已確認攻擊'?'#B42318':'#101828'):'#fff',fg:s.judge===j?'#fff':'#475467',bd:s.judge===j?(j==='已確認攻擊'?'#B42318':'#101828'):'#D0D5DD'}));
+    return {
+      timeline, scopeCol:scopeNames[scopeTab],
+      scopeTabs:scopeNames.map((n,i)=>({label:n,go:()=>this.setState({scopeTab:i}),bg:scopeTab===i?'#101828':'#fff',fg:scopeTab===i?'#fff':'#475467',bd:scopeTab===i?'#101828':'#D0D5DD'})),
+      scopeRows:scopeData,
+      judgeBtns, judgeAttack:s.judge==='已確認攻擊', notJudged:!s.judged, judged:s.judged, judgeLabel:s.judge||'保持觀察',
+      submitJudge:()=>this.setState({judged:true,judge:s.judge||'保持觀察'}),
+      exportToast:s.exportToast,
+      goRules:st({page:'rules'}), goCaseDetail:st({page:'cases',caseOpen:'CASE-031'}),
+      evChart:!s.evChartTable, evTableOn:s.evChartTable,
+      evShowChart:st({evChartTable:false}), evShowTable:st({evChartTable:true}),
+      evcBg:!s.evChartTable?'#101828':'#fff', evcFg:!s.evChartTable?'#fff':'#475467',
+      evtBg:s.evChartTable?'#101828':'#fff', evtFg:s.evChartTable?'#fff':'#475467',
+      exAgg:s.exTab==='agg', exDetail:s.exTab==='detail',
+      exShowAgg:st({exTab:'agg'}), exShowDetail:st({exTab:'detail'}),
+      exaBg:s.exTab==='agg'?'#101828':'#fff', exaFg:s.exTab==='agg'?'#fff':'#475467',
+      exdBg:s.exTab==='detail'?'#101828':'#fff', exdFg:s.exTab==='detail'?'#fff':'#475467',
+      exRun:st({exTab:'agg'}),
+      exRows:['21:04:11','21:04:13','21:04:15','21:04:18','21:04:20','21:04:23','21:04:25','21:04:28'].map((t,i)=>({time:'07/25 '+t,res:'resource_'+['91AB20CD','91AB20CE','91AB20D1','91AB20D4','91AB20D8','91AB20DB','91AB20DF','91AB20E2'][i]}))
+    };
+  }
+  moreVals(s,st,sevStyle){
+    const qqCats=[
+      {name:'即時異常 · 登入安全',items:[
+        {name:'最近一小時 request 最多的 endpoint',desc:'依 endpoint 排名並附 28 天基線',input:'時間',src:'API Log',eta:'3 秒'},
+        {name:'登入成功異常',desc:'各 10 分鐘桶登入成功量 vs 歷史同時段',input:'時間',src:'Auth Log',eta:'4 秒'},
+        {name:'登入失敗最多的來源',desc:'依 source fingerprint 排名登入失敗',input:'時間',src:'Auth Log',eta:'3 秒'},
+        {name:'登入後 10 分鐘內的 API 行為',desc:'關聯登入與後續 API request',input:'時間 + actor fp',src:'Auth + API Log',eta:'8 秒'}]},
+      {name:'API 大量讀取 · Backend 查閱',items:[
+        {name:'GetUserByCell 大量使用',desc:'手機條件查詢量與來源分布',input:'時間',src:'API Log',eta:'3 秒'},
+        {name:'orderlist/detail 大量遍歷',desc:'逐筆讀取行為與 unique resource 比例',input:'時間 + 品牌',src:'API Log',eta:'5 秒'},
+        {name:'API error 異常',desc:'error 比例 vs 28 天基線',input:'時間',src:'API Log',eta:'3 秒'},
+        {name:'最近一小時 request 最多的品牌',desc:'品牌流量排名附基線',input:'時間',src:'API Log',eta:'3 秒'}]},
+      {name:'品牌調查 · 來源調查',items:[
+        {name:'指定 endpoint 的 28 天基線',desc:'median / P95 / P99 / 歷史最高',input:'endpoint',src:'API Log',eta:'4 秒'},
+        {name:'指定來源是否跨品牌',desc:'source fingerprint 涉及的品牌數',input:'source fp',src:'API Log',eta:'3 秒'},
+        {name:'指定來源是否第一次出現',desc:'28 天內首見時間與行為摘要',input:'source fp',src:'API Log',eta:'3 秒'},
+        {name:'最近一小時 request 最多的來源',desc:'來源流量排名附基線',input:'時間',src:'API Log',eta:'3 秒'}]},
+      {name:'資料品質 · 歷史比較',items:[
+        {name:'Log 最新時間與延遲',desc:'各資料來源新鮮度檢查',input:'無',src:'全部',eta:'2 秒'},
+        {name:'欄位缺漏率',desc:'IP / actor / params 缺漏比例',input:'時間',src:'全部',eta:'5 秒'},
+        {name:'重複資料比例',desc:'去重前後筆數差異',input:'時間',src:'Backend Log',eta:'5 秒'},
+        {name:'比較兩個日期的異常模式',desc:'同 endpoint 兩時段流量與來源結構對比',input:'兩個時間 + endpoint',src:'API Log',eta:'8 秒'}]}
+    ].map(c=>({...c,items:c.items.map(t=>({...t,go:()=>this.setState({qqSel:t.name,qqRan:false,qqMarked:false})}))}));
+    const badSql='SELECT brand_id, COUNT(*) AS req\nFROM api_log\nGROUP BY brand_id\nORDER BY req DESC;';
+    const goodSql="SELECT toStartOfTenMinutes(create_time) AS bucket_10m,\n       count() AS login_success,\n       uniq(source_fp) AS distinct_source_fp,\n       uniq(brand_id) AS distinct_brand\nFROM auth_log\nWHERE create_time BETWEEN '2026-07-30 21:30' AND '2026-07-30 22:10'\n  AND endpoint = 'Boss_initial/auth_v2' AND result = 'success'\nGROUP BY bucket_10m ORDER BY bucket_10m;";
+    const pass=s.sqlMode==='pass';
+    const sqlChecks=pass?[
+      {mark:'✓',color:'#027A48',text:'僅包含 SELECT：通過'},
+      {mark:'✓',color:'#027A48',text:'時間條件：create_time 07/30 21:30–22:10（40 分鐘）'},
+      {mark:'✓',color:'#027A48',text:'未使用禁止欄位'},
+      {mark:'✓',color:'#027A48',text:'未使用 SELECT *'},
+      {mark:'✓',color:'#027A48',text:'自動套用 LIMIT 1000 · timeout 30 秒'},
+      {mark:'△',color:'#B54708',text:'auth_log 為敏感來源：輸出僅限聚合與 fingerprint'}
+    ]:[
+      {mark:'✓',color:'#027A48',text:'僅包含 SELECT：通過'},
+      {mark:'✗',color:'#B42318',text:'時間條件：未指定（原始 log 必須帶 create_time）'},
+      {mark:'✓',color:'#027A48',text:'未使用禁止欄位'},
+      {mark:'✓',color:'#027A48',text:'未使用 SELECT *'},
+      {mark:'—',color:'#98A2B3',text:'LIMIT / timeout：驗證通過後套用'},
+      {mark:'—',color:'#98A2B3',text:'去重與敏感資料檢查：驗證通過後執行'}
+    ];
+    return {
+      qqCats, qqList:!s.qqSel, qqRunView:!!s.qqSel, qqBack:st({qqSel:null,qqRan:false}),
+      qqExec:st({qqRan:true}), qqRanOn:s.qqRan, qqMark:st({qqMarked:true}), qqMarked:s.qqMarked,
+      sqlText:pass?goodSql:badSql, sqlLoadBad:st({sqlMode:'blocked',sqlRan:false}), sqlLoadGood:st({sqlMode:'pass'}),
+      sqlBlocked:!pass, sqlPass:pass, sqlChecks,
+      sqlExec:pass?st({sqlRan:true}):()=>{}, sqlRanOn:s.sqlRan&&pass,
+      sqlExecBg:pass?'#FFEA00':'#344054', sqlExecFg:pass?'#333':'#667085', sqlExecCur:pass?'pointer':'not-allowed',
+      ...this.tailVals(s,st,sevStyle)
+    };
+  }
+  tailVals(s,st,sevStyle){
+    const caseRows=[
+      {id:'CASE-031',title:'07/30 Boss 登入成功尖峰調查',sev:'P1',st:'調查中',stColor:'#B54708',owner:'陳柏元',evts:'1',start:'07/30 22:05',upd:'07/31 17:41',closed:'—'},
+      {id:'CASE-027',title:'orderlist/detail 逐筆遍歷（7/16–17）',sev:'P1',st:'已結案（已確認攻擊）',stColor:'#B42318',owner:'陳柏元',evts:'2',start:'07/17 03:10',upd:'07/22 11:30',closed:'07/22'},
+      {id:'CASE-024',title:'TransDetail 單一來源大量讀取',sev:'P2',st:'合法整合（待 Allowlist）',stColor:'#027A48',owner:'林雅婷',evts:'2',start:'06/26 10:00',upd:'07/26 09:12',closed:'—'}
+    ].map(c=>({...c,sevBg:sevStyle[c.sev].bg,sevFg:sevStyle[c.sev].fg,sevBd:sevStyle[c.sev].bd,open:()=>this.setState({caseOpen:c.id})}));
+    const caseTl=[
+      {time:'07/30 22:05',who:'陳柏元',text:'建立案件，關聯 EVT-2607'},
+      {time:'07/30 22:15',who:'陳柏元',text:'執行「登入後 10 分鐘內的 API 行為」：未見敏感 endpoint 異常'},
+      {time:'07/30 22:40',who:'陳柏元',text:'初判「證據不足」，保持觀察；要求補齊 device fingerprint'},
+      {time:'07/31 09:20',who:'林雅婷',text:'SQL 聚合確認來源分散但登入後行為正常'},
+      {time:'07/31 14:00',who:'陳柏元',text:'聯繫兩家 POS 廠商確認 21:40 是否有批次重連'},
+      {time:'07/31 17:41',who:'陳柏元',text:'匯出遮罩證據包，提供 7 月稽查會議'}
+    ];
+    const delay=s.ov==='delay';
+    const healthCards=[
+      {name:'Admin Log',table:'ocard.ods_admin_log',st:delay?'異常':'正常',bar:delay?'#B42318':'#12B76A',bg:delay?'#FEF3F2':'#ECFDF3',fg:delay?'#B42318':'#027A48',latest:delay?'17:26':'17:38',lag:delay?'14 分鐘':'2 分鐘',lagColor:delay?'#B42318':'#101828',today:'26,410 / 25,880',med:'25,300 筆/日',dup:'0% / IP 缺 7.2%',note:delay?'延遲超過 10 分鐘：此期間登入異常判斷可能不完整。最近錯誤：07/31 17:32 ingest lag':'部分登入紀錄沒有 IP，顯示「來源 IP 不可用」',noteColor:delay?'#B42318':'#667085'},
+      {name:'Backend System Log',table:'ocard.ods_backend_sys_log',st:'正常',bar:'#12B76A',bg:'#ECFDF3',fg:'#027A48',latest:'17:37',lag:'3 分鐘',lagColor:'#101828',today:'412,300 / 405,100',med:'398,000 筆/日',dup:'2.9% / 1.1%',note:'歷史資料可能重複，已以事件 ID 去重後顯示',noteColor:'#667085'},
+      {name:'API Log',table:'ocard.ods_api_log',st:'正常',bar:'#12B76A',bg:'#ECFDF3',fg:'#027A48',latest:'17:39',lag:'1 分鐘',lagColor:'#101828',today:'1,284,000 / 1,251,000',med:'1,230,000 筆/日',dup:'0.1% / actor 缺 3.8%',note:'來源 IP 由 forwarded header 推導，標示「未驗證來源」；41.5% params 無法解析',noteColor:'#667085'},
+      {name:'API Log Raw',table:'api_log',st:'正常',bar:'#12B76A',bg:'#ECFDF3',fg:'#027A48',latest:'17:36',lag:'4 分鐘',lagColor:'#101828',today:'1,467,000 / 1,433,000',med:'1,410,000 筆/日',dup:'0.2% / 2.0%',note:'ocard-api 原始 request collection；查詢須帶時間條件',noteColor:'#667085'},
+      {name:'API Log 2026/07/30',table:'api_log_20260730',st:'停更',bar:'#98A2B3',bg:'#F2F4F7',fg:'#475467',latest:'07/30 23:59',lag:'封存',lagColor:'#667085',today:'— / 1,428,000',med:'—',dup:'0.2% / 2.0%',note:'07/30 封存 collection，僅供歷史調查，不參與即時監測',noteColor:'#667085'},
+      {name:'Auth Log',table:'auth_log',st:'正常',bar:'#12B76A',bg:'#ECFDF3',fg:'#027A48',latest:'17:38',lag:'2 分鐘',lagColor:'#101828',today:'79,800 / 78,200',med:'76,000 筆/日',dup:'0% / 0.4%',note:'最高敏感等級：可能含 token 與登入 secret，僅顯示遮罩摘要',noteColor:'#B54708'}
+    ];
+    return { caseList:!s.caseOpen, caseDetail:!!s.caseOpen, caseBack:st({caseOpen:null}), caseRows, caseTl, healthCards, ...this.lastVals(s,st,sevStyle) };
+  }
+  lastVals(s,st,sevStyle){
+    const ruleRows=[
+      {id:'R02',name:'orderlist/detail 大量遍歷',sev:'P1',src:'API Log',formula:'max(P95×2.5, 下限)',floor:'800/時',last:'07/16 22:10',mod:'陳柏元 · v3'},
+      {id:'R03',name:'單一來源大量讀取',sev:'P2',src:'API Log',formula:'max(P95×2, 下限)',floor:'1,500/時',last:'07/31 16:53',mod:'林雅婷 · v2'},
+      {id:'R06',name:'登入成功異常',sev:'P1',src:'Auth Log',formula:'max(P95×2, 下限)',floor:'80/10 分',last:'07/30 21:50',mod:'陳柏元 · v4'},
+      {id:'R07',name:'登入失敗暴力嘗試',sev:'P1',src:'Auth Log',formula:'單來源失敗 ≥ 門檻',floor:'20/10 分',last:'07/12 03:20',mod:'陳柏元 · v2'},
+      {id:'R08',name:'新來源首次出現',sev:'P3',src:'API Log',formula:'28 天內未見來源',floor:'—',last:'07/31 09:12',mod:'林雅婷 · v1'},
+      {id:'R09',name:'API error 異常',sev:'P2',src:'API Log',formula:'error 比例 > P95×2',floor:'3%',last:'07/31 11:05',mod:'林雅婷 · v2'},
+      {id:'R11',name:'GetUserByCell 大量使用',sev:'P2',src:'API Log',formula:'max(P95×2, 下限)',floor:'200/時',last:'07/31 15:20',mod:'陳柏元 · v1'}
+    ].map(r=>({...r,en:'啟用',enBg:'#ECFDF3',enFg:'#027A48',sevBg:sevStyle[r.sev].bg,sevFg:sevStyle[r.sev].fg,sevBd:sevStyle[r.sev].bd,open:()=>this.setState({ruleOpen:true})}));
+    const alRows=[
+      {name:'橙意 POS 全品牌回寫',owner:'王家豪',type:'POS 批次',ep:'Api2/orderlist',fp:'src_1A22B3C4D5E6',freq:'≤ 2,400/時',period:'05/01–12/31',by:'資安主管',st:'生效中',stBg:'#ECFDF3',stFg:'#027A48'},
+      {name:'雲端發票 Webhook',owner:'林雅婷',type:'Webhook',ep:'Api2/invoice_cb',fp:'src_9F8E7D6C5B4A',freq:'≤ 600/時',period:'03/15–09/15',by:'資安主管',st:'生效中',stBg:'#ECFDF3',stFg:'#027A48'},
+      {name:'每日營運報表批次',owner:'王家豪',type:'排程批次',ep:'Boss/report_daily',fp:'src_D4E5F6A7B8C9',freq:'06:00 一次',period:'01/01–08/06',by:'資安主管',st:'7 天內到期',stBg:'#FFFAEB',stFg:'#B54708'},
+      {name:'食時創新 POS 夜間批次同步',owner:'林雅婷',type:'POS 批次',ep:'Api2/TransDetail',fp:'src_BB9735634D3A',freq:'≤ 5,000/時',period:'08/01 起（待核准）',by:'—',st:'待核准',stBg:'#F2F4F7',stFg:'#475467'}
+    ];
+    const auditRows=[
+      {time:'07/31 17:41:20',who:'陳柏元',role:'Analyst',action:'匯出',target:'EVT-2607 遮罩證據包',qh:'qh_90CC17',range:'07/30 21:00–22:30',rows:'—',dur:'2.1s',case:'CASE-031',res:'成功',resColor:'#027A48'},
+      {time:'07/31 17:38:02',who:'system',role:'排程',action:'執行模板',target:'五分鐘監測檢查',qh:'qh_A100F2',range:'最近 10 分',rows:'—',dur:'30s',case:'—',res:'timeout（Admin Log）',resColor:'#B42318'},
+      {time:'07/31 16:55:44',who:'林雅婷',role:'Analyst',action:'開啟遮罩明細',target:'Api2/TransDetail · 食時創新餐飲',qh:'qh_63BD08',range:'07/25 21:00–22:00',rows:'500（截斷）',dur:'1.8s',case:'CASE-024',res:'成功',resColor:'#027A48'},
+      {time:'07/31 16:52:10',who:'林雅婷',role:'Analyst',action:'執行模板',target:'比較兩個日期的異常模式',qh:'qh_8842A1',range:'06/25、07/25 21:00–22:00',rows:'4',dur:'6.2s',case:'CASE-024',res:'成功',resColor:'#027A48'},
+      {time:'07/31 09:20:33',who:'vinek@olis.com.tw',role:'Admin',action:'執行 SQL',target:'auth_log 聚合',qh:'qh_5F31D0',range:'07/30 21:30–22:10',rows:'4',dur:'0.9s',case:'CASE-031',res:'成功',resColor:'#027A48'},
+      {time:'07/31 09:05:18',who:'vinek@olis.com.tw',role:'Admin',action:'登入',target:'Google SSO',qh:'—',range:'—',rows:'—',dur:'—',case:'—',res:'成功',resColor:'#027A48'},
+      {time:'07/30 23:12:40',who:'陳柏元',role:'Analyst',action:'變更事件狀態',target:'EVT-2607：新事件 → 調查中',qh:'—',range:'—',rows:'—',dur:'—',case:'CASE-031',res:'成功',resColor:'#027A48'},
+      {time:'07/30 22:15:07',who:'陳柏元',role:'Analyst',action:'執行模板',target:'登入後 10 分鐘內的 API 行為',qh:'qh_77B3E2',range:'07/30 21:40–22:00',rows:'214',dur:'7.4s',case:'CASE-031',res:'成功',resColor:'#027A48'},
+      {time:'07/28 14:02:55',who:'vinek@olis.com.tw',role:'Admin',action:'原始資料鑽取',target:'api_log（受控入口，理由：稽查抽樣）',qh:'qh_11EF9A',range:'07/28 10:00–11:00',rows:'50',dur:'3.0s',case:'—',res:'成功',resColor:'#027A48'}
+    ];
+    const amDefs=[
+      ['資料來源與保存範圍',['五個資料來源：Admin Log、Backend System Log、API Log（+ Raw 與 07/30 封存）、Auth Log。','各來源的用途、保存期間與敏感等級在資料健康頁逐一列出。','Auth Log 為最高敏感等級，僅提供遮罩摘要。']],
+      ['資料新鮮度及完整性',['即時顯示每個來源的最新資料時間、延遲分鐘數與今日筆數 vs 28 天 median。','延遲超過 10 分鐘會在全域 Header 顯示提示，且對應規則的判讀會標示「可能不完整」。','重複率與欄位缺漏率公開呈現，不會被隱藏。']],
+      ['敏感資料遮罩',['IP → src_ fingerprint；帳號 → actor_；token → token_；會員／訂單 → resource_。','手機與 Email 完全不顯示，只顯示「手機／Email 條件查詢」。','系統沒有任何「顯示完整 token／secret」的按鈕，Admin 也不例外。']],
+      ['使用者角色與權限',['Viewer：總覽、事件、模板、稽查模式。','Analyst：+ Log Explorer、案件、遮罩明細、匯出證據包。','Admin：+ 唯讀 SQL、規則與 Allowlist、受控鑽取、操作稽核。可用右下角控制切換角色示範。']],
+      ['最近 30 天異常',['共 23 件：P1 × 2、P2 × 12、P3 × 9。','每件都有規則、基線比較與判定紀錄，可於異常事件頁篩選重放。']],
+      ['異常原因示範',['以 EVT-2607 示範：目前值 352 / median 44 / P95 64 / 門檻 128 → 8 倍觸發 R06。','判定可解釋：不呈現單一「AI 分數」，同時列出支持攻擊與支持正常的證據。']],
+      ['調查與結案紀錄',['CASE-027（已確認攻擊）與 CASE-024（合法整合）展示完整調查時間軸、查詢紀錄與結案摘要。']],
+      ['查詢及匯出稽核',['每次查詢寫入 query hash、時間範圍、結果筆數與執行時間。','所有匯出必填理由；匯出行為本身也被稽核。']],
+      ['五分鐘與每日排程',['五分鐘檢查：即時規則（R03/R06/R07/R09/R11）。最近完成 17:40。','每日檢查：基線重算、資料品質與 Allowlist 到期掃描。最近完成 07/31 06:00。','排程失敗會顯示「監測失敗」，與「沒有異常」完全不同的視覺。']],
+      ['唯讀 SQL 安全限制',['僅允許 SELECT；DDL／DML 一律阻擋。','原始 log 查詢必須帶 create_time；自動 LIMIT 1000 與 30 秒 timeout。','可現場示範：先執行缺時間條件的 SQL 被擋，再修正後通過。']],
+      ['歷史案例 replay',['三個固定案例涵蓋「真攻擊」「可解釋異常」「大量但正常」三種結論。']],
+      ['匯出稽查證據摘要',['將本次展示引用的查詢、事件與案件打包為遮罩摘要。','匯出需填理由，並寫入操作稽核供事後查驗。']]
+    ];
+    const step=s.auditStep;
+    const amSteps=amDefs.map((d,i)=>{const n=i+1,act=n===step,done=n<step;return {n:String(n),name:d[0],go:()=>this.setState({auditStep:n}),bg:act?'#F2F4F7':'transparent',fg:act?'#101828':'#475467',numBg:act?'#101828':(done?'#FFEA00':'#F2F4F7'),numFg:act?'#fff':(done?'#333':'#667085')};});
+    return {
+      ruleList:!s.ruleOpen, ruleDetail:s.ruleOpen, ruleBack:st({ruleOpen:false}), ruleRows, alRows,
+      alDrawerOn:s.alOpen, alOpenDrawer:st({alOpen:true}), alCloseDrawer:st({alOpen:false}),
+      auditRows,
+      amStep:String(step), amPct:Math.round(step/12*100)+'%', amSteps,
+      amTitle:step+'. '+amDefs[step-1][0], amBody:amDefs[step-1][1].map(t=>({t})),
+      amCases:step===11,
+      amPrev:()=>this.setState({auditStep:Math.max(1,step-1)}),
+      amNext:()=>this.setState({auditStep:Math.min(12,step+1)}),
+      goCaseDetailA:st({page:'cases',caseOpen:'CASE-027'}),
+      goEventB:st({page:'eventDetail'}),
+      goQuickC:st({page:'quick',qqSel:'比較兩個日期的異常模式',qqRan:true})
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+id: R08A
+name: 新來源首次出現且行為集中
+severity: P3
+source: backend
+kind: new_source
+known_kind: backend_acc_ip
+window_minutes: 10
+cooldown_minutes: 240
+min_events: 150
+sql: |
+  SELECT acc, ip, count() AS metric, uniq(_brand) AS brands,
+         uniqExact(arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/')) AS uniq_routes
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND acc IS NOT NULL AND acc != '' AND ip IS NOT NULL AND ip != ''
+  GROUP BY acc, ip
+  HAVING metric >= 150 AND uniq_routes <= 3
+entity:
+  - {col: acc, fp: actor}
+  - {col: ip, fp: src}
+note: |
+  單純「換 IP 上線」在正常日約 40 次/天（浮動 IP、行動網路），不具鑑別度；
+  攻擊訊號是新來源 + 高頻 + 路由集中（7/16 攻擊：592~8,456 次/10 分、僅 2 個 route）。
+  加上 uniq_routes <= 3 後，正常日 8/1 僅 1 次命中。內部帳號自動升級 P1。

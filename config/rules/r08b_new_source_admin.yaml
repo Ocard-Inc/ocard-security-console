@@ -1,0 +1,19 @@
+id: R08B
+name: 新來源首次出現（管理端）
+severity: P3
+source: admin
+kind: new_source
+known_kind: admin_admin_ip
+window_minutes: 10
+cooldown_minutes: 240
+min_events: 30
+sql: |
+  SELECT _admin, ip, count() AS metric, uniq(_brand) AS brands
+  FROM ods_admin_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND _admin IS NOT NULL AND ip != ''
+  GROUP BY _admin, ip
+  HAVING metric >= 30
+entity:
+  - {col: _admin, fp: actor}
+  - {col: ip, fp: src}

@@ -1,0 +1,22 @@
+id: R10B
+name: 單品牌 API 流量暴增
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 15
+cooldown_minutes: 120
+sql: |
+  SELECT _brand, count() AS metric
+  FROM ods_api_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+  GROUP BY _brand
+  HAVING metric >= 15000
+threshold:
+  static_floor: 30000
+  baseline_key: brand_api_15m
+  population: true
+  stat: p99
+  factor: 5
+entity:
+  - {col: _brand, fp: null}
+note: API 端單品牌常態量大（TransDetail 單品牌可達 26k/15 分），門檻較高
