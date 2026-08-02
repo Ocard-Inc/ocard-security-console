@@ -31,6 +31,14 @@ uv run python -m console.intel.refresh --dry-run                       # 只印�
 應用 log 進 `state/logs/*.log`（Windows cp950 會壞掉，一律寫檔不靠 console 編碼）。
 `replay` 是 dry-run：不寫 events、不更新 known_sources。
 
+正式環境（見「正式部署」一節與 `docs/deploy-gcp.md`）：
+
+```bash
+bash scripts/provision_gcp.sh all              # 一次性佈建（idempotent；不含 vm）
+gcloud compute ssh security-console --zone=asia-east1-b --tunnel-through-iap  # VM 無外部 IP
+gcloud secrets versions add security-console-env --data-file=prod.env  # 改設定後 reset VM
+```
+
 ## 架構要點
 
 ```
@@ -261,6 +269,18 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 其餘 `/static/` 與 `/` 發 `no-store`，否則瀏覽器快取會讓改動不生效。**分支順序不可對調。**
 新增頁面需同時改 `web/app.js` 的 `NAV`、`TITLES`、components 與模板中的 `v-else-if` 分支。
 
+**掛載前綴由後端注入，不是前端推導。** `web/index.html` 裡的 `{{MOUNT}}` 由
+`app.py` 的 `_index_html()` 以 `console_mount_path()`（推導自 `CONSOLE_BASE_URL`）取代。
+`index.html` 因此**不是**可以直接開啟的靜態檔，只能經 `/` 取得。
+
+原本是前端從 `location.pathname` 推導，靜態資源用相對路徑 `./static/…`。那個做法
+在掛到 `ros.ocard.co/security` 時會壞：瀏覽器最終停在**沒有尾斜線**的 `/security`
+（Next.js 預設 `trailingSlash: false` 會把 `/security/` 導回去），於是
+`./static/app.css` 解析成 `/static/app.css` —— 打到 ROS 而不是主控台，
+整頁沒有樣式也沒有 JS，**HTTP 全部 200、log 裡什麼都沒有**。
+反向 proxy 補不補尾斜線不在我們控制範圍內，所以不能依賴它。
+`tests/test_mount_prefix.py` 擋這件事（含「不可以出現相對路徑」那條）。
+
 **時間區間不在全域 header**：它曾經在，但只有 `<Overview>` 收得到 `:minutes`，其餘六頁
 完全忽略 —— 選單看起來在控制全站，實際上是純裝飾。現在由需要的頁面各自放
 `components/range-picker.js`（總覽只給預設、Explorer 另有自訂絕對區間、異常事件用自己
@@ -271,6 +291,44 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 時間輸入一律用原生 `<input type="datetime-local" step="1">`：它是**無時區**的，
 與資料庫存的台北牆鐘天生對應，不需要任何換算，也就沒有換算錯誤的可能。
 字串轉換用 `range-picker.js` 的 `toWallClock()` / `toInputValue()`。
+
+## 正式部署（詳見 `docs/deploy-gcp.md`）
+
+GCP project `ocard-ai`，**Compute Engine 單台 VM**（`security-console`，asia-east1-b，
+COS + 容器、無外部 IP），掛在 `https://ros.ocard.co/security`。push 到 `main` 由
+`cloudbuild.yaml` 自動 build → `update-container`。
+
+四件會靜靜壞掉的事：
+
+**不可以搬到 Cloud Run**（除非先把狀態搬出 SQLite）。`state/monitor.db` 是單一
+SQLite WAL 檔，Cloud Run 的檔案系統是 ephemeral —— 每次部署清空
+`known_sources`（→ R08A/B/C 洪水式告警）與 `audit_log`（→ payload 調閱留痕消失，
+那個 break-glass 端點刻意不要求填理由，靠的就是留痕）。GCS FUSE 不支援 SQLite
+需要的檔案鎖，Filestore 最低 1 TiB。耦合本身很乾淨（`sqlite3` 只在
+`store/db.py`），但風險落在 `events` 的去重狀態機上。
+
+**`--workers 1` 是硬性要求，不是預設值。** 排程器跑在 FastAPI lifespan 內，
+兩個 worker 各跑一份 `scheduler_loop` → 同一個 tick 被評估兩次 → cooldown
+狀態機發出重複通知。同理不可以擴成多台 VM。
+
+**狀態磁碟由 konlet 掛載，哨兵檔由 startup script 建在磁碟上。**
+`konlet-startup.service` 與 `google-startup-scripts.service` 沒有保證的先後順序；
+磁碟沒掛好就啟動的話 SQLite 會寫到開機磁碟、之後被掛載遮住 ——
+資料靜靜寫錯地方。`docker/entrypoint.py` 因此**斷言** `/app/state/.disk-ok` 存在，
+找不到就非零退出讓 konlet 重啟。哨兵檔絕不可由 startup script 直接
+`touch /mnt/...`（那樣磁碟沒掛好時會建在開機磁碟上，斷言就形同虛設）。
+
+**憑證只走 Secret Manager，不進 instance metadata。** 整份 `.env` 放在
+`security-console-env` 一個 secret 裡，`docker/entrypoint.py` 啟動時取回並以 0600
+寫進容器可寫層。metadata（含 `--container-env`）是明文且每版都留著 ——
+同 project 的 `ocard-data-api` 就是那樣把 ClickHouse 帳密與 API key 攤在
+Cloud Run revision 上，**不要照抄**。
+
+出口 IP 是既有 Cloud NAT 的 `34.81.63.175`（ClickHouse 已放行），所以防火牆
+不用動；入向只開 ROS 的 VPC connector `10.8.0.0/28` 與 IAP。
+`ros.ocard.co/security` 由 `ocard-ros/next.config.mjs` 的 rewrite 指向
+`10.140.0.3:8600`（保留的靜態內網 IP；**不能用 `*.internal`**，Cloud Run 經
+VPC connector 出去時不解析 VPC 內部 DNS）。
 
 ## 圖表（`web/charts/`）
 
