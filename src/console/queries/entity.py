@@ -31,8 +31,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Iterable
 
-from console.core import masking, timewin
+from console.core import brands, masking, stores, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.queries import explorer, exprs
@@ -89,7 +90,39 @@ def _p(i: int) -> str:
     return f"ent{i}"
 
 
+# 需要把編號換成名稱的維度 → **批次版**查詢函式。
+#
+# 品牌與分店的 `mask` 是 None（它們是營運資訊、原樣顯示，不遮罩），所以
+# `_display()` 原本直接回裸編號 —— 母體位置的橫條與表格因此是「1180 · 27681」，
+# 沒有人認得出那是「wa10 瓦城 · WA10 APP」，而那一塊的用途正是讓人一眼看出
+# 離群的是誰。事件標題早就解名稱了（`rules/engine._LABEL_FUNCS`），同一頁兩處
+# 不一致本身就是缺陷。
+#
+# **一律用批次版**：母體位置一次 12 列 × 最多 2 個維度，逐列呼叫單值版就是 24 趟
+# MySQL（同 `brands.breakdown()` 的取捨）。
+_NAME_FUNCS = {"brand": brands.labels, "store": stores.labels}
+
+
+def _names(field: str, values: Iterable[str]) -> dict[str, str]:
+    """`{原始值: 顯示字串}`；不需要查名稱的維度回空 dict。
+
+    鍵刻意是**原始字串**而不是 int —— 呼叫端手上的是 SQL 回來的
+    `toString(_brand)`，用它直接查表才不會有第二次型別轉換的機會出錯。
+    查不到名稱時 `labels()` 自己會回「（查無分店）（27681）」之類的字串，
+    這裡不再另外編故事。
+    """
+    fn = _NAME_FUNCS.get(field)
+    if fn is None:
+        return {}
+    raw = list(dict.fromkeys(values))
+    resolved = fn(raw)
+    return {v: resolved.get(brands.coerce_id(v), v) for v in raw}
+
+
 def _display(dim: Dim) -> str:
+    named = _names(dim.field, [dim.value])
+    if named:
+        return named.get(dim.value, dim.value)
     if dim.mask is None:
         return dim.value
     return masking.DISPLAY_FUNCS[dim.mask](dim.value) or dim.value
@@ -174,15 +207,24 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
     s = df.iloc[0]
 
     df = query(f"SELECT {grp}, c FROM ({inner}) ORDER BY c DESC LIMIT {int(limit)}", params)
+    rows = [([str(r[f"d{i}"]) for i in range(len(ref.dims))], int(r["c"]))
+            for _, r in df.iterrows()]
+    # 每個維度一次批次查名稱（品牌／分店），其餘維度拿到空 dict 並退回 `_display`
+    name_maps = [_names(d.field, [values[i] for values, _ in rows])
+                 for i, d in enumerate(ref.dims)]
+    own_values = [d.value for d in ref.dims]
     top = []
-    for _, r in df.iterrows():
-        values = [str(r[f"d{i}"]) for i in range(len(ref.dims))]
+    for values, count in rows:
         top.append({
             "label": " · ".join(
-                _display(Dim(d.field, d.expr, v, d.mask, d.label))
-                for d, v in zip(ref.dims, values)),
-            "count": int(r["c"]),
-            "is_self": values == [d.value for d in ref.dims],
+                name_maps[i].get(v)
+                or _display(Dim(d.field, d.expr, v, d.mask, d.label))
+                for i, (d, v) in enumerate(zip(ref.dims, values))),
+            "count": count,
+            # **比對原始值，不是標籤。** 店名會改，而且「（查無分店）」會讓多列
+            # 長得一模一樣 —— 用標籤比對的話高亮會落在錯的長條上、或一次亮好幾條，
+            # 而畫面看起來完全正常。
+            "is_self": values == own_values,
         })
 
     comparable = expected is None or abs(own - float(expected)) < 1

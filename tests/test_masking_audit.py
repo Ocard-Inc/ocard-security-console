@@ -47,6 +47,19 @@ OPERATOR_KEYS = {
 # 豁免掉的操作者欄位仍要另外斷言：必須是內部網域，不可以是消費者位址。
 INTERNAL_DOMAIN = re.compile(r"@olis\.com\.tw$")
 
+# **後台帳號本身就可能是一個 email。** backend 的 `acc` 是 Ocard 員工的登入帳號，
+# 其中一部分是位址形式（實測 hetty@ocard.co / victor@ocard.co / jacky@ocard.co
+# 出現在 R05 事件的母體排名裡）。政策明定帳號**原樣顯示** —— 那是這個工具存在的
+# 目的，不是外流；上面第 2 條「該顯示的真的顯示」守的正是同一件事。
+#
+# 這條路徑用的是 `_scan_entity_panel()` 的結構性豁免：**只**放行對象標籤欄位、
+# **只**放行內部網域，而且標籤仍然要過手機與憑證值的檢查。消費者的 gmail 出現在
+# 標籤裡照樣失敗。這不是放寬 `EMAIL`，理由同 OPERATOR_KEYS 那段。
+#
+# `ocard.co` 與 `olis.com.tw` 分別是產品端與公司端的內部網域；消費者不會有這兩個
+# 網域的位址（消費者的 Email 在 `params` 裡，由 `masking.scrub_text()` 清掉）。
+ACCOUNT_DOMAIN = re.compile(r"@(?:olis\.com\.tw|ocard\.co)$")
+
 
 def _strip_operator_fields(value):
     """遞迴移除「操作者是誰」的欄位，回傳 (清理後的結構, 被移除的值)。"""
@@ -76,6 +89,47 @@ def _scan(payload: str, where: str) -> None:
         assert mail in EMAIL_ALLOW, f"{where} 洩漏 Email {mail}"
     leak = CREDENTIAL_LEAK.search(payload)
     assert leak is None, f"{where} payload 內的憑證值未清洗：{leak.group(0)[:60] if leak else ''}"
+
+
+def _pop_labels(value) -> tuple[list[str], object]:
+    """遞迴抽出所有 `label` 欄位的字串值，回傳 (被抽出的值, 其餘結構)。"""
+    labels: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k == "label" and isinstance(v, str):
+                    labels.append(v)
+                    continue
+                out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return labels, walk(value)
+
+
+def _scan_entity_panel(body, where: str) -> None:
+    """對象面板專用：標籤裡的帳號可以是內部網域的 email，其餘一律最嚴格。
+
+    母體排名列的是**其他**對象，而 backend 的對象就是帳號（見 ACCOUNT_DOMAIN）。
+    豁免的範圍刻意只有「label 欄位 × 內部網域 × email」這一格：
+    標籤仍要過手機與憑證值檢查，結構的其他部分仍走原本的 `_scan()`。
+    """
+    import json
+    labels, cleaned = _pop_labels(body)
+    _scan(json.dumps(cleaned, ensure_ascii=False), where)
+
+    blob = " · ".join(labels)
+    assert not PHONE.search(blob), f"{where} 的對象標籤洩漏消費者手機號碼"
+    leak = CREDENTIAL_LEAK.search(blob)
+    assert leak is None, f"{where} 的對象標籤含未清洗的憑證值"
+    for mail in EMAIL.findall(blob):
+        assert mail in EMAIL_ALLOW or ACCOUNT_DOMAIN.search(mail), (
+            f"{where} 的對象標籤出現非內部網域的 Email {mail} —— "
+            "「帳號原樣顯示」的政策只涵蓋內部帳號，消費者位址仍是外流")
 
 
 def _scan_json(body, where: str) -> None:
@@ -115,7 +169,11 @@ def test_event_entity_panels_are_clean(client):
     """對象面板會列出**其他**對象（母體排名、endpoint 的來源清單）。
 
     那是刻意的（本主控台就是要追究是哪個帳號、哪個來源），但也因此是一個新的
-    外流面：帳號與 IP 原樣顯示，手機／Email／憑證值一個都不能出現。
+    外流面：帳號與 IP 原樣顯示，手機／消費者 Email／憑證值一個都不能出現。
+
+    帳號本身是 email 形式時走 `_scan_entity_panel()` 的結構性豁免（只放行對象
+    標籤欄位裡的內部網域位址）—— 實測 R05 的母體排名會列出 `hetty@ocard.co`
+    這類員工帳號，那是政策要求顯示的值。
     """
     evts = [e["evt_no"] for e in client.get("/api/events").json()["events"]][:6]
     assert evts, "DB 裡沒有事件，這個測試會變成空跑"
@@ -124,7 +182,34 @@ def test_event_entity_panels_are_clean(client):
                      f"/api/events/{evt}/entity/timeline?days=3"):
             r = client.get(path)
             assert r.status_code == 200, f"{path} → {r.status_code} {r.text[:200]}"
-            _scan(r.text, f"GET {path}")
+            _scan_entity_panel(r.json(), f"GET {path}")
+
+
+# --- 對象標籤豁免的反向測試（不需要 ClickHouse）--------------------------------
+
+def test_entity_panel_exemption_still_rejects_a_consumer_email():
+    """豁免只涵蓋內部網域。放寬 ACCOUNT_DOMAIN 必須在這裡失敗。
+
+    沒有這條反向測試的話，有人為了讓某個端點變綠而多加一個網域，
+    或乾脆改成 `@` 就放行，都不會有任何測試失敗 —— 而這個檔案存在的理由
+    就是「之後任何真正的洩漏都可能剛好落在被放寬的範圍裡」。
+    """
+    import pytest
+    ok = {"peers": {"top": [{"label": "1.34.41.218 · hetty@ocard.co"}]}}
+    _scan_entity_panel(ok, "內部帳號")           # 不該拋
+
+    leaked = {"peers": {"top": [{"label": "1.34.41.218 · someone@gmail.com"}]}}
+    with pytest.raises(AssertionError, match="非內部網域"):
+        _scan_entity_panel(leaked, "消費者位址")
+
+
+def test_entity_panel_exemption_does_not_cover_phones_or_credentials():
+    """標籤被抽出去單獨掃，但手機與憑證值的規則完全不變。"""
+    import pytest
+    with pytest.raises(AssertionError, match="手機"):
+        _scan_entity_panel({"label": "0912345678"}, "標籤裡的手機")
+    with pytest.raises(AssertionError, match="憑證"):
+        _scan_entity_panel({"label": '"authorization": "Bearer abcdef123456"'}, "標籤裡的憑證")
 
 
 def test_explorer_detail_is_clean(client):
