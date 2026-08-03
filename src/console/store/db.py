@@ -37,9 +37,18 @@ CREATE TABLE IF NOT EXISTS events (
     hit_count INTEGER NOT NULL DEFAULT 1,
     peak_value REAL NOT NULL,
     miss_ticks INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'active',  -- active/resolved
+    -- active/resolved 由狀態機寫；closed 只由人寫（見 store/events.py 模組說明）。
+    -- 所有機器端查詢都寫 status = 'active'，所以 closed 自動退出狀態機 ——
+    -- 那是刻意的：新增一個機器不認識的狀態值時，「忘記排除它」的失敗模式
+    -- 比「忘記納入它」危險得多。
+    status TEXT NOT NULL DEFAULT 'active',  -- active/resolved/closed
     judgement TEXT,                         -- 已確認攻擊/合法整合/誤報/證據不足/保持觀察
     judgement_note TEXT,
+    -- 人工結案的三個欄位。closed_from 記的是關閉當下狀態機的值，
+    -- 復原時才還得回去（見 api/routes.reopen_event）。
+    closed_at TEXT,
+    closed_by TEXT,
+    closed_from TEXT,                       -- active/resolved
     case_id TEXT,
     owner TEXT,
     context_json TEXT                       -- 已遮罩的補充資訊

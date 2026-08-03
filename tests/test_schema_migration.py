@@ -29,6 +29,14 @@ _RULE_SUPPRESSIONS_COLUMNS = {
     "id", "at", "allowlist_id", "rule_id", "source_ip", "entity_label",
     "metric", "threshold", "window_start", "window_end",
 }
+_EVENTS_COLUMNS = {
+    "id", "evt_no", "rule_id", "rule_name", "severity", "entity_key",
+    "entity_label", "source_key", "metric_value", "threshold",
+    "baseline_median", "baseline_p95", "multiple", "brands",
+    "first_seen", "last_seen", "last_notified", "hit_count", "peak_value",
+    "miss_ticks", "status", "judgement", "judgement_note",
+    "closed_at", "closed_by", "closed_from", "case_id", "owner", "context_json",
+}
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -49,7 +57,7 @@ def fresh_db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def legacy_db(tmp_path):
-    """2026-08 之前的 allowlist：source_fp、沒有 rule_id 那批欄位。"""
+    """2026-08 之前的 allowlist / events：source_fp、沒有 rule_id 與結案那批欄位。"""
     path = tmp_path / "legacy.db"
     conn = sqlite3.connect(path)
     conn.executescript("""
@@ -60,7 +68,26 @@ def legacy_db(tmp_path):
             expected_rate TEXT, valid_from TEXT, valid_to TEXT, approved_by TEXT,
             status TEXT NOT NULL DEFAULT '待核准'
         );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            evt_no TEXT UNIQUE NOT NULL, rule_id TEXT NOT NULL,
+            rule_name TEXT NOT NULL, severity TEXT NOT NULL,
+            entity_key TEXT NOT NULL, entity_label TEXT NOT NULL,
+            source_key TEXT NOT NULL, metric_value REAL NOT NULL, threshold REAL,
+            baseline_median REAL, baseline_p95 REAL, multiple REAL, brands INTEGER,
+            first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_notified TEXT,
+            hit_count INTEGER NOT NULL DEFAULT 1, peak_value REAL NOT NULL,
+            miss_ticks INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            judgement TEXT, judgement_note TEXT, case_id TEXT, owner TEXT,
+            context_json TEXT
+        );
     """)
+    conn.execute(
+        "INSERT INTO events (evt_no, rule_id, rule_name, severity, entity_key,"
+        " entity_label, source_key, metric_value, first_seen, last_seen, peak_value,"
+        " status, judgement) VALUES ('EVT-0001','R01','x','P1','R01|a','a','backend',"
+        " 1, '2026-08-01 00:00:00', '2026-08-01 00:05:00', 1, 'resolved', '誤報')")
     conn.execute(
         "INSERT INTO allowlist (name, source_fp, valid_from, status)"
         " VALUES ('辦公室出口', '1.34.41.218', '2026-08-03 10:00:00', '生效中')")
@@ -76,6 +103,7 @@ def test_fresh_schema_has_the_expected_columns(fresh_db):
     assert _columns(fresh_db, "allowlist") == _ALLOWLIST_COLUMNS
     assert _columns(fresh_db, "rule_overrides") == _RULE_OVERRIDES_COLUMNS
     assert _columns(fresh_db, "rule_suppressions") == _RULE_SUPPRESSIONS_COLUMNS
+    assert _columns(fresh_db, "events") == _EVENTS_COLUMNS
 
 
 def test_migrate_is_a_noop_on_a_fresh_schema(fresh_db):
@@ -89,6 +117,20 @@ def test_legacy_db_reaches_the_same_shape(legacy_db):
     legacy_db.commit()
     assert _columns(legacy_db, "allowlist") == _ALLOWLIST_COLUMNS
     assert _columns(legacy_db, "rule_overrides") == _RULE_OVERRIDES_COLUMNS
+    assert _columns(legacy_db, "events") == _EVENTS_COLUMNS
+
+
+def test_migration_does_not_close_existing_events(legacy_db):
+    """新增結案欄位不可改變既有事件的狀態。
+
+    closed_at 對既有列一律 NULL，也就是「沒有人結案過」—— 那正是事實，
+    所以刻意不回填。回填成現在的時間會宣稱一個假的結案紀錄。
+    """
+    migrate.apply(legacy_db)
+    row = legacy_db.execute(
+        "SELECT status, closed_at, closed_by, closed_from FROM events"
+        " WHERE evt_no = 'EVT-0001'").fetchone()
+    assert row == ("resolved", None, None, None)
 
 
 def test_rename_keeps_the_data(legacy_db):

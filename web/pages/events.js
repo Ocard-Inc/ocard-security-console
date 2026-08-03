@@ -1,5 +1,6 @@
 // 異常事件清單 + 快速預覽 Drawer（設計稿 8 節）
-import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL,
+         STATUS_LABEL, STATUS_COLOR } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import RangePicker from '../components/range-picker.js';
 
@@ -33,6 +34,7 @@ export default {
     data: null, loading: true, error: null, rules: [],
     f: { ...EMPTY_FILTER },
     drawer: null, range: '7d', RANGES, SEV_LABEL, SOURCE_LABEL,
+    STATUS_LABEL, STATUS_COLOR,
   }),
   computed: {
     // 後端給的判定選項（含「待判定」）。載入前是空陣列 —— 下拉會只有「全部」，
@@ -77,7 +79,7 @@ export default {
     activeChips() {
       const chips = [];
       if (this.f.severity) chips.push({ key: 'severity', text: '嚴重度 = ' + this.f.severity });
-      if (this.f.status) chips.push({ key: 'status', text: '狀態 = ' + (this.f.status === 'active' ? '持續中' : '已恢復') });
+      if (this.f.status) chips.push({ key: 'status', text: '狀態 = ' + STATUS_LABEL[this.f.status] });
       if (this.f.rule_id) chips.push({ key: 'rule_id', text: '規則 = ' + this.f.rule_id });
       if (this.f.source) chips.push({ key: 'source', text: '來源 = ' + SOURCE_LABEL[this.f.source] });
       if (this.f.keyword) chips.push({ key: 'keyword', text: '關鍵字 = ' + this.f.keyword });
@@ -87,6 +89,13 @@ export default {
     removeChip(key) {
       this.f[key] = '';
       this.load();
+    },
+    /** 已處理完畢那一格的 title：誰結的、什麼時候、以及**關閉當下的狀態**。
+     *  「回落之後才結案」與「還在持續命中就結案」是兩件不同的事，後者代表
+     *  這一筆是被人從待處理清單移走的，不是它自己停了。 */
+    closedTitle(e) {
+      const from = e.closed_from === 'active' ? '關閉時仍在持續命中' : '關閉時已回落';
+      return `${e.closed_by || '未記錄'} 於 ${e.closed_at || '未記錄'} 標為已處理完畢（${from}）`;
     },
     async preview(evtNo) {
       this.drawer = { loading: true, evt_no: evtNo };
@@ -114,8 +123,7 @@ export default {
         </select>
         <select v-model="f.status" @change="load">
           <option value="">狀態：全部</option>
-          <option value="active">持續中</option>
-          <option value="resolved">已恢復</option>
+          <option v-for="(l,k) in STATUS_LABEL" :key="k" :value="k">{{ l }}</option>
         </select>
         <select v-model="f.rule_id" @change="load">
           <option value="">規則：全部</option>
@@ -153,6 +161,10 @@ export default {
           {{ s }}：<strong :style="{color:'var(--'+s.toLowerCase()+')'}">{{ data.by_severity[s] || 0 }}</strong>
         </span>
         <span>持續中：<strong style="color:var(--text-1)">{{ data.ongoing }}</strong></span>
+        <!-- 已處理完畢是人工結案，與「已恢復」是兩回事：後者是指標回落，
+             前者是有人說處理完了。數字為 0 時不顯示（沒有這個概念比顯示 0 清楚）。 -->
+        <span v-if="data.by_status && data.by_status.closed">
+          已處理完畢：<strong style="color:var(--ok)">{{ data.by_status.closed }}</strong></span>
       </div>
       <!-- 判定分布。只在沒有套用判定篩選時出現（見 judgementBreakdown），
            而且與上面那一行同屬「符合條件的 {{ data.total }} 筆」，不是全部歷史。 -->
@@ -196,8 +208,9 @@ export default {
                   門檻 {{ num(e.threshold) }}</span>
               </td>
               <td class="right"><BrandBreakdown :count="e.brands" :rows="e.brand_top" /></td>
-              <td :style="{color: e.status==='active' ? 'var(--warn)' : 'var(--text-2)'}">
-                {{ e.status === 'active' ? '持續中' : '已停止' }}</td>
+              <td :style="{color: STATUS_COLOR[e.status] || 'var(--text-2)'}"
+                  :title="e.status === 'closed' ? closedTitle(e) : ''">
+                {{ STATUS_LABEL[e.status] || e.status }}</td>
               <!-- 沒有判定時的字要與篩選器的選項一致（原本這裡是「待確認」而
                    篩選與總覽都寫「待判定」——三種說法指同一個狀態）。 -->
               <td :class="{muted: !e.judgement}">{{ e.judgement || '待判定' }}</td>

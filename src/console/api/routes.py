@@ -43,6 +43,12 @@ UNJUDGED = "待判定"
 # judgement_note 的三個欄位。自 2026-08 起全部選填，所以空字串是正常值。
 _JUDGEMENT_FIELDS = ("reason", "evidence", "next_step")
 
+# events.status 的三個值。active / resolved 由狀態機寫，closed（已處理完畢）
+# 只由人寫 —— 見 store/events.py 的模組說明。這裡是 /events 篩選的白名單：
+# 打錯一律 400，靜靜接受的話 `status=closd` 回 0 筆而畫面寫著「狀態 = closd」。
+STATUSES = ("active", "resolved", "closed")
+CLOSED = "closed"
+
 
 # ─────────────────────────── 會話與導覽 ───────────────────────────
 
@@ -267,6 +273,11 @@ def _event_public(e: dict) -> dict:
         "first_seen": e["first_seen"], "last_seen": e["last_seen"],
         "peak": e["peak_value"], "hit_count": e["hit_count"],
         "status": e["status"], "judgement": e["judgement"],
+        # 人工結案。closed_from 是關閉當下狀態機的值 —— 清單上要能說出
+        # 「這件事是在還在持續命中的時候被結案的」，那與「回落之後才結案」
+        # 是兩種不同的事。
+        "closed_at": e["closed_at"], "closed_by": e["closed_by"],
+        "closed_from": e["closed_from"],
         "case_no": e["case_id"], "owner": e["owner"], "context": ctx,
     }
 
@@ -316,6 +327,9 @@ async def list_events(
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_events")
+    if status and status not in STATUSES:
+        raise HTTPException(400, f"status 必須是 {'、'.join(STATUSES)} 之一"
+                                 f"（收到 {status!r}）")
     if judgement:
         if judgement not in JUDGEMENTS and judgement != UNJUDGED:
             raise HTTPException(
@@ -358,6 +372,7 @@ async def list_events(
         "total": len(rows),
         "by_severity": stats,
         "by_judgement": {k: labels.count(k) for k in (UNJUDGED, *JUDGEMENTS)},
+        "by_status": {k: sum(1 for r in rows if r["status"] == k) for k in STATUSES},
         "judgements": list(JUDGEMENTS),
         "unjudged_label": UNJUDGED,
         "ongoing": sum(1 for r in rows if r["status"] == "active"),
@@ -623,6 +638,107 @@ async def judge_event(
     if not any(detail.values()):
         message += "此判定沒有留下任何理由、證據或處置紀錄。"
     return {"ok": True, "judgement": judgement, "recorded": detail, "note": message}
+
+
+@router.post("/events/{evt_no}/close")
+async def close_event(
+    evt_no: str,
+    payload: dict = Body(default={}),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """人工標為「已處理完畢」（`status = 'closed'`）。
+
+    **必須先有判定。** 沒有判定的結案沒有內容可言，而且會與資安總覽的
+    「待判定」橫幅直接矛盾 —— 那條橫幅查的是 `judgement IS NULL`、不看 status，
+    所以一筆「已處理完畢但沒有判定」的事件會同時顯示這兩件事。判定現在只要按
+    一顆按鈕（理由選填），所以這個前置條件不構成實際負擔。
+
+    **關閉仍在命中的事件是允許的，但會產生後果**：它從「持續中」與資安總覽的
+    待處理清單消失（兩處都查 `status = 'active'`），而下一個檢查視窗若仍然命中，
+    狀態機找不到 active 列，會建立一個**新的 EVT 編號**（見 store/events.py）。
+    回應的 `warnings` 必須把這件事說出來 —— 前端會原樣顯示。
+    """
+    guard(user, "judge_event")
+    validate.reject_unknown_keys(payload or {}, {"reason"})
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    if row["status"] == CLOSED:
+        # 回 200 + changed:false 的話畫面會顯示「已標記完成」而什麼都沒發生
+        raise HTTPException(409, f"{evt_no} 已經是「已處理完畢」"
+                                 f"（{row['closed_by']} 於 {row['closed_at']}）")
+    if not row["judgement"]:
+        raise HTTPException(
+            400, f"{evt_no} 還沒有判定。「已處理完畢」要能回答「處理的結論是什麼」，"
+                 f"請先在調查判定送出一個結果（理由、證據、下一步都是選填）。")
+    reason = str((payload or {}).get("reason") or "").strip()
+    now = timewin.fmt(timewin.taipei_now())
+    was_active = row["status"] == "active"
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE events SET status = ?, closed_at = ?, closed_by = ?, closed_from = ?"
+            " WHERE id = ?", (CLOSED, now, user.email, row["status"], row["id"]))
+    audit.record(who=user.email, role=user.role_label, action="標為已處理完畢",
+                 target=f"{evt_no}：{row['status']} → {CLOSED}", reason=reason or None)
+    logger.info("%s 由 %s 標為已處理完畢（原狀態 %s）", evt_no, user.email, row["status"])
+    warnings = []
+    if was_active:
+        warnings.append(
+            "這個事件在關閉時仍在持續命中。它會從「持續中」與資安總覽的待處理"
+            "清單消失；若下一個檢查視窗仍然命中，系統會另外建立一個新的事件編號 "
+            "—— 那不是重複告警，而是它又發生了。")
+    return {"ok": True, "status": CLOSED, "closed_at": now, "closed_by": user.email,
+            "closed_from": row["status"], "warnings": warnings,
+            "note": "監測本身沒有停止 —— 這只是把這一筆從待處理清單移出。"
+                    "要讓某個對象不再觸發規則，那是 Allowlist。"}
+
+
+@router.post("/events/{evt_no}/reopen")
+async def reopen_event(
+    evt_no: str,
+    payload: dict = Body(default={}),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """復原人工結案，狀態回到關閉前狀態機的值。
+
+    **一律回 `closed_from`，不可一律回 `active`。** 一筆早就回落的事件被復原成
+    active 之後，狀態機會在三個 tick 內把它標 resolved 並對 P0/P1 發一則
+    「已恢復」—— 那個事件根本沒有恢復過，它從頭到尾都是靜的。假的「已恢復」
+    是這個專案花最多力氣避免的東西（見 store/events._silenced_keys）。
+    `closed_from` 是 NULL 的話（理論上不會有：close 一律寫它）退回 resolved，
+    那是兩者中不會生出通知的那一個。
+    """
+    guard(user, "judge_event")
+    validate.reject_unknown_keys(payload or {}, {"reason"})
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    if row["status"] != CLOSED:
+        raise HTTPException(409, f"{evt_no} 目前不是「已處理完畢」"
+                                 f"（狀態為 {row['status']}），沒有可復原的結案")
+    # 結案期間同一對象再犯的話已經有一筆新事件了（狀態機找不到 active 列就開新的）。
+    # 復原會讓同一個去重鍵有兩筆 active，而狀態機的 db.one 只會拿到其中一筆 ——
+    # 另一筆從此不再更新、三個 tick 後被標 resolved。那是靜靜發生的，所以擋在這裡。
+    newer = db.one(
+        "SELECT evt_no FROM events WHERE rule_id = ? AND entity_key = ?"
+        " AND status = 'active' AND id <> ?",
+        (row["rule_id"], row["entity_key"], row["id"]))
+    if newer:
+        raise HTTPException(
+            409, f"{evt_no} 結案之後同一對象又觸發了，目前進行中的是 "
+                 f"{newer['evt_no']}。復原 {evt_no} 會讓同一個對象有兩筆進行中的"
+                 f"事件，而其中一筆會停止更新 —— 請直接處理 {newer['evt_no']}。")
+    back_to = row["closed_from"] if row["closed_from"] in ("active", "resolved") else "resolved"
+    reason = str((payload or {}).get("reason") or "").strip()
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE events SET status = ?, closed_at = NULL, closed_by = NULL,"
+            " closed_from = NULL WHERE id = ?", (back_to, row["id"]))
+    audit.record(who=user.email, role=user.role_label, action="復原事件結案",
+                 target=f"{evt_no}：{CLOSED} → {back_to}", reason=reason or None)
+    logger.info("%s 由 %s 復原結案（回到 %s）", evt_no, user.email, back_to)
+    return {"ok": True, "status": back_to,
+            "note": f"狀態回到 {back_to} —— 那是關閉當下狀態機的值，不是重新開始計時。"}
 
 
 # ─────────────────────────── Log Explorer ───────────────────────────

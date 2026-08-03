@@ -1,5 +1,6 @@
 // 異常事件詳細頁（設計稿 9 節）：核心判定 → 趨勢 → 證據矩陣 → 資料限制 → 調查判定
-import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL,
+         STATUS_LABEL, STATUS_COLOR } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
 import RangePicker from '../components/range-picker.js';
@@ -47,7 +48,10 @@ export default {
     judge: '', submitting: false, submitted: null,
     // 表單的三個選填欄位，鍵與後端 payload 相同（見 submitJudge）
     form: { reason: '', evidence: '', next_step: '' },
-    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, JUDGE_FIELDS, PADS, ANALYSIS_LABEL,
+    // 人工結案／復原
+    closeReason: '', closing: false, closeResult: null, closeError: null,
+    SEV_LABEL, SOURCE_LABEL, STATUS_LABEL, STATUS_COLOR,
+    JUDGEMENTS, JUDGE_FIELDS, PADS, ANALYSIS_LABEL,
   }),
   computed: {
     // 已提交判定的三個選填欄位：填了什麼、哪幾個是空的。
@@ -182,6 +186,23 @@ export default {
       } catch (err) { this.error = err.message; }
       this.loading = false;
     },
+    /** 標為已處理完畢／復原結案。共用一條路徑：兩者的失敗處理與重載完全一樣。 */
+    async setClosed(closed) {
+      this.closing = true;
+      this.closeError = null;
+      try {
+        const r = await post(`/events/${this.evtNo}/${closed ? 'close' : 'reopen'}`,
+                             { reason: this.closeReason });
+        this.closeResult = r;
+        this.closeReason = '';
+        await this.load();
+      } catch (err) {
+        // 409（已經結案／同一對象已有新的進行中事件）與 400（還沒判定）的訊息
+        // 本身就是要給人看的說明，原樣顯示比翻成「操作失敗」有用得多。
+        this.closeError = err.message;
+      }
+      this.closing = false;
+    },
     async submitJudge() {
       this.submitting = true;
       try {
@@ -215,6 +236,9 @@ export default {
       this.submitted = null;
       this.judge = '';
       this.form = { reason: '', evidence: '', next_step: '' };
+      this.closeReason = '';
+      this.closeResult = null;
+      this.closeError = null;
     },
     // 'custom' 由 applyCustomRange 自己觸發，避免 start/end 還沒填好就查
     range(key) { if (key !== 'custom') this.load(); },
@@ -238,8 +262,8 @@ export default {
         <span>開始：{{ e.first_seen }}</span>
         <span>最後出現：{{ e.last_seen }}</span>
         <span>持續：{{ duration(e.first_seen, e.last_seen) }}（{{ e.hit_count }} 個檢查視窗命中）</span>
-        <span>狀態：<strong :style="{color: e.status==='active' ? 'var(--warn)' : 'var(--text-3)'}">
-          {{ e.status === 'active' ? '持續中' : '已停止' }}</strong></span>
+        <span>狀態：<strong :style="{color: STATUS_COLOR[e.status] || 'var(--text-3)'}">
+          {{ STATUS_LABEL[e.status] || e.status }}</strong></span>
         <span>資料來源：{{ SOURCE_LABEL[e.source] }}</span>
         <span>觸發規則：{{ e.rule_id }}</span>
         <span v-if="e.owner">負責人：{{ e.owner }}</span>
@@ -511,6 +535,68 @@ export default {
       </template>
       <div v-else class="muted" style="font-size:13px">
         目前無法提交判定（未取得有效的登入 session）。
+      </div>
+    </div>
+
+    <!-- 處理狀態（人工結案）。刻意與「調查判定」分開：判定是「這是什麼事」，
+         結案是「我處理完了」，而只有後者會把事件從待處理清單移走。 -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-h" style="margin-bottom:10px">處理狀態</div>
+
+      <div v-if="e.status === 'closed'" class="banner banner-ok" style="margin:0">
+        <strong>已處理完畢</strong> —— {{ e.closed_by || '未記錄' }} 於
+        {{ e.closed_at || '未記錄' }} 標記。
+        <template v-if="e.closed_from === 'active'">
+          標記當下這個事件<strong>仍在持續命中</strong>。
+        </template>
+        <template v-else>標記當下指標已回落。</template>
+      </div>
+      <div v-else class="muted" style="font-size:12.5px">
+        目前狀態是<strong :style="{color: STATUS_COLOR[e.status]}">{{ STATUS_LABEL[e.status] }}</strong>
+        —— 那是五分鐘檢查算出來的（{{ e.status === 'active' ? '指標仍超過門檻' : '指標已回到門檻以下' }}），
+        不代表有人處理過。
+      </div>
+
+      <div v-if="closeResult" class="banner banner-ok" style="margin:10px 0 0">
+        {{ closeResult.note }}
+        <div v-for="(w,i) in (closeResult.warnings || [])" :key="i"
+             style="margin-top:6px;font-size:12.5px">{{ w }}</div>
+      </div>
+      <div v-if="closeError" class="banner banner-danger" style="margin:10px 0 0">
+        {{ closeError }}
+      </div>
+
+      <template v-if="canJudge">
+        <!-- 關閉仍在命中的事件是允許的，但那是刻意製造的盲區，必須在按下去
+             之前就講出來（同 Allowlist 的做法）。 -->
+        <div v-if="e.status === 'active'" class="banner banner-warn"
+             style="margin:10px 0 0;font-size:12.5px">
+          這個事件<strong>目前仍在持續命中</strong>。標為已處理完畢會讓它從「持續中」與
+          資安總覽的待處理清單消失；若下一個檢查視窗仍然命中，系統會另外建立一個
+          <strong>新的事件編號</strong> —— 那不是重複告警，而是它又發生了。
+        </div>
+        <div v-if="e.status !== 'closed' && !e.judgement" class="note-quote"
+             style="margin-top:10px">
+          尚缺：這個事件還沒有判定。「已處理完畢」要能回答「處理的結論是什麼」，
+          請先在上面送出一個判定結果（理由、證據、下一步都是選填）。
+        </div>
+        <div style="margin-top:10px">
+          <input type="text" v-model.trim="closeReason" style="width:100%;max-width:420px"
+                 :placeholder="e.status === 'closed' ? '復原原因（選填）' : '處理說明（選填，會寫入操作稽核）'">
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button v-if="e.status !== 'closed'" class="btn btn-primary"
+                  :disabled="!e.judgement || closing" @click="setClosed(true)">
+            {{ closing ? '處理中…' : '標為已處理完畢' }}</button>
+          <button v-else class="btn" :disabled="closing" @click="setClosed(false)">
+            {{ closing ? '處理中…' : '復原結案（回到' + (STATUS_LABEL[e.closed_from] || '原狀態') + '）' }}</button>
+          <span class="muted" style="font-size:11.5px">
+            結案不會停止監測，也不會讓這個對象不再觸發規則 —— 那是 Allowlist。
+          </span>
+        </div>
+      </template>
+      <div v-else class="muted" style="font-size:12.5px;margin-top:10px">
+        目前無法變更處理狀態（未取得有效的登入 session）。
       </div>
     </div>
   </template>
