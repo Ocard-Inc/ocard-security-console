@@ -475,6 +475,46 @@ EVT-0001 三個欄位都填著同一句「APP 讀取資料」—— 必填只是
 套用判定篩選時顯示它 —— 混用兩種範圍（「這段時間全部的待判定數」配上「篩選後
 的清單」）正是這個專案一再警告的誤導。
 
+## 人工結案（`status = 'closed'`，已處理完畢）
+
+`events.status` 有三個值，但 `store/events.py` 只寫兩個：`active` / `resolved` 是
+狀態機的結論（「還在命中」／「指標回到門檻以下」），**`closed` 只由人寫**
+（`POST /api/events/{evt_no}/close`，可由 `/reopen` 復原）。前端的狀態字一律走
+`web/lib.js` 的 `STATUS_LABEL`（原本清單寫「已停止」、篩選器寫「已恢復」，
+同一個 resolved 兩個名字看起來像兩種狀態）。
+
+**用一個狀態機不認識的值是刻意的。** 每一條機器端 SQL 都寫 `status = 'active'`，
+所以 closed 自動退出狀態機：不累加 `miss_ticks`、不會被標 resolved、不發「已恢復」，
+資安總覽的 attention 也自動看不到它。若改成「只加 `closed_at`、status 留著 active」，
+每一個既有的 `status = 'active'` 查詢都得記得加 `AND closed_at IS NULL` ——
+漏掉任何一處的症狀是「已處理完畢的事件還在發通知」，而那是靜靜發生的。
+反過來漏掉的方向是「多開一個新事件」，那是看得見的。
+
+**因此關閉一個仍在命中的事件，下一個 tick 會建立一個新的 EVT 編號**
+（狀態機找不到 active 列）。那不是 bug 而是唯一誠實的行為：你說處理完了，而它又
+發生了。`close` 的回應因此帶 `warnings`、前端在按下去**之前**就顯示同一段話，
+而 `apply_findings` 開新事件時會查有沒有同一 `(rule_id, entity_key)` 的 closed 列，
+有的話留一行 warning log（「結案後再犯」與「第一次出現」是完全不同的結論）。
+
+**結案必須先有判定。** 沒有判定的結案回答不了「處理的結論是什麼」，而且會與資安
+總覽的「待判定」橫幅直接矛盾 —— 那條查的是 `judgement IS NULL`、**不看 status**，
+所以一筆「已處理完畢但沒有判定」會同時顯示這兩件事。判定現在只要按一顆按鈕
+（三個文字欄都選填），所以這個前置條件不構成負擔。反過來說：**不要為了讓結案
+可以跳過判定而去改那條橫幅的查詢** —— 那等於讓人用結案清空待判定積壓。
+
+**`/reopen` 一律回到 `closed_from`，不可一律回 `active`。** 一筆早就回落的事件被
+復原成 active 之後，狀態機會在三個 tick 內把它標 resolved 並對 P0/P1 發一則
+「已恢復」—— 那個事件從頭到尾都是靜的，那是假的恢復（同 `_silenced_keys` 擋的
+那件事）。`closed_from` 就是為此存在的第三個欄位，不是冗餘。
+另外 **reopen 前要擋「同一對象已經有一筆 active」**：結案期間再犯會另開新事件，
+復原會讓同一個去重鍵有兩筆 active，而狀態機的 `db.one` 只拿到其中一筆、
+另一筆從此不再更新並在三個 tick 後被標 resolved。那也是靜靜發生的，所以回 409。
+
+`closed_at` / `closed_by` / `closed_from` 三個欄位走 `store/migrate.py`
+（`events` 不是衍生表）。**既有列一律 NULL、刻意不回填** —— 「沒有人結案過」正是
+既有資料的事實，回填成現在的時間會宣稱一個假的結案紀錄。
+`status` 是封閉集合，`/events` 的篩選打錯一律 400（同 `judgement`）。
+
 ## 狀態與去重
 
 SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
