@@ -502,25 +502,51 @@ def payload(source: str, row_id: str) -> dict:
     }
 
 
-# 「查不到」的回看範圍。實測 365 天的等值查詢只要 0.11 秒（月分區 + 等值條件
-# 剪枝很有效），所以這裡可以問得很寬 —— 目的就是分辨「這個對象不存在」與
-# 「它存在，但不在你選的區間」。
+# 「查不到」的回看範圍。**這個值不能只有一個** —— 成本差三個數量級。
+#
+# `ip` 是真欄位的表（backend / admin / auth）：365 天等值查詢實測 0.6 秒，
+# 月分區 + 等值剪枝很有效，問多寬都無妨。
+#
+# 但 **api 的來源 IP 要對 `headers` 做 JSONExtract**（見 exprs.API_SRC_IP），
+# 沒有欄位可以剪枝，成本隨天數線性上升。實測：
+#     7 天 2.1s ／ 30 天 7.5s ／ 60 天 18.5s ／ 90 天 29.6s ／ 365 天 **撞上 55 秒上限**
+# 原本這裡只有一個 365 天的常數，註解寫「實測 0.11 秒」—— 那是在有 `ip` 欄位的
+# 表上量的，被錯誤地套用到四張表。症狀是：在 API Log 查一個 IP 而結果是 0 筆時，
+# 這個「幫忙解釋」的查詢會跑滿 55 秒然後超時，例外被吞掉 →
+# 使用者等了快一分鐘，得到一張空表格和**零解釋**，而那正是這個函式要消滅的情況。
 EXTENT_LOOKBACK_DAYS = 365
+
+# api 的來源 IP 專用。30 天涵蓋「區間選錯」的絕大多數情況（Explorer 預設是最近
+# 1 小時），而 7.5 秒在「反正已經是 0 筆」的路徑上可以接受。
+# 要調高的話先重量一次 —— 上面那串數字是這個常數存在的唯一理由。
+EXTENT_LOOKBACK_DAYS_JSON_IP = 30
+
+
+def extent_lookback_days(source: str, field: str) -> int:
+    """這個 (來源, 欄位) 組合的回看天數。貴的組合問得窄一點。"""
+    if source == "api" and field == "source_ip":
+        return EXTENT_LOOKBACK_DAYS_JSON_IP
+    return EXTENT_LOOKBACK_DAYS
 
 
 def entity_extent(source: str, field: str, value: str) -> dict | None:
-    """某個對象在近 EXTENT_LOOKBACK_DAYS 天的活動範圍。查無回 None。
+    """某個對象在近 `extent_lookback_days()` 天的活動範圍。不支援回 None。
 
     只在「有下對象篩選但結果是 0 筆」時才呼叫（見 api/routes.py）。存在的理由是
     這個系統的一貫原則：**「沒找到」與「查不到」是不同的結論**。畫面只說「0 筆」
     的話，使用者無法分辨自己是打錯值、還是區間選得不對 —— 實測 192.168.97.1
     最後一次出現在 7/29，而 Explorer 預設區間是最近 1 小時。
+
+    **查詢超時會拋 `ChQueryError`，呼叫端必須把它說出來、不可以吞掉**
+    （見 `api/routes._explain_empty`）：吞掉的話畫面上「沒有解釋」與
+    「查過了，這個對象真的不存在」長得一模一樣。
     """
     expr = entity_expr(field, source)
     if expr is None or not value:
         return None
+    lookback = extent_lookback_days(source, field)
     end = timewin.effective_now()
-    params = {"start": timewin.fmt(end - timedelta(days=EXTENT_LOOKBACK_DAYS)),
+    params = {"start": timewin.fmt(end - timedelta(days=lookback)),
               "end": timewin.fmt(end), "value": str(value).strip()}
     table = settings()["data_sources"][source]["table"]
     df = query(
@@ -529,11 +555,14 @@ def entity_extent(source: str, field: str, value: str) -> dict | None:
     r = df.iloc[0]
     count = int(r["c"] or 0)
     if not count:
-        return {"found": False, "lookback_days": EXTENT_LOOKBACK_DAYS}
+        return {"found": False, "lookback_days": lookback}
     return {
         "found": True,
         "count": count,
         "first_seen": timewin.fmt(r["mn"].to_pydatetime()),
         "last_seen": timewin.fmt(r["mx"].to_pydatetime()),
-        "lookback_days": EXTENT_LOOKBACK_DAYS,
+        # 這裡曾經寫死 EXTENT_LOOKBACK_DAYS，而 `found: False` 那條路徑用的是
+        # 實際的 lookback —— 同一個函式的兩個出口報不同的天數，畫面上會說
+        # 「近 365 天共 480 筆」而其實只問了 30 天。
+        "lookback_days": lookback,
     }

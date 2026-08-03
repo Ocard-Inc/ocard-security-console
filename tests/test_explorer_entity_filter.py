@@ -177,3 +177,61 @@ def test_no_explanation_probe_when_no_entity_filter(client):
         "start": "2026-08-03 06:29:00", "end": "2026-08-03 06:29:01"})
     assert r.status_code == 200
     assert r.json().get("empty_reason") is None
+
+
+# ── API Log 的來源 IP：回看查詢的成本與非阻塞 ──────────────────────────────
+#
+# 這一段守的是一個實際發生的故障：在 **API Log** 查一個 IP 而結果 0 筆時，
+# 使用者等了約 56 秒，得到空表格與**零解釋**，而且那段時間整個主控台失去回應
+# （篩選、Controller 建議全部沒反應）。三個獨立缺陷：
+#
+# 1. `entity_extent` 對四張表用同一個 365 天回看，但 api 的來源 IP 要對 headers
+#    做 JSONExtract（實測 30 天 7.5s／90 天 29.6s／365 天撞上 55 秒上限）
+# 2. 超時的 `ChQueryError` 被 `_explain_empty` 吞掉回 None ——
+#    畫面上「沒有解釋」與「查過了，真的不存在」長得一樣
+# 3. `/explorer` 是 `async def` 而查詢是阻塞的 → 一個慢查詢凍住事件迴圈，
+#    實測完全不碰 ClickHouse 的 `/api/session` 被拖到 53.6 秒
+
+def test_api_source_ip_lookback_is_cheaper_than_the_others():
+    """api 的來源 IP 回看天數必須比其他表短 —— 它是唯一要解析 headers 的。"""
+    from console.queries import explorer as ex
+    api_days = ex.extent_lookback_days("api", "source_ip")
+    assert api_days < ex.extent_lookback_days("backend", "source_ip")
+    assert api_days < ex.extent_lookback_days("api", "actor"), \
+        "只有 source_ip 需要解析 headers，actor 是真欄位（_admin）"
+    assert api_days <= 60, (
+        f"實測 60 天要 18.5 秒、90 天 29.6 秒、365 天撞上 55 秒上限；"
+        f"目前設 {api_days} 天。要調高請先重量一次。")
+
+
+def test_api_source_ip_empty_result_still_explains_itself(client):
+    """在 API Log 查一個存在但不在區間內的 IP，必須給得出解釋。
+
+    這是原本壞掉的那一條路徑：回看查詢超時 → 例外被吞 → empty_reason 是 None。
+    """
+    r = client.post("/api/explorer", json={
+        "source": "api", "analysis": "trend", "source_ip": _DEV_IP, **_RECENT_HOUR})
+    assert r.status_code == 200, r.text
+    reason = r.json().get("empty_reason")
+    if r.json().get("rows"):
+        return                                  # 這個 IP 剛好有流量，換測不了
+    assert reason, "API Log 的 0 筆沒有任何說明（原本的故障）"
+    # 三種都可以接受，唯一不可接受的是 None ——
+    # explain_failed 也算合格：它明說「無法確認」，而不是假裝查過了。
+    assert reason["kind"] in ("outside_range", "not_found", "explain_failed")
+    if reason["kind"] == "explain_failed":
+        assert "無法" in reason["message"]
+        assert reason["lookback_days"] > 0
+
+
+def test_explorer_endpoint_is_sync_so_slow_queries_cannot_freeze_the_loop():
+    """`/explorer` 必須是同步 `def`（跑在 threadpool），不是 `async def`。
+
+    寫成 async def 時，裡面阻塞的 ClickHouse 查詢會佔住事件迴圈：一個慢查詢
+    讓**所有**請求排隊，使用者看到的不是「這個查詢慢」而是「整個主控台壞了」，
+    連五分鐘排程都會停。同 /sweep 與 /explorer/payload 的理由。
+    """
+    import inspect
+    from console.api import routes
+    assert not inspect.iscoroutinefunction(routes.run_explorer), \
+        "run_explorer 是 async def —— 阻塞查詢會凍住整個事件迴圈"
