@@ -43,7 +43,7 @@ gcloud secrets versions add security-console-env --data-file=prod.env  # 改設�
 
 ```
 config/settings.yaml     全域參數（時區、視窗、門檻、敏感 route、內部帳號、污染窗）
-config/rules/*.yaml      16 條宣告式規則
+config/rules/*.yaml      17 條宣告式規則
 src/console/core/        ch（查詢）、masking（遮罩）、timewin（時間）、config、logging_setup
 src/console/rules/       loader（YAML→Rule + 驗證）、effective（YAML + 覆寫的合成）、
                          engine（評估）、baseline（門檻）、model
@@ -97,6 +97,14 @@ median/P95/P99 也在陳述錯的母體（使用者拿它當同儕比較的依�
 現在 R03 用 `api_src_ep_60m`。**新增或修改規則時，`baseline_key` 的 GROUP BY
 必須與 SQL 的 GROUP BY 逐欄位相同**；`queries/entity.peers()` 用執行期對帳
 （見「事件對象視角」一節）把不成對的情況變成畫面上的警語。
+
+**成對的不只 GROUP BY，還有定義母體的 WHERE**（2026-08 加 R13 時發現的第三種）。
+R13 的對象是 (品牌 × 分店)，而 `_store` 有兩個哨兵值：`-1` 是品牌層級操作
+（7 月橫跨 301 個品牌、132 萬次）、`0` 是未填。calibrate 8b 的母體帶 `_store > 0`，
+規則 SQL 就**必須帶同一個條件** —— 漏了的話那兩個哨兵值會拿一個不含自己的母體
+當門檻，而且事件對象是一個在 Explorer 查不到東西的「分店 -1」。
+`tests/test_rule_store_volume.py` 用行為驗證這件事（規則不可吐出 `_store <= 0`，
+且 top 對象的 metric 必須等於母體單位下的計數），不比對 SQL 字串。
 
 **母體分布刻意不做 (hour, day_class)**：實測 `api_src_ep_60m` 逐小時的結果是
 凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的 p99 = 148 ——
@@ -311,7 +319,7 @@ notify 與前端都據此切換文案。
 
 新增規則的完整路徑：寫 YAML → 若用了新的 `baseline_key`，在 `calibrate.py` 加對應的
 分布計算 → 重跑 calibrate → 用 `replay` 對歷史事件與正常日回測 →
-更新 `tests/test_api_smoke.py` 中寫死的規則數（目前 16）。`load_rules()` 有
+更新 `tests/test_api_smoke.py` 與 `tests/test_rule_overrides.py` 中寫死的規則數（目前 17）。`load_rules()` 有
 `lru_cache`，改 YAML 要重啟 server（但 `enabled` / `static_floor` / `factor` /
 `cooldown_minutes` 走 UI 覆寫則立即生效，見下一節）。
 
@@ -397,7 +405,7 @@ ClickHouse 端就先濾掉了。把 `static_floor` 調到那個數字以下，UI
 
 - 規則範圍：`source_ip` 與 `endpoint` **至少一個**。兩者都空 = 「這條規則永不觸發」，
   那應該去停用規則（停用會出現在資安總覽的橫幅上，一筆空例外不會）。
-- 全域：仍然**必須有 IP**。全域 + 只有端點 = 16 條規則都不看那個端點，盲區太大。
+- 全域：仍然**必須有 IP**。全域 + 只有端點 = 17 條規則都不看那個端點，盲區太大。
 - `store/allowlist.build_index()` 因此回傳 `Index(by_ip, by_rule)` 兩張表 ——
   沒有 IP 的條目沒有索引鍵可用，要以 `rule_id` 另外收。刻意從 `index_by_ip()`
   改名：舊呼叫端必須 TypeError 而不是靜靜地只比對到一半。
@@ -436,7 +444,7 @@ R08A/B/C **也永遠不會再對它告警** —— 而畫面上 allowlist 是停
 
 **這個功能的安全模型是「留痕 + 可見」，不是「阻止」。** `guard()` 不分級、
 主控台在 VPC 內也拿不到操作者的來源 IP，所以連「不准把自己的 IP 加進去」都檢查
-不了。一筆全域條目會同時讓 16 條規則與整份掃描看不見那個來源。因此約束靠：
+不了。一筆全域條目會同時讓 17 條規則與整份掃描看不見那個來源。因此約束靠：
 必填名稱／用途／理由（**創立人不給填** —— 由 `store/allowlist.create()` 從登入帳號
 寫入、之後不可修改，送 `owner` 進寫入端點一律 400。原本它是可填的「負責人」、
 留空才帶登入帳號，於是它可能是任何字串，當不了「這筆核准是誰建的」的答案，
@@ -726,7 +734,7 @@ VPC connector 出去時不解析 VPC 內部 DNS）。那個位址**寫死在 nex
 驗收一定要打 `/security/static/app.css` 而不只是 `/security`。
 
 **CI 不跑測試**：pytest 需要真實 ClickHouse，而 Cloud Build 不在 VPC 內、
-出口 IP 不被放行。本機跑完 287 則再 push 是刻意的取捨 ——
+出口 IP 不被放行。本機跑完 508 則再 push 是刻意的取捨 ——
 CI 只驗證映像建得起來、容器啟動得了。
 
 ## 圖表（`web/charts/`）
