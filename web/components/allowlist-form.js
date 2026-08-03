@@ -20,7 +20,7 @@ import { api, post, num, state } from '../lib.js';
 import { toWallClock, toInputValue } from './range-picker.js';
 import EndpointPicker from './endpoint-picker.js';
 
-// 必填的只有這三個。負責人留空 = 登入者自己（後端補），到期日留空 = 永不到期。
+// 必填的只有這三個。創立人不給填（後端從登入帳號寫入），到期日留空 = 永不到期。
 const REQUIRED = ['name', 'purpose', 'reason'];
 
 // 進階篩選的 endpoint 建議清單要一個區間才查得到值。用最近 7 天 ——
@@ -120,10 +120,12 @@ export default {
     },
     neverExpires() { return !this.f.valid_to; },
     // state 是模組層的 import，Vue 模板只讀得到元件屬性
-    sessionUser() { return state.user || ''; },
-    /** 創立人。編輯時是那筆條目原本的創立人，新增時是登入者自己。 */
+    /** 創立人。編輯時是那筆條目原本的創立人，新增時是登入者自己。
+        `state.user` 為空 = session 還沒回來或後端沒給 email —— 那時要說「未取得」，
+        **不可以填一個看起來像帳號的字**（見 lib.js 的 state 註解）。 */
     creator() {
-      return this.isEdit ? (this.entry.owner || '（未紀錄）') : (state.user || '');
+      if (this.isEdit) return this.entry.owner || '（未紀錄）';
+      return state.user || '（未取得登入身分）';
     },
     /** 離線模式時必須說出來：那個 email 是假身分，不是任何真實帳號。
         不說的話畫面上是一個看起來完全正常的位址，而它會被存進核准紀錄。 */
