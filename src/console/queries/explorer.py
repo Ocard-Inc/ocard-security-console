@@ -31,6 +31,10 @@ GROUP_BY = {
         "auth": ("action", None, "動作"),
     },
     "brand": {k: ("toString(_brand)", None, "品牌") for k in ("api", "backend", "admin", "auth")},
+    # 分店。名稱**刻意不在這裡查**（品牌維度在 `ranking()` 內另外接 `brands.labels`）——
+    # 這個運算式同時是排名的 GROUP BY 與篩選的比對依據，回「忠孝店（27681）」的話
+    # 排名裡看到的值就貼不回篩選器了。名稱由呈現層各自用 `core/stores.label()` 補。
+    "store": {k: ("toString(_store)", None, "分店") for k in ("api", "backend", "admin", "auth")},
     "source": {
         "api": (exprs.API_SRC_IP, "src", "來源"),
         "backend": ("ip", "src", "來源"),
@@ -86,7 +90,7 @@ _ENTITY_FILTER = {
 # 存在的理由：`entity_expr()` 要能回答全部四個欄位，而 `_ENTITY_FILTER`
 # 刻意只有兩個（Explorer 的篩選器只讓人用 IP / 帳號反查）。
 _FIELD_DIMENSION = {"source_ip": "source", "actor": "actor",
-                    "endpoint": "endpoint", "brand": "brand"}
+                    "endpoint": "endpoint", "brand": "brand", "store": "store"}
 
 
 def entity_meta(field: str, source: str) -> tuple[str, str | None, str] | None:
@@ -143,8 +147,8 @@ def filter_support(field: str, source: str) -> str | None:
     if source not in settings()["data_sources"]:
         return f"未知資料來源 {source!r}"
     label = settings()["data_sources"][source]["label"]
-    if field == "brand":
-        return None                      # 四張表都有 _brand
+    if field in ("brand", "store"):
+        return None                      # 四張表都有 _brand 與 _store
     if field == "endpoint":
         return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
     if field in _ENTITY_FILTER:
@@ -163,6 +167,7 @@ class ExplorerFilter:
     start: str = ""
     end: str = ""
     brand: int | None = None
+    store: int | None = None         # 分店（完全相等；-1 = 品牌層級操作、0 = 未填）
     endpoint: str | None = None      # 前綴比對（api: controller/function；backend: route2）
     source_ip: str | None = None     # 依來源 IP 反查（掃描結果 → 明細）
     actor: str | None = None         # 依帳號反查
@@ -201,6 +206,11 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
     if f.brand is not None:
         clauses.append("_brand = %(brand)s")
         params["brand"] = f.brand
+    # 分店：整數的完全相等。**不可以寫成 toString 後前綴比對** —— 「分店 276」
+    # 會靜靜把 27681 的資料算進來，數字比實際大而且不會報錯。
+    if f.store is not None:
+        clauses.append("_store = %(store)s")
+        params["store"] = f.store
     if f.endpoint:
         reason = filter_support("endpoint", f.source)
         if reason:

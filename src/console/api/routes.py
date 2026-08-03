@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from console.api import drilldown, validate
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
-from console.core import brands, masking, timewin
+from console.core import brands, masking, stores, timewin
 from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
 from console.queries import (
@@ -875,10 +875,16 @@ async def run_explorer(
     brand = brands.coerce_id(payload.get("brand"))
     if payload.get("brand") not in (None, "") and brand is None:
         raise HTTPException(400, f"品牌編號 {payload.get('brand')!r} 不是整數")
+    # 分店同理（`stores.coerce_id` 就是 `brands.coerce_id`）。事件 context 存的是
+    # float（pandas 把純數值列升成 float64），`27681.0` 直送會流進 `_store = %(store)s`
+    # 而命中 0 筆 —— 畫面上是「這個分店在這段時間沒有活動」，完全看不出是型別問題。
+    store = stores.coerce_id(payload.get("store"))
+    if payload.get("store") not in (None, "") and store is None:
+        raise HTTPException(400, f"分店編號 {payload.get('store')!r} 不是整數")
     f = explorer.ExplorerFilter(
         source=payload.get("source", "api"),
         start=payload.get("start", ""), end=payload.get("end", ""),
-        brand=brand, endpoint=payload.get("endpoint"),
+        brand=brand, store=store, endpoint=payload.get("endpoint"),
         # 依對象反查：把掃描結果或排名裡看到的帳號／IP 貼回來追明細
         source_ip=payload.get("source_ip"), actor=payload.get("actor"),
         only_error=bool(payload.get("only_error")),
@@ -918,6 +924,7 @@ async def run_explorer(
     return {**data, "meta": {
         "elapsed_ms": elapsed, "time_range": rng, "query_hash": qh,
         "brand_filter": brands.label(f.brand) if f.brand is not None else None,
+        "store_filter": stores.label(f.store) if f.store is not None else None,
         "dedup": "以事件 ID（_id）去重", "timezone": "Asia/Taipei",
         "data_latest": health.freshness_summary(health.source_health())["latest"],
     }}

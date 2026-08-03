@@ -110,7 +110,7 @@ def from_filters(source: str, filters: dict) -> EntityRef | None:
     if src_cfg is None:
         return None
     dims: list[Dim] = []
-    for field in ("source_ip", "actor", "endpoint", "brand"):
+    for field in ("source_ip", "actor", "endpoint", "brand", "store"):
         if field not in filters or filters[field] is None:
             continue
         meta = explorer.entity_meta(field, source)

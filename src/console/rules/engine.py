@@ -12,7 +12,7 @@ import logging
 import math
 from datetime import datetime, timedelta
 
-from console.core import brands, masking, timewin
+from console.core import brands, masking, stores, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.rules import baseline
@@ -23,8 +23,12 @@ logger = logging.getLogger(__name__)
 
 _DISPLAY = masking.DISPLAY_FUNCS
 
-# 品牌欄位：去重鍵維持編號（名稱會改，鍵不能跟著漂移），顯示則帶上名稱
+# 品牌／分店欄位：去重鍵維持編號（名稱會改，鍵不能跟著漂移 —— 改一次店名就會讓
+# 同一個對象變成新事件，既有的 active 事件從此不再更新並在三個 tick 後被標成
+# 「已恢復」），顯示則帶上名稱。裸編號在 Slack 通知裡沒有人認得出是哪一家。
 BRAND_COLUMN = "_brand"
+STORE_COLUMN = "_store"
+_LABEL_FUNCS = {BRAND_COLUMN: brands.label, STORE_COLUMN: stores.label}
 # 規則 SQL 以 exprs.BRAND_MAP 產出的逐品牌次數（見 config/rules/*.yaml）
 BRAND_MAP_COLUMN = "brand_map"
 
@@ -56,7 +60,8 @@ def entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
             else:
                 text = str(raw)
             keys.append(text)
-            labels.append(brands.label(raw) if field.col == BRAND_COLUMN else text)
+            name = _LABEL_FUNCS.get(field.col)
+            labels.append(name(raw) if name else text)
     return f"{rule.id}|" + "|".join(keys), " · ".join(labels), internal
 
 
