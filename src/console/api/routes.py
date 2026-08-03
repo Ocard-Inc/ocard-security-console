@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from console.api import drilldown
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
 from console.core import brands, timewin
@@ -17,8 +18,9 @@ from console.queries import (
     brand_search, endpoint_suggest, explorer, health, quick_templates,
     sparklines, trends,
 )
+from console.rules import effective
 from console.rules.loader import load_rules
-from console.store import audit, db, sweeps
+from console.store import allowlist, audit, db, rule_overrides, sweeps
 from console.intel import store as intel_store
 from console.sweep import narrate
 from console.sweep import report as sweep_report
@@ -138,6 +140,11 @@ async def overview(
     monitor_status = _monitor_status(hb, fresh)
 
     return {
+        # 我們自己關掉的東西必須出現在**人們真的會看的那一頁**，而不是只在一個
+        # 要主動點進去的管理頁。少了這一段，「16 條規則有 3 條被停用、5 個來源
+        # 被抑制」就只有進到規則頁的人知道 —— 那正是靜靜的盲區。
+        # 純 SQLite，零 ClickHouse 成本；語意是「不限時間的現況」。
+        "suppression": _suppression_summary(),
         "severity_cards": [
             {"severity": s, "count": counts.get(s, 0),
              "diff": counts.get(s, 0) - prev.get(s, 0),
@@ -161,10 +168,50 @@ async def overview(
     }
 
 
+def _suppression_summary() -> dict:
+    """「我們自己關掉了什麼」的現況。給資安總覽的橫幅用。"""
+    try:
+        rules = effective.effective_rules()
+    except Exception:                                    # noqa: BLE001
+        # YAML 壞掉不該讓整個總覽 500 —— 那會讓一個設定錯誤變成全站不可用
+        logger.exception("讀取生效規則失敗（總覽的抑制摘要降級）")
+        return {"available": False}
+    entries = allowlist.active_entries()
+    soon = settings()["allowlist"]["expiring_soon_days"]
+    expiring = [e for e in entries if e.valid_to and 0 <= (
+        timewin.parse(e.valid_to) - timewin.taipei_now()).days <= soon]
+    return {
+        "available": True,
+        "disabled_rules": [r.id for r in rules if not r.enabled],
+        "overridden_rules": sorted(rule_overrides.all_overrides()),
+        "active_allowlist": len(entries),
+        "global_allowlist": sum(1 for e in entries if e.rule_id is None),
+        "no_expiry": sum(1 for e in entries if not e.valid_to),
+        "expiring_soon": len(expiring),
+        "expiring_soon_days": soon,
+    }
+
+
+# 心跳超過幾個 tick 沒被更新就算中斷。與 resolve_after_ticks 同一個數量級：
+# 連續三次沒動靜已經不是抖動。
+STALE_TICK_MULTIPLE = 3
+
+
 def _monitor_status(hb: dict | None, fresh: dict) -> dict:
     if hb is None:
         return {"label": "尚未執行", "color": "#98A2B3",
                 "note": "五分鐘檢查尚未執行過，目前無法判定是否沒有異常。"}
+    # 「心跳本身沒更新」必須先判，而且要判在 consecutive_failures 之前。
+    # 這一列的內容只有 run_tick 會寫；process 死掉、排程器 thread 卡住、
+    # 或例外在寫心跳之前就逃出去的話，讀到的是**上一次成功**的內容 ——
+    # consecutive_failures 是 0、note 是空的，於是畫面顯示綠色「正常」。
+    # 那是這個主控台最糟的失效模式：它宣稱「沒有異常」，而它根本沒在看。
+    stale = _heartbeat_stale_minutes(hb)
+    if stale is not None:
+        return {"label": "監測中斷", "color": "#B42318",
+                "note": f"五分鐘檢查已 {stale} 分鐘沒有執行"
+                        f"（最後一次 {hb['last_tick'] or '未知'}），"
+                        f"畫面上的數字停在那個時間點，現在無法判定是否沒有異常。"}
     if hb["consecutive_failures"] >= 1:
         return {"label": "監測失敗", "color": "#B42318",
                 "note": f"五分鐘檢查連續失敗 {hb['consecutive_failures']} 次"
@@ -178,6 +225,18 @@ def _monitor_status(hb: dict | None, fresh: dict) -> dict:
     if hb["note"]:
         return {"label": "部分規則失敗", "color": "#DC6803", "note": hb["note"]}
     return {"label": "正常", "color": "#027A48", "note": ""}
+
+
+def _heartbeat_stale_minutes(hb: dict) -> int | None:
+    """心跳落後幾分鐘（未超過容許值回 None）。解析不了時間一律當成中斷。"""
+    limit = settings()["time"]["tick_minutes"] * STALE_TICK_MULTIPLE
+    if not hb["last_tick"]:
+        return limit
+    try:
+        age = (timewin.taipei_now() - timewin.parse(hb["last_tick"])).total_seconds() / 60
+    except ValueError:
+        return limit
+    return int(age) if age > limit else None
 
 
 # ─────────────────────────── 異常事件 ───────────────────────────
@@ -256,11 +315,80 @@ async def event_detail(
     event = _event_public(row)
     rule = next((r for r in load_rules() if r.id == row["rule_id"]), None)
     event["rule_note"] = rule.note if rule else ""
+    # 「在 Log Explorer 查此對象」的篩選條件。刻意只在詳細頁算，不放進
+    # `_event_public()` —— 後者也服務 /events（一次 300 列）與 /overview，
+    # 而這裡完全用不到清單頁的成本與風險（見 api/drilldown.py 模組說明）。
+    event["drilldown"] = drilldown.build(rule, event)
+    event["allowlist_prefill"] = _allowlist_prefill(rule, event)
+    event["allowlist_matches"] = _allowlist_matches(rule, event)
     event["evidence"] = _build_evidence(row, event)
     event["limitations"] = _extra_limitations(event) + _data_limitations(row["source_key"])
     event["trend"] = _event_trend(row, pad_minutes=pad_minutes,
                                   start=win_start, end=win_end)
     return event
+
+
+def _allowlist_prefill(rule, event: dict) -> dict:
+    """「判定為合法整合 → 建立例外」要用的預填值。
+
+    **IP 由後端提供，不可由前端解析 `entity_label`。** 那個字串是
+    `acc · ip` 用 ` · ` 串起來的（見 rules/engine.entity_parts），依賴它的格式
+    遲早會錯，而錯的症狀是「建了一筆永遠不生效的例外」。
+
+    形式比照 drilldown 的 supported / reason：不支援時要說出為什麼，
+    而不是給一顆按不動的按鈕。
+    """
+    if rule is None:
+        return {"supported": False,
+                "reason": f"找不到規則 {event.get('rule_id')!r} 的定義。"}
+    if not any(f.fp == "src" for f in rule.entity):
+        return {"supported": False,
+                "reason": f"{rule.name}的對象不含來源 IP"
+                          f"（entity：{'、'.join(f.col for f in rule.entity) or '無'}），"
+                          f"無法建立來源例外。"}
+    # drilldown 已經做完「context 值可不可用」的逐欄位判定（legacy 指紋、
+    # 被 scrub 過的值都會被丟掉），直接用它的結果，不要再寫第二套。
+    dd = event.get("drilldown") or {}
+    ip = (dd.get("filter") or {}).get("source_ip") if dd.get("supported") else None
+    if not ip:
+        return {"supported": False,
+                "reason": "這個事件的來源 IP 無法取得（可能是政策改版前的指紋值）。"}
+    return {"supported": True, "source_ip": ip,
+            "rule_id": rule.id, "rule_name": rule.name}
+
+
+def _allowlist_matches(rule, event: dict) -> list[dict]:
+    """這個對象目前命中哪些 allowlist 條目，以及為什麼沒生效。
+
+    回答一個保證會被問的問題：「這個 IP 明明在 Allowlist 裡，怎麼還在告警？」
+    答案通常是範圍限在別條規則、或條目已到期。
+    """
+    prefill = event.get("allowlist_prefill") or {}
+    ip = prefill.get("source_ip")
+    if not ip:
+        return []
+    out = []
+    for row in allowlist.rows(q=ip, limit=20):
+        if row["source_ip"] != ip:
+            continue
+        active = row["id"] in {e.id for e in allowlist.active_entries()}
+        scoped_out = row["rule_id"] is not None and row["rule_id"] != event["rule_id"]
+        applies = active and not scoped_out
+        why = None
+        if not applies:
+            if scoped_out:
+                why = f"範圍限於 {row['rule_id']}，本事件由 {event['rule_id']} 觸發"
+            elif row["status"] != allowlist.STATUS_ACTIVE:
+                why = f"條目狀態為「{row['status']}」"
+            else:
+                why = f"條目已於 {row['valid_to']} 到期" if row["valid_to"] else "條目尚未生效"
+        out.append({
+            "id": row["id"], "name": row["name"],
+            "scope": "global" if row["rule_id"] is None else "rule",
+            "rule_id": row["rule_id"], "valid_to": row["valid_to"],
+            "applies_to_this_rule": applies, "reason_not_applied": why,
+        })
+    return out
 
 
 def _build_evidence(row: dict, event: dict) -> dict:
@@ -457,10 +585,17 @@ async def run_explorer(
 ) -> dict:
     guard(user, "use_explorer")
     analysis = payload.get("analysis", "trend")
+    # brand 一律轉 int：事件 context 存的是 float（`4748.0` —— pandas 把只有數值
+    # 欄位的整列升成 float64），直接送下去會流進 `_brand = %(brand)s` 與
+    # `brands.label()`，畫面上就會看到 `4748.0` 而不是品牌名稱。給了值但解不出
+    # 整數時明確回 400，不要靜靜把篩選條件丟掉 —— 那會回一份「全品牌」的結果。
+    brand = brands.coerce_id(payload.get("brand"))
+    if payload.get("brand") not in (None, "") and brand is None:
+        raise HTTPException(400, f"品牌編號 {payload.get('brand')!r} 不是整數")
     f = explorer.ExplorerFilter(
         source=payload.get("source", "api"),
         start=payload.get("start", ""), end=payload.get("end", ""),
-        brand=payload.get("brand"), endpoint=payload.get("endpoint"),
+        brand=brand, endpoint=payload.get("endpoint"),
         # 依對象反查：把掃描結果或排名裡看到的帳號／IP 貼回來追明細
         source_ip=payload.get("source_ip"), actor=payload.get("actor"),
         only_error=bool(payload.get("only_error")),
@@ -747,23 +882,5 @@ def narrate_sweep(sweep_no: str, user: CurrentUser = Depends(current_user)) -> d
     }
 
 
-# ─────────────────────────── 規則 ───────────────────────────
-
-@router.get("/rules")
-async def list_rules(user: CurrentUser = Depends(current_user)) -> dict:
-    guard(user, "view_events")
-    out = []
-    for r in load_rules():
-        last = db.one("SELECT max(last_seen) AS t FROM events WHERE rule_id = ?", (r.id,))
-        t = r.threshold
-        out.append({
-            "id": r.id, "name": r.name, "severity": r.severity, "source": r.source,
-            "enabled": r.enabled, "kind": r.kind, "window_minutes": r.window_minutes,
-            "formula": (f"max({t.static_floor:g}, 同時段 {t.stat.upper()}×{t.factor:g})"
-                        if t else ("首見即告警" if r.kind == "new_source" else "新鮮度檢查")),
-            "static_floor": t.static_floor if t else r.min_events,
-            "cooldown_minutes": r.cooldown_minutes,
-            "last_triggered": last["t"] if last else None,
-            "note": r.note,
-        })
-    return {"rules": out}
+# 規則端點已移到 api/rules_routes.py（URL 不變）。
+# 那裡多了 PATCH 與覆寫，塞在這個檔案會讓它破千行。

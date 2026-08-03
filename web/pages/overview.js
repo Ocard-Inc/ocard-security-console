@@ -21,8 +21,8 @@ const SEV_META = {
 const RANK_TABS = [
   { key: 'endpoints', label: '高流量 endpoint', col: 'Endpoint' },
   { key: 'brands', label: '高流量品牌', col: '品牌' },
-  { key: 'sources', label: '高流量來源', col: '來源 fingerprint' },
-  { key: 'failed_actors', label: '高失敗來源', col: '來源 fingerprint' },
+  { key: 'sources', label: '高流量來源', col: '來源 IP' },
+  { key: 'failed_actors', label: '高失敗來源', col: '來源 IP' },
 ];
 
 // 四個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
@@ -205,6 +205,12 @@ export default {
     pending() {
       return this.data?.pending_judgement || { total: 0, by_severity: {}, events: [] };
     },
+    // 「我們自己關掉了什麼」。available:false 表示規則檔載入失敗（降級，
+    // 不顯示這一段而不是顯示 0）。
+    sup() {
+      return this.data?.suppression
+        || { available: false, disabled_rules: [], overridden_rules: [], active_allowlist: 0 };
+    },
     pendingBreakdown() {
       const by = this.pending.by_severity || {};
       const parts = ['P0', 'P1', 'P2', 'P3'].filter(s => by[s]).map(s => `${s} ${by[s]} 件`);
@@ -303,10 +309,38 @@ export default {
         不代表「已經查清楚」。{{ pendingBreakdown }}
       </div>
     </div>
+    <!-- 「我們自己關掉了什麼」。必須壓在綠色的「沒有達到門檻」**之前** ——
+         有規則被停用或來源被抑制時，那句綠色的話就不是完整的事實。
+         語意是「現況，不限時間」（見 CLAUDE.md 對總覽各區塊標明自己視窗的要求）。 -->
+    <div v-if="sup.available && (sup.disabled_rules.length || sup.active_allowlist)"
+         :class="'banner ' + (sup.disabled_rules.length ? 'banner-danger' : 'banner-info')">
+      <strong>目前有部分監測被我們自己關閉</strong>（不限時間的現況）
+      <a @click="$emit('goto','rules')" style="float:right">規則與 Allowlist →</a>
+      <div style="font-size:12.5px;line-height:1.7;margin-top:4px">
+        <template v-if="sup.disabled_rules.length">
+          <strong>{{ sup.disabled_rules.length }} 條規則已停用</strong>（{{
+            sup.disabled_rules.join('、') }}）—— 這些檢查不會執行。<br>
+        </template>
+        <template v-if="sup.overridden_rules.length">
+          {{ sup.overridden_rules.length }} 條規則的門檻被覆寫（{{
+            sup.overridden_rules.join('、') }}），實際生效值與 YAML 不同。<br>
+        </template>
+        <template v-if="sup.active_allowlist">
+          {{ sup.active_allowlist }} 個來源在 Allowlist 內（其中 {{ sup.global_allowlist }}
+          筆為全域，對所有規則與期間掃描生效）<template v-if="sup.no_expiry">，
+          <span style="color:var(--warn);font-weight:500">{{ sup.no_expiry }} 筆沒有到期日</span></template><template
+          v-if="sup.expiring_soon">，{{ sup.expiring_soon }} 筆將於
+          {{ sup.expiring_soon_days }} 天內到期</template>。
+        </template>
+      </div>
+    </div>
     <div v-if="noP0P1 && !pending.total && !data.freshness.banner && data.monitor.label === '正常'"
          class="banner banner-ok">
       目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
       {{ clockTime(data.last_five_min_check) }}，四個 ClickHouse 資料來源均正常更新。
+      <template v-if="sup.available && (sup.disabled_rules.length || sup.active_allowlist)">
+        <br><span style="font-weight:500">但請一併看上方：有部分監測目前被關閉或抑制。</span>
+      </template>
     </div>
     <div v-if="data.monitor.label !== '正常' && data.monitor.label !== '部分延遲'"
          class="banner banner-danger">
@@ -545,7 +579,7 @@ export default {
         </tbody>
       </table>
       <div class="muted" style="font-size:11.5px;margin-top:8px">
-        來源 fingerprint 為不可逆識別值，非原始 IP。API 來源 IP 由 forwarded header 推導，屬「未驗證來源」。
+        來源為原始 IP（對內調查工具，刻意不遮罩）。API 的來源 IP 由 forwarded header 推導，屬「未驗證來源」，不可作為單一 IP 的判斷依據。
       </div>
     </div>
   </div>

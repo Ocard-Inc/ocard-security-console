@@ -97,7 +97,7 @@ export default {
         </select>
         <RangePicker v-model="range" :presets="RANGES" />
         <input type="text" v-model="f.keyword" @keyup.enter="load"
-               placeholder="事件編號 / 規則 / fingerprint" style="width:220px">
+               placeholder="事件編號 / 規則 / 帳號 / IP" style="width:220px">
       </div>
       <div v-if="activeChips().length" style="display:flex;gap:6px;margin-top:10px;align-items:center;font-size:12px;flex-wrap:wrap">
         <span class="muted">已套用：</span>
@@ -164,12 +164,13 @@ export default {
 
   <!-- 快速預覽 Drawer -->
   <div v-if="drawer" class="drawer" style="margin:-20px -20px -20px 16px">
-    <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)">
+    <div class="drawer-h">
       <span v-if="drawer.severity" :class="'sev sev-'+drawer.severity">▲ {{ SEV_LABEL[drawer.severity] }}</span>
-      <span class="mono muted" style="font-size:12px;margin-left:10px">{{ drawer.evt_no }}</span>
-      <button @click="drawer=null" style="margin-left:auto;border:none;background:none;font-size:18px;color:var(--text-2)">×</button>
+      <span class="mono muted" style="font-size:12px">{{ drawer.evt_no }}</span>
+      <button @click="drawer=null" style="margin-left:auto;border:none;background:none;font-size:18px;color:var(--text-2)"
+              aria-label="關閉">×</button>
     </div>
-    <div style="flex:1;overflow-y:auto;padding:18px">
+    <div class="drawer-body">
       <div v-if="drawer.loading" class="skel" style="height:200px"></div>
       <div v-else-if="drawer.error" class="banner banner-danger">{{ drawer.error }}</div>
       <template v-else>

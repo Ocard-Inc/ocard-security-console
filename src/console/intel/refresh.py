@@ -27,9 +27,10 @@ from console.core import timewin
 from console.core.ch import query
 from console.core.logging_setup import setup_logging
 from console.core import masking
+from console.core.config import settings
 from console.intel import classify, ranges
 from console.queries import exprs
-from console.store import db
+from console.store import allowlist, db
 
 logger = logging.getLogger(__name__)
 
@@ -103,35 +104,52 @@ def refresh(days: int = DEFAULT_DAYS, *, include_api: bool = False,
 
 
 def seed_allowlist(who: str = "intel.refresh") -> int:
-    """把分類為 office 的來源播種進 allowlist。
+    """把分類為 office 的來源播種進 allowlist（全域範圍）。
 
     為什麼需要這一步：`office` 只是「這是什麼」的標記，掃描的抑制讀的是 allowlist
-    （見 `sweep/report.allowlisted_fps()`）。實測我方辦公室出口在 94 天內用了
+    （見 `store/allowlist.global_source_ips()`）。實測我方辦公室出口在 94 天內用了
     316 個帳號，不抑制的話它會穩定佔據「憑證集中」第一名、把該查的境外機房 IP
     壓到清單後面。
 
     只新增、不覆寫既有條目 —— allowlist 是人工核准的東西，程式不該改別人的核准。
+    續期同理由人在 UI 做，不由程式做。
     """
     rows = db.rows("SELECT src, org, note FROM ip_intel WHERE source_type = 'office'")
     if not rows:
         return 0
-    now = timewin.fmt(timewin.taipei_now())
+    now_dt = timewin.taipei_now()
+    now = timewin.fmt(now_dt)
+    # 播種的例外會過期。永久生效的抑制沒有人會回頭檢查；到期失效會自己冒出來
+    # 要求續期，那比任何核准流程都有效。**這是行為變更**：到期後辦公室出口會
+    # 重新出現在掃描的「憑證集中」榜首，直到有人續期。
+    valid_days = settings().get("allowlist", {}).get("seed_valid_days", 365)
+    valid_to = timewin.fmt(now_dt + timedelta(days=valid_days))
     added = 0
     with db.tx() as conn:
         for r in rows:
-            exists = db.one("SELECT 1 AS x FROM allowlist WHERE source_fp = ?",
-                            (r["src"],))
+            # **`AND rule_id IS NULL` 不可省。** 少了它，只要有人為辦公室 IP 建過
+            # 一條「只對 R01」的規則範圍條目，這裡就會誤判「已存在」而跳過 ——
+            # 於是**全域條目永遠建不起來**，掃描的抑制靜靜失效。
+            #
+            # 反過來，**刻意不加 status 條件**：人工停用的核准不可被每日排程
+            # 在隔天 06:00 悄悄復活。
+            exists = db.one(
+                "SELECT 1 AS x FROM allowlist WHERE source_ip = ? AND rule_id IS NULL",
+                (r["src"],))
             if exists:
                 continue
             conn.execute(
-                "INSERT INTO allowlist (name, owner, purpose, integration_type,"
-                " source_fp, valid_from, approved_by, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, '生效中')",
+                "INSERT INTO allowlist (name, owner, purpose, reason, integration_type,"
+                " source_ip, valid_from, valid_to, approved_by, status,"
+                " created_at, updated_at, updated_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (r["org"] or "我方辦公室出口", "Ocard 內部",
                  r["note"] or "內部人員代操客戶後台的共用出口",
-                 "內部代操", r["src"], now, who))
+                 "由 console.intel.refresh 自動播種（ip_intel.source_type = office）",
+                 "內部代操", r["src"], now, valid_to, who,
+                 allowlist.STATUS_ACTIVE, now, now, who))
             added += 1
-    logger.info("allowlist 播種 %d 筆", added)
+    logger.info("allowlist 播種 %d 筆（到期日 %s）", added, valid_to)
     return added
 
 

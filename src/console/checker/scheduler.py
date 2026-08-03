@@ -13,7 +13,7 @@ from console.alerting import notify
 from console.core import timewin
 from console.core.config import settings
 from console.checker import calibrate, tick
-from console.store import db
+from console.store import db, rule_suppressions
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,14 @@ def run_daily() -> None:
         intel_refresh.refresh()
     except Exception:
         logger.exception("來源情報更新失敗（不影響基線與五分鐘檢查）")
+
+    # 抑制紀錄修剪。每個 tick、每個被抑制的命中一列，無上限。
+    try:
+        pruned = rule_suppressions.prune()
+        if pruned:
+            logger.info("抑制紀錄修剪 %d 列", pruned)
+    except Exception:
+        logger.exception("抑制紀錄修剪失敗（不影響基線與五分鐘檢查）")
 
     now_str = timewin.fmt(timewin.taipei_now())
     with db.tx() as conn:

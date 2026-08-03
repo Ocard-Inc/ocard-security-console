@@ -24,10 +24,14 @@ ONGOING = "ongoing"
 RESOLVED = "resolved"
 
 
-def apply_findings(findings: list[Finding], tick_at: datetime) -> list[dict]:
+def apply_findings(findings: list[Finding], tick_at: datetime, *,
+                   rules: tuple = (), suppressed: list = ()) -> list[dict]:
     """把本 tick 的 findings 併入 events 表。
 
     回傳需要通知的變化清單：[{kind: new/ongoing/resolved, event: {...}}]
+
+    `rules` 是本 tick 實際評估的規則集合，`suppressed` 是被 allowlist 擋掉的
+    Suppression 清單。兩者都是為了讓「已恢復」不說謊 —— 見 _silenced_keys()。
     """
     notifications: list[dict] = []
     now_str = timewin.fmt(tick_at)
@@ -78,8 +82,14 @@ def apply_findings(findings: list[Finding], tick_at: datetime) -> list[dict]:
 
     # 未命中的 active 事件：miss_ticks 累加，達標則 resolved
     resolve_after = settings()["alerting"]["resolve_after_ticks"]
+    silenced_rules, silenced_keys = _silenced_keys(rules, suppressed)
+    frozen = 0
     for row in db.rows("SELECT * FROM events WHERE status = 'active'"):
         if (row["rule_id"], row["entity_key"]) in seen_keys:
+            continue
+        if row["rule_id"] in silenced_rules or \
+                (row["rule_id"], row["entity_key"]) in silenced_keys:
+            frozen += 1
             continue
         misses = row["miss_ticks"] + 1
         if misses >= resolve_after:
@@ -95,7 +105,41 @@ def apply_findings(findings: list[Finding], tick_at: datetime) -> list[dict]:
             with db.tx() as conn:
                 conn.execute("UPDATE events SET miss_ticks = ? WHERE id = ?",
                              (misses, row["id"]))
+    if frozen:
+        logger.info("%d 筆 active 事件因規則停用或 Allowlist 抑制而暫停計時"
+                    "（不標 resolved、不發「已恢復」）", frozen)
     return notifications
+
+
+def _silenced_keys(rules: tuple, suppressed: list) -> tuple[set[str], set[tuple[str, str]]]:
+    """本 tick「被我們自己關掉」的規則與對象。
+
+    這是「已恢復」不說謊的關鍵。收尾迴圈只知道「這個 tick 沒命中」，
+    而沒命中有兩種完全不同的原因：
+
+    1. 指標真的回到門檻以下 —— 那是恢復。
+    2. **我們停止看了** —— 規則被停用、對象被加進 Allowlist、門檻被調高。
+
+    原本兩者不分，所以停用一條規則之後 15 分鐘，該規則所有進行中的事件會被
+    標 resolved，P0/P1 還會在 Slack 顯示「已恢復」。攻擊沒有恢復。
+    而 status 是就地 UPDATE、沒有逐 tick 歷史，這個誤標**無法從資料還原**。
+    部署 reset VM 之後的 catch-up 會在幾秒內一次發出一整批，
+    很容易被當成好消息。
+
+    這裡的處理是**暫停計時**（miss_ticks 不動、不標 resolved）：事件維持
+    active 掛在待判定清單上。規則重新啟用而對象已經冷卻的話，計時從凍結處
+    接續，自然 resolved。
+
+    「規則不在本次評估的集合裡」（YAML 刪掉了）與停用同等對待 ——
+    那條訊號一樣已經不存在。
+    """
+    if not rules:
+        return set(), {(s.rule_id, s.entity_key) for s in suppressed}
+    live = {r.id for r in rules if r.enabled}
+    silenced_rules = {row["rule_id"] for row in db.rows(
+        "SELECT DISTINCT rule_id FROM events WHERE status = 'active'")
+        if row["rule_id"] not in live}
+    return silenced_rules, {(s.rule_id, s.entity_key) for s in suppressed}
 
 
 def _parse(s: str) -> datetime:

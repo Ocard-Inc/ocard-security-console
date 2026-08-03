@@ -32,6 +32,7 @@ export default {
   name: 'Sweep',
   components: { RangePicker },
   props: { reloadToken: { type: Number, default: 0 } },
+  emits: ['new-allowlist'],
   data: () => ({
     preset: '30d',
     customStart: '', customEnd: '',
@@ -76,6 +77,18 @@ export default {
     skippedProbes() {
       return (this.report?.probes || []).filter(p => !p.executed);
     },
+    // 被 allowlist 擋掉的來源。落在 summary_json 裡，所以重看舊掃描時是**當時**
+    // 的抑制狀況 —— allowlist 事後改了也不會改寫歷史。
+    suppressed() { return this.report?.suppressed || []; },
+    highSuppressedCount() {
+      return this.suppressed.filter(s => ['極高', '高'].includes(s.would_be_level)).length;
+    },
+    hasHighSuppressed() { return this.highSuppressedCount > 0; },
+    expiringSuppressed() {
+      return this.suppressed.filter(s => s.allowlist && s.allowlist.valid_to
+        && (new Date(s.allowlist.valid_to.replace(' ', 'T')) - Date.now())
+           / 86400000 <= 7);
+    },
     apiEstimateSeconds() {
       // 實測 30 天 16.7 秒、90 天 29.3 秒 —— 大致線性但有底
       return Math.max(8, Math.round(this.rangeDays * 0.4));
@@ -84,6 +97,21 @@ export default {
   methods: {
     num, pct,
     levelClass(level) { return LEVEL_CLASS[level] || 'sev-P3'; },
+    /** 掃描結果那一列 →「新增 Allowlist 例外」，帶足夠的上下文。 */
+    askAllowlist(f) {
+      this.$emit('new-allowlist', {
+        source_ip: f.entity,
+        // 掃描的抑制只吃全域條目（掃描不跑規則），所以這裡預設全域。
+        // 事件判定那條路徑預設的是該規則 —— 兩者刻意不同。
+        rule_id: null,
+        kind: 'sweep',
+        sweep_no: this.report?.sweep_no,
+        risk_level: f.risk_level,
+        score: f.score,
+        headline: f.headline,
+        signal_groups: (f.signal_groups || []).map(g => g.label),
+      });
+    },
     limitClass(level) { return LIMIT_BANNER[level] || 'banner-info'; },
     // Date → 台北牆鐘字串。原生 input 與後端都用無時區的牆鐘，這裡也不做時區換算。
     wall(d) {
@@ -233,7 +261,8 @@ export default {
         另有 <strong>{{ num(summary.single_signal_dropped) }}</strong> 個對象只命中單一訊號
         未列入 —— 它們不是「已排除」，只是證據不足以交叉驗證。
         <template v-if="summary.allowlist_suppressed">
-          另有 {{ summary.allowlist_suppressed }} 個來源在 Allowlist 內已抑制。
+          另有 <strong>{{ summary.allowlist_suppressed }}</strong> 個來源因 Allowlist 未列入
+          —— 見下方「已抑制的來源」。
         </template>
         <template v-if="summary.findings_truncated">
           <br>清單只顯示前 {{ summary.findings_shown }} 名，另有
@@ -290,10 +319,14 @@ export default {
                         style="background:var(--warn-bg);color:var(--warn)">未交叉驗證</span>
                 </div>
               </td>
-              <td style="padding:9px 8px" class="right">
+              <td style="padding:9px 8px" class="right" style="white-space:nowrap">
                 <button class="btn btn-sm" @click="toggle(f.entity)">
                   {{ expanded[f.entity] ? '收合' : '證據' }}
                 </button>
+                <!-- 只有來源才有這顆鈕。帳號本階段不支援 IP 例外 —— 不放一顆
+                     按不動的按鈕，「對象」欄已經寫著它是帳號。 -->
+                <button v-if="f.entity_kind === 'src'" class="btn btn-sm"
+                        style="margin-left:4px" @click="askAllowlist(f)">加入 Allowlist</button>
               </td>
             </tr>
             <tr v-if="expanded[f.entity]">
@@ -354,6 +387,71 @@ export default {
         「沒找到」與「查不到」是不同的結論。</div>
     </div>
 
+    <!-- 已抑制的來源。位置刻意緊接事件清單之後、AI 研判之前：它是清單的**補集**。
+         放進「可信度限制」會被讀成一句免責聲明，而它是實際發生的事。
+         抑制數 0 時也顯示一行 —— 「有 0 個」與「沒有這個概念」是兩件事。 -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h" style="margin-bottom:10px">已抑制的來源（Allowlist）</div>
+      <template v-if="suppressed.length">
+        <div :class="'banner ' + (hasHighSuppressed ? 'banner-warn' : 'banner-info')"
+             style="margin:0 0 12px">
+          <template v-if="hasHighSuppressed">
+            其中 <strong>{{ highSuppressedCount }}</strong> 個來源若不抑制會是本次掃描的
+            <strong>極高／高</strong>風險。請確認這些例外的用途仍然成立。
+          </template>
+          <template v-else>
+            這些來源命中了探針，但因 Allowlist 而未列入清單。
+          </template>
+          <template v-if="expiringSuppressed.length">
+            <br>條目 {{ expiringSuppressed.map(s => '「' + s.allowlist.name + '」').join('、') }}
+            即將到期，屆時這些訊號會重新出現在清單上。
+          </template>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+          <thead><tr style="text-align:left;font-size:12px;color:var(--text-2)">
+            <th style="padding:6px 8px">對象</th>
+            <th style="padding:6px 8px">若不抑制</th>
+            <th style="padding:6px 8px">訊號</th>
+            <th style="padding:6px 8px">抑制它的條目</th>
+            <th style="padding:6px 8px">到期</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="s in suppressed" :key="s.entity" style="border-top:1px solid var(--line)">
+              <td style="padding:9px 8px" class="mono">{{ s.entity }}</td>
+              <td style="padding:9px 8px;white-space:nowrap">
+                <span class="sev" :class="levelClass(s.would_be_level)">{{ s.would_be_level }}</span>
+                <span class="mono muted" style="margin-left:6px">{{ s.would_be_score.toFixed(2) }}</span>
+                <span v-if="s.would_be_rank" class="muted"> · 第 {{ s.would_be_rank }} 名</span>
+              </td>
+              <td style="padding:9px 8px">
+                <span v-for="g in s.signal_groups" :key="g.key" class="pill"
+                      style="background:var(--line-soft);color:var(--text-3);margin-right:5px">
+                  {{ g.label }}</span>
+              </td>
+              <td style="padding:9px 8px">
+                <template v-if="s.allowlist">
+                  {{ s.allowlist.name }}
+                  <span class="mono muted" style="font-size:11px">#{{ s.allowlist.id }}</span>
+                </template>
+                <span v-else class="muted">條目已變更或移除</span>
+              </td>
+              <td style="padding:9px 8px" class="muted mono" style="font-size:11.5px">
+                {{ s.allowlist && s.allowlist.valid_to ? s.allowlist.valid_to : '無到期日' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note-quote" style="margin-top:10px">
+          抑制是刻意的，但它是盲區：這些來源在本次掃描中<strong>沒有被評估</strong>。
+          條目過期或用途改變時，這一段是唯一看得出來的地方。
+          「若不抑制」的名次是把它們放回完整清單裡重算的結果。
+        </div>
+      </template>
+      <div v-else class="muted" style="font-size:12.5px">
+        本次掃描沒有來源被 Allowlist 抑制。
+      </div>
+    </div>
+
     <!-- AI 研判 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-h" style="margin-bottom:10px">
@@ -374,8 +472,9 @@ export default {
         <span style="font-size:12px">上方的掃描結果是程式算出來的，不受影響。</span>
       </div>
       <div v-else class="muted" style="font-size:12.5px">
-        把上方的統計摘要（fingerprint、數字、訊號標籤）送給 Claude 產出研判草稿。
-        不會送出原始 IP、帳號或參數原文 —— 遮罩在查詢層就完成了。
+        把上方的結果（對象、數字、訊號標籤、限制段落）送給 Claude 產出研判草稿。
+        <strong>會送出被列入清單的帳號與來源 IP</strong>（那是報告的內容）；
+        不會送出 token 值、params／headers 原文或消費者個資 —— 那些在探針層就沒進報告。
       </div>
     </div>
 

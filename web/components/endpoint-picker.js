@@ -22,6 +22,9 @@ export default {
     start: { type: String, default: '' },
     end: { type: String, default: '' },
     placeholder: { type: String, default: '' },
+    // Explorer 是**前綴**篩選，Allowlist 是**完全相等**比對 —— 語意不同，
+    // 所以讓呼叫端覆寫無障礙名稱，不要讓螢幕閱讀器唸錯。
+    ariaLabel: { type: String, default: 'Endpoint 前綴' },
   },
   emits: ['update:modelValue'],
   data: () => ({
@@ -128,7 +131,7 @@ export default {
   template: `
 <div class="eppick">
   <input type="text" class="mono eppick-input" :value="modelValue" :placeholder="placeholder"
-         role="combobox" aria-label="Endpoint 前綴" :aria-expanded="String(open)"
+         role="combobox" :aria-label="ariaLabel" :aria-expanded="String(open)"
          @input="onInput" @focus="onFocus" @click.stop
          @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)"
          @keydown.enter.prevent="onEnter" @keydown.esc.prevent="onEsc">

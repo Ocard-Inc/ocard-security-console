@@ -32,6 +32,43 @@ CREDENTIAL_LEAK = re.compile(
 )
 
 
+# 「操作者是誰」的欄位。這些欄位裡的 Email 是**刻意留痕**，不是洩漏 ——
+# audit_log 的 who、Allowlist 的核准人與負責人、規則覆寫的操作者。
+#
+# 掃描前先把這些鍵整個移除，再檢查剩下的字串。**這是結構性豁免，
+# 不是放寬 EMAIL_ALLOW。** 那個集合只有兩個位址，而正式環境有更多真人；
+# 把他們加進白名單（或放寬 EMAIL regex）會稀釋整條防線 ——
+# 之後任何真正的洩漏都可能剛好落在被放寬的範圍裡，而那正是這個檔案存在的理由。
+OPERATOR_KEYS = {
+    "who", "owner", "approved_by", "created_by", "updated_by",
+    "email", "logout_url", "ros_url",
+}
+
+# 豁免掉的操作者欄位仍要另外斷言：必須是內部網域，不可以是消費者位址。
+INTERNAL_DOMAIN = re.compile(r"@olis\.com\.tw$")
+
+
+def _strip_operator_fields(value):
+    """遞迴移除「操作者是誰」的欄位，回傳 (清理後的結構, 被移除的值)。"""
+    removed: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k in OPERATOR_KEYS:
+                    if isinstance(v, str) and "@" in v:
+                        removed.append(v)
+                    continue
+                out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(value), removed
+
+
 def _scan(payload: str, where: str) -> None:
     """不該外流的東西一律不得出現。"""
     assert not PHONE.search(payload), f"{where} 洩漏消費者手機號碼"
@@ -39,6 +76,18 @@ def _scan(payload: str, where: str) -> None:
         assert mail in EMAIL_ALLOW, f"{where} 洩漏 Email {mail}"
     leak = CREDENTIAL_LEAK.search(payload)
     assert leak is None, f"{where} payload 內的憑證值未清洗：{leak.group(0)[:60] if leak else ''}"
+
+
+def _scan_json(body, where: str) -> None:
+    """給會回傳操作者 Email 的端點用：先結構性豁免，再逐項斷言。"""
+    import json
+    cleaned, operators = _strip_operator_fields(body)
+    _scan(json.dumps(cleaned, ensure_ascii=False), where)
+    for mail in operators:
+        # 自由文字（例如有人把 email 打進「用途」欄）不在這裡 —— 那由上面的
+        # _scan 擋。這裡只驗真正的操作者欄位。
+        assert INTERNAL_DOMAIN.search(mail), \
+            f"{where} 的操作者欄位出現非內部網域的位址 {mail}"
 
 
 def test_overview_response_is_clean(client):
@@ -231,3 +280,63 @@ def test_explorer_detail_row_id_can_fetch_raw_payload(client):
     assert body["row_id"] == row_id
     assert body["fields"], "調閱回來沒有任何欄位"
     assert "稽核" in body["warning"], "調閱結果必須說明已留痕"
+
+
+# ── 規則、Allowlist、操作稽核三個端點 ─────────────────────────────
+#
+# 這三個會回傳操作者 Email（audit_log.who、核准人、覆寫者），所以走 _scan_json
+# 的結構性豁免。**不可以改成擴充 EMAIL_ALLOW** —— 見那個常數上方的說明。
+
+def test_rules_response_is_clean(client):
+    r = client.get("/api/rules")
+    assert r.status_code == 200, r.text
+    _scan_json(r.json(), "GET /api/rules")
+
+
+def test_rule_detail_response_is_clean(client):
+    """詳細頁會回完整 SQL —— 那裡只有欄位名與表名，不該有任何識別值。"""
+    for rule_id in ("R01", "R03", "R08A", "R12"):
+        r = client.get(f"/api/rules/{rule_id}")
+        assert r.status_code == 200, r.text
+        _scan_json(r.json(), f"GET /api/rules/{rule_id}")
+
+
+def test_allowlist_response_is_clean(client):
+    r = client.get("/api/allowlist")
+    assert r.status_code == 200, r.text
+    _scan_json(r.json(), "GET /api/allowlist")
+
+
+def test_audit_response_is_clean(client):
+    """audit_log.who 是操作者（豁免）；reason 是人工輸入（必須已遮罩）。"""
+    r = client.get("/api/audit?limit=200")
+    assert r.status_code == 200, r.text
+    _scan_json(r.json(), "GET /api/audit")
+
+
+def test_allowlist_shows_the_raw_ip_not_a_fingerprint(client):
+    """反向守護：把它指紋化的話抑制永遠不會命中，而且完全沒有錯誤訊息。
+
+    `rules/engine._allowlist_hit` 比對的是 entity 欄位的**原值**，
+    所以 allowlist 存的必須也是原值。有人「順手」加回遮罩的症狀是
+    「例外看起來建好了，事件照樣一直來」。
+    """
+    entries = client.get("/api/allowlist").json()["entries"]
+    if not entries:
+        import pytest
+        pytest.skip("allowlist 是空的，這個測試等於沒驗到東西")
+    for e in entries:
+        assert not str(e["source_ip"]).startswith("src_"), \
+            f"Allowlist 的來源被指紋化了：{e['source_ip']!r}"
+    # 至少一筆是可解析的 IP 形狀
+    import ipaddress
+    assert any(_is_ip(ipaddress, e["source_ip"]) for e in entries), \
+        "沒有任何一筆是有效的 IP —— 那些條目不會命中任何來源"
+
+
+def _is_ip(ipaddress_mod, value) -> bool:
+    try:
+        ipaddress_mod.ip_address(str(value))
+        return True
+    except ValueError:
+        return False

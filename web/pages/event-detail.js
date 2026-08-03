@@ -3,10 +3,18 @@ import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
 import RangePicker from '../components/range-picker.js';
+import { ANALYSES } from './explorer.js';
 import { token } from '../charts/tokens.js';
 import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
 
 const JUDGEMENTS = ['已確認攻擊', '合法整合', '誤報', '證據不足', '保持觀察'];
+
+// 分析方式 key → 顯示名稱。標籤本身由 Explorer 持有（唯一真相）。
+const ANALYSIS_LABEL = Object.fromEntries(ANALYSES.map(a => [a.key, a.label]));
+
+// drilldown 的篩選欄位 → 給人看的名稱。與 Explorer 的 Filter Builder 同一組字。
+const FILTER_LABEL = { actor: '帳號', source_ip: '來源 IP', endpoint: 'Endpoint 前綴',
+                       brand: '品牌編號' };
 
 // 趨勢圖的區間：預設是「往事件視窗前後各再拉多久」（分鐘），
 // 另有自訂絕對區間。必須與 routes.EVENT_TREND_PADDINGS 一致。
@@ -21,15 +29,20 @@ const PADS = [
 
 export default {
   props: ['evtNo', 'canJudge'],
-  emits: ['back'],
+  emits: ['back', 'drilldown', 'new-allowlist'],
   components: { BrandBreakdown, ApexChart, RangePicker },
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
     range: '30m', customStart: '', customEnd: '',
     judge: '', reason: '', evidence: '', nextStep: '', submitting: false, submitted: null,
-    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, PADS,
+    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, PADS, ANALYSIS_LABEL,
   }),
   computed: {
+    // 「合法整合」的後續動作。判定完才出現（剛提交的或先前已存在的都算）。
+    showAllowlistCta() {
+      const j = this.submitted?.judgement || this.e?.judgement;
+      return j === '合法整合' && !!this.e?.allowlist_prefill;
+    },
     trendRows() { return this.e?.trend?.rows || []; },
     hasTrend() { return this.trendRows.length > 0; },
     // 這個事件的基線資料是否存在。全部是 null 時就不畫帶，也不畫基準線。
@@ -94,6 +107,15 @@ export default {
       const pad = PADS.find(p => p[0] === this.range)?.[2] ?? 30;
       return `pad_minutes=${pad}`;
     },
+    // 跳轉按鈕旁的「會用哪些條件」。只列真正會送出去的欄位，
+    // 順序固定，讓同一條規則的事件每次讀起來都一樣。
+    drilldownConds() {
+      const f = this.e?.drilldown?.filter;
+      if (!f) return [];
+      return Object.keys(FILTER_LABEL)
+        .filter(k => f[k] !== undefined && f[k] !== null && f[k] !== '')
+        .map(k => `${FILTER_LABEL[k]} = ${f[k]}`);
+    },
     contextRows() {
       const c = this.e?.context || {};
       // brand_top 已在上方「涉及品牌」以可展開的明細呈現，這裡再倒一次只是雜訊
@@ -103,6 +125,21 @@ export default {
   },
   methods: {
     num, mult, multColor, shortTime, duration,
+    /** 判定為「合法整合」→ 建立例外。IP 由後端給（見 routes._allowlist_prefill）。 */
+    askAllowlist() {
+      const p = this.e.allowlist_prefill;
+      this.$emit('new-allowlist', {
+        source_ip: p.source_ip,
+        // 預設限在這條規則：判定是針對它做的，預設全域會建出更大的盲區
+        rule_id: p.rule_id,
+        kind: 'event',
+        evt_no: this.e.evt_no,
+        rule_name: p.rule_name,
+        // 判定理由填進「用途」，**不填進「建立理由」** ——
+        // 後者要寫的是「為什麼建立這條例外」，不是「為什麼判定合法整合」
+        purpose: this.submitted?.judgement ? this.reason : '',
+      });
+    },
     async load() {
       this.loading = true; this.error = null;
       try {
@@ -294,9 +331,10 @@ export default {
       </div>
     </div>
 
-    <!-- 涉及對象（遮罩） -->
+    <!-- 涉及對象。2026-08 起帳號、來源 IP、訂單號為原始值（見 core/masking.py）；
+         這裡也是「往下查」的起點，所以帶 Log Explorer 的跳轉。 -->
     <div class="card" style="margin-bottom:14px">
-      <div class="card-h" style="margin-bottom:10px">涉及對象（遮罩／彙總）</div>
+      <div class="card-h" style="margin-bottom:10px">涉及對象</div>
       <table style="font-size:12.5px">
         <tbody>
           <tr v-for="[k,v] in contextRows" :key="k">
@@ -306,7 +344,41 @@ export default {
         </tbody>
       </table>
       <div class="muted" style="font-size:11.5px;margin-top:8px">
-        fingerprint 為不可逆識別值，非原始資料。系統不提供顯示完整 IP、帳號或 token 的功能。
+        帳號、來源 IP、訂單號與品牌／分店為原始值，可直接追查；只有 API token 仍是
+        不可逆指紋（顯示原值等於可被冒用）。params／headers 原文需逐筆調閱，會寫入操作稽核。
+      </div>
+
+      <!-- 往下查。條件由後端從規則定義推導（src/console/api/drilldown.py），
+           不是前端猜的 —— 每張表可篩的欄位不同，猜錯的症狀是 0 筆或 400。 -->
+      <div v-if="e.drilldown" style="border-top:1px solid var(--line-soft);margin-top:12px;padding-top:12px">
+        <template v-if="e.drilldown.supported">
+          <button class="btn btn-primary" @click="$emit('drilldown', e.drilldown)">
+            在 Log Explorer 查此對象 →</button>
+          <!-- 按下去之前就要知道會查什麼。條件寫在按鈕旁而不是跳過去才看到，
+               是因為「這個數字是哪來的」永遠是下一個問題。 -->
+          <div class="muted" style="font-size:11.5px;margin-top:8px;line-height:1.8">
+            將以 {{ SOURCE_LABEL[e.drilldown.filter.source] }}、
+            {{ e.drilldown.filter.start }} ~ {{ e.drilldown.filter.end }}
+            <template v-for="c in drilldownConds" :key="c">、{{ c }}</template>
+            查詢（{{ ANALYSIS_LABEL[e.drilldown.filter.analysis] || e.drilldown.filter.analysis }}）。
+            <template v-if="e.drilldown.window && e.drilldown.window.clamped">
+              事件跨越 {{ e.drilldown.window.full_start }} ~ {{ e.drilldown.window.full_end }}，
+              查詢區間已截到最近一段（該表的來源 IP 需解析 headers JSON）。
+            </template>
+            <template v-if="e.drilldown.dropped && e.drilldown.dropped.length">
+              未帶入：<template v-for="(d,i) in e.drilldown.dropped" :key="i"
+                ><template v-if="i">；</template>{{ d.col }}（{{ d.reason }}）</template>。
+            </template>
+            區間與條件到了 Explorer 都能再調整。
+          </div>
+        </template>
+        <!-- 不支援時給的是**原因**，不是一顆按不動的按鈕：disabled + tooltip 在觸控
+             裝置上看不到、螢幕閱讀器也唸不出來，而這個系統的一貫做法是解釋
+             （見 explorer 的 empty_reason / entity_extent）。 -->
+        <div v-else class="muted" style="font-size:12px;line-height:1.8">
+          <strong style="color:var(--text-2)">無法帶進 Log Explorer</strong><br>
+          {{ e.drilldown.reason }}
+        </div>
       </div>
     </div>
 
@@ -315,6 +387,34 @@ export default {
       <div class="card-h" style="margin-bottom:12px">調查判定</div>
       <div v-if="e.judgement" class="banner banner-ok" style="margin:0">
         判定已提交：<strong>{{ e.judgement }}</strong>（{{ e.owner }}）。已寫入操作稽核。
+      </div>
+      <!-- 「合法整合」之後的後續動作。判定完才顯示，而且重新進頁面時仍看得到
+           （判定已經存在 e.judgement 裡）。 -->
+      <div v-if="showAllowlistCta" class="banner banner-info" style="margin:10px 0 0">
+        <template v-if="e.allowlist_prefill.supported">
+          既然這是合法整合，可以建立一筆 Allowlist 例外讓它不再告警。
+          <button class="btn btn-sm" style="margin-left:10px" @click="askAllowlist">
+            建立 {{ e.allowlist_prefill.source_ip }} 的例外</button>
+          <div style="font-size:11.5px;margin-top:6px">
+            預設範圍是<strong>只對 {{ e.rule_id }}</strong> ——
+            判定是針對這條規則做的，預設全域會建出一個比你本意更大的盲區。
+            範圍與到期日在表單裡都能改。
+          </div>
+        </template>
+        <template v-else>
+          無法從這個事件建立來源例外：{{ e.allowlist_prefill.reason }}
+        </template>
+      </div>
+      <!-- 「這個 IP 明明在 Allowlist 裡，怎麼還在告警？」——
+           這是保證會被問的問題，答案通常是範圍限在別條規則或條目已到期。 -->
+      <div v-if="e.allowlist_matches && e.allowlist_matches.length"
+           class="note-quote" style="margin-top:10px">
+        <div style="font-weight:500;margin-bottom:4px">此來源的 Allowlist 條目</div>
+        <div v-for="m in e.allowlist_matches" :key="m.id">
+          · #{{ m.id }} {{ m.name }}（{{ m.scope === 'global' ? '全域' : '只對 ' + m.rule_id }}）—
+          <span v-if="m.applies_to_this_rule" style="color:var(--ok)">對本規則生效</span>
+          <span v-else style="color:var(--warn)">未生效：{{ m.reason_not_applied }}</span>
+        </div>
       </div>
       <template v-else-if="canJudge">
         <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
@@ -340,7 +440,7 @@ export default {
                 @click="submitJudge">{{ submitting ? '提交中…' : '提交判定' }}</button>
       </template>
       <div v-else class="muted" style="font-size:13px">
-        你目前的角色無法提交判定。需要 Security Analyst 以上權限。
+        目前無法提交判定（未取得有效的登入 session）。
       </div>
     </div>
   </template>
