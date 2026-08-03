@@ -11,12 +11,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from console.api import drilldown, validate
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
-from console.core import brands, timewin
+from console.core import brands, masking, timewin
 from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
 from console.queries import (
-    brand_search, endpoint_suggest, explorer, health, quick_templates,
-    sparklines, trends,
+    brand_search, endpoint_suggest, entity, entity_history, explorer, health,
+    quick_templates, sparklines, trends,
 )
 from console.rules import effective
 from console.rules.loader import load_rules
@@ -410,6 +410,89 @@ async def event_detail(
     event["trend"] = _event_trend(row, pad_minutes=pad_minutes,
                                   start=win_start, end=win_end)
     return event
+
+
+def _entity_context(evt_no: str) -> tuple[dict, object, object | None, str | None]:
+    """`(events 列, 規則, EntityRef|None, 不適用的原因)`。
+
+    對象視角的兩個端點共用。`EntityRef` 一律由 `drilldown.build()` 的結果推導 ——
+    「規則 entity → 篩選欄位」的唯一真相在那裡，這裡不重做判定
+    （重做就會有兩份會漂移的規則，而漂移的症狀是面板靜靜查到 0 筆）。
+    """
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    rule = next((r for r in load_rules() if r.id == row["rule_id"]), None)
+    event = _event_public(row)
+    dd = drilldown.build(rule, event)
+    if not dd.get("supported"):
+        return row, rule, None, dd.get("reason") or "這個事件的對象無法反查。"
+    ref = entity.from_filters(row["source_key"], dd.get("filter") or {})
+    if ref is None:
+        # R09（entity 是字面常數 scope）與 R12（沒有 entity）走這裡。
+        # 這不是缺陷，是「這條規則沒有可追蹤的對象」—— 必須照實說，
+        # **不可以退回畫全站圖假裝有內容**。
+        return row, rule, None, (
+            f"{row['rule_name']}沒有可追蹤的對象"
+            "（它的偵測範圍是整張表，不是某個帳號或來源），因此不提供對象面板。")
+    return row, rule, ref, None
+
+
+# 刻意用同步 def，不是 async def（同 /sweep 與 /explorer/payload）。裡面的
+# ClickHouse 查詢是阻塞的，寫成 async def 會佔住事件迴圈、連五分鐘排程一起卡住。
+@router.get("/events/{evt_no}/entity")
+def event_entity(evt_no: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """對象視角的三個便宜面板：母體位置、24 小時作息、端點來源集中度。
+
+    與事件詳細頁分開的端點，讓頁面先畫得出來（實測這裡合計約 3 秒）。
+    """
+    guard(user, "view_events")
+    row, rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+
+    end = timewin.parse(row["last_seen"])
+    window = rule.window_minutes if rule else 60
+    try:
+        peers = entity.peers(ref, end - timedelta(minutes=window), end,
+                             expected=row["metric_value"])
+        profile = entity.hour_profile(ref, end)
+        share = entity.endpoint_share(ref, end)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象面板查詢失敗：{exc}"}
+    return {
+        "supported": True,
+        "label": ref.label,
+        "dims": [{"field": d.field, "label": d.label, "value": _display_dim(d)}
+                 for d in ref.dims],
+        "window_minutes": window,
+        "peers": peers, "profile": profile, "share": share,
+    }
+
+
+@router.get("/events/{evt_no}/entity/timeline")
+def event_entity_timeline(
+    evt_no: str,
+    days: int = Query(entity_history.TIMELINE_DAYS, ge=2, le=90),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """對象自己的長期時序（面板 A）。實測 28 天約 5–7 秒 → 前端延後載入。"""
+    guard(user, "view_events")
+    row, _rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+    try:
+        data = entity_history.timeline(
+            ref, timewin.parse(row["first_seen"]),
+            timewin.parse(row["last_seen"]), days=days)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象時序查詢失敗：{exc}"}
+    return {"supported": True, "label": ref.label, **data}
+
+
+def _display_dim(dim) -> str:
+    return dim.value if dim.mask is None else (
+        masking.DISPLAY_FUNCS[dim.mask](dim.value) or dim.value)
 
 
 def _allowlist_prefill(rule, event: dict) -> dict:

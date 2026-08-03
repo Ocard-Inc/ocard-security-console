@@ -155,7 +155,10 @@ def calibrate() -> dict:
         all_rows.extend(rows)
         logger.info("api_endpoint_60m：%d endpoints → %d 列", len(top_eps), len(rows))
 
-    # 6. API 單一來源 60 分鐘分布（R03，全域；headers 解析成本高 → 取 7 天）
+    # 6. API 單一來源 60 分鐘分布（全域；headers 解析成本高 → 取 7 天）。
+    #    這是 **per (來源 IP)、跨全部 endpoint** 的分布，讀取端是
+    #    trends.risk_rankings() 的「高流量來源」排名（那裡的 GROUP BY 也只有 src）。
+    #    **不是 R03 的門檻依據** —— R03 的 metric 是 per (src, endpoint)，見 6b。
     s7, e7 = _range(7)
     inner = (
         f"SELECT src, toStartOfHour(create_time) AS b, count() AS c FROM"
@@ -163,6 +166,28 @@ def calibrate() -> dict:
         f" WHERE src != '' GROUP BY src, b"
     )
     all_rows.append(("api_src_60m", -1, "all",
+                     *_global_distribution(inner, {"start": s7, "end": e7})))
+
+    # 6b. API (來源 IP × endpoint) 60 分鐘分布（R03 的門檻依據）。
+    #     **必須與 R03 的 metric 同單位。** R03 的 SQL 是 `GROUP BY src, endpoint`，
+    #     一度誤用 6 的 `api_src_60m`（只 GROUP BY src），實測同一時段兩者的
+    #     P99 差 26 倍（109 vs 2,835）—— 粗粒度的分布把同一個 IP 的全部 endpoint
+    #     加總，值天生更大，於是門檻（p99 × 3）系統性偏高、規則長期漏抓，
+    #     而事件頁「資料限制」顯示的 median/P95/P99 也在陳述錯的母體。
+    #     這與 trends.BUCKET_LADDER 那條「分桶與基線粒度必須成對」是同一類錯誤，
+    #     只是錯在**對象維度**而非時間維度。
+    #
+    #     **刻意只算全域一列，不做 (hour, day_class)。** 實測逐小時的結果是：
+    #     凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的
+    #     p99 = 168。原因是低流量時段活著的幾乎只有機器整合，它們撐高了自己的
+    #     門檻 —— 逐小時會讓 04:00 的門檻變成 18,180（全域是 504），
+    #     在最該敏感的時段把規則關掉。低流量端的保護交給 static_floor。
+    inner = (
+        f"SELECT src, ep, toStartOfHour(create_time) AS b, count() AS c FROM"
+        f" (SELECT {exprs.API_SRC_IP} AS src, {exprs.ENDPOINT} AS ep, create_time"
+        f"  FROM ods_api_log WHERE {tf}{excl}) WHERE src != '' GROUP BY src, ep, b"
+    )
+    all_rows.append(("api_src_ep_60m", -1, "all",
                      *_global_distribution(inner, {"start": s7, "end": e7})))
 
     # 7. API error 5 分鐘分布（R09，全域）

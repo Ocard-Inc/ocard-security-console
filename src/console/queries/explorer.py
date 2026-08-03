@@ -82,6 +82,43 @@ _ENTITY_FILTER = {
     "actor": {src: expr for src, (expr, _, _) in GROUP_BY["actor"].items()},
 }
 
+# 篩選欄位名 → `GROUP_BY` 的維度名。一對一，只有 source_ip/source 名字不同。
+# 存在的理由：`entity_expr()` 要能回答全部四個欄位，而 `_ENTITY_FILTER`
+# 刻意只有兩個（Explorer 的篩選器只讓人用 IP / 帳號反查）。
+_FIELD_DIMENSION = {"source_ip": "source", "actor": "actor",
+                    "endpoint": "endpoint", "brand": "brand"}
+
+
+def entity_meta(field: str, source: str) -> tuple[str, str | None, str] | None:
+    """`(篩選欄位, 資料來源)` → `GROUP_BY` 的 (SQL 運算式, 遮罩種類, 顯示名稱)。
+
+    遮罩種類與顯示名稱要一起給：呼叫端若只拿到運算式，就得自己再查一次
+    「這個欄位的值該怎麼呈現」，而那份對照表的唯一真相是 `GROUP_BY`
+    （鍵同 `masking.DISPLAY_FUNCS`）。分兩次拿遲早會出現「有遮罩的欄位
+    忘記遮」或「該原樣顯示的欄位被遮掉」。
+    """
+    dim = _FIELD_DIMENSION.get(field)
+    if dim is None:
+        return None
+    return GROUP_BY[dim].get(source)
+
+
+def entity_expr(field: str, source: str) -> str | None:
+    """`(篩選欄位, 資料來源)` → **完全相等**比對用的 SQL 運算式；不支援回 None。
+
+    複用 `GROUP_BY` 的運算式，理由同 `_ENTITY_FILTER`：畫面上看到的值，
+    拿回去比對就一定命中。事件的 entity 值也是這些運算式算出來的
+    （規則 SQL 的 `endpoint` = `exprs.ENDPOINT`、`route2` = `exprs.ROUTE2`，
+    與 `GROUP_BY["endpoint"]` 逐表相同），所以這裡是事件對象反查的正確依據。
+
+    **與 `where_clause()` 的 endpoint 條件不同**：那裡是 `startsWith`（前綴），
+    因為 Explorer 的 endpoint 輸入是給人打前綴用的。這裡一律相等 ——
+    前綴會把 `Api2/GetProfileExtra` 一起算進 `Api2/GetProfile` 的對象裡，
+    那不是同一個對象，數字會比事件大而且沒有任何錯誤訊息。
+    """
+    entry = entity_meta(field, source)
+    return entry[0] if entry else None
+
 # 不支援依對象反查的組合，以及為什麼。
 #
 # auth 的「操作者」是 API token，畫面上是 `token_XXXX` 指紋（HMAC，見 core/masking）。
@@ -469,7 +506,7 @@ def entity_extent(source: str, field: str, value: str) -> dict | None:
     的話，使用者無法分辨自己是打錯值、還是區間選得不對 —— 實測 192.168.97.1
     最後一次出現在 7/29，而 Explorer 預設區間是最近 1 小時。
     """
-    expr = _ENTITY_FILTER.get(field, {}).get(source)
+    expr = entity_expr(field, source)
     if expr is None or not value:
         return None
     end = timewin.effective_now()

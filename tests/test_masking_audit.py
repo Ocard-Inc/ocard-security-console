@@ -111,6 +111,22 @@ def test_events_response_is_clean(client):
         _scan(detail.text, f"GET /api/events/{e['evt_no']}")
 
 
+def test_event_entity_panels_are_clean(client):
+    """對象面板會列出**其他**對象（母體排名、endpoint 的來源清單）。
+
+    那是刻意的（本主控台就是要追究是哪個帳號、哪個來源），但也因此是一個新的
+    外流面：帳號與 IP 原樣顯示，手機／Email／憑證值一個都不能出現。
+    """
+    evts = [e["evt_no"] for e in client.get("/api/events").json()["events"]][:6]
+    assert evts, "DB 裡沒有事件，這個測試會變成空跑"
+    for evt in evts:
+        for path in (f"/api/events/{evt}/entity",
+                     f"/api/events/{evt}/entity/timeline?days=3"):
+            r = client.get(path)
+            assert r.status_code == 200, f"{path} → {r.status_code} {r.text[:200]}"
+            _scan(r.text, f"GET {path}")
+
+
 def test_explorer_detail_is_clean(client):
     for source in ("api", "backend", "admin", "auth"):
         r = client.post("/api/explorer", json={
