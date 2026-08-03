@@ -118,6 +118,26 @@ R13 的對象是 (品牌 × 分店)，而 `_store` 有兩個哨兵值：`-1` 是
 `lag_buffer_minutes`（6 分）補資料落地延遲。四張表的 sorting key 不含時間、只有月分區，
 所以**每個查詢都必須帶 `create_time` 範圍**。
 
+**API 端點一律是同步 `def`，不是 `async def`**（2026-08 全站統一）。裡面的
+ClickHouse／SQLite 呼叫是**阻塞**的；寫成 `async def` 時它們跑在事件迴圈上，
+**一個慢查詢會讓整個主控台停止回應，連五分鐘排程一起卡住**。
+實測：在 Log Explorer 查一個 API Log 的 IP（回看查詢跑滿 55 秒）期間，
+完全不碰 ClickHouse 的 `/api/session` 被拖到 **53.6 秒**。
+使用者回報的症狀不是「這個查詢慢」，而是**「篩選、Controller 建議、全部功能都壞了」**
+—— 因為那段時間所有請求都排在後面。同步 `def` 由 FastAPI 丟進 threadpool，沒有這個問題。
+`async def` 只有在函式體內真的有 `await` 時才成立（目前只有 `app.py` 的
+lifespan／middleware／index／healthz）。`tests/test_endpoints_are_not_blocking_the_loop.py`
+用 AST 掃描擋住整類問題。
+
+**「回看查詢」的成本依來源差三個數量級。** `explorer.entity_extent()` 是
+「0 筆自我解釋」的依據，而 `backend`/`admin`/`auth` 的來源 IP 是真欄位（`ip`）、
+365 天等值查詢 0.6 秒；**`api` 的來源 IP 要對 `headers` 做 JSONExtract**，
+實測 30 天 7.5s／90 天 29.6s／365 天**超時**。所以回看天數走
+`explorer.extent_lookback_days()` 逐 (來源, 欄位) 決定，不是一個常數。
+**而且超時的 `ChQueryError` 絕不可以吞掉** —— 吞掉的話畫面上「沒有解釋」與
+「查過了，這個對象真的不存在」長得一模一樣，那正是這個功能要消滅的情況。
+現在回 `kind="explain_failed"` 並說出為什麼無法確認。
+
 **查詢**：一律走 `core/ch.py` 的 `query()` / `query_rows()`，不要自己建
 clickhouse client（thread-local 是為了避開 clickhouse-connect 同 session 不可並行的限制，
 同時避免每次新建洩漏 socket）。值走 `%(name)s` 參數；identifier（表名、分組欄位）
