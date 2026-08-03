@@ -55,22 +55,39 @@ class Candidate:
         return max(in_group, key=lambda h: h.metric / max(h.floor, 1))
 
 
+def is_suppressed(hit: Hit, suppressed_srcs: frozenset[str] | set[str]) -> bool:
+    """這筆命中是否被 allowlist 抑制。
+
+    **必須檢查 `entity_kind`。** allowlist 只收來源 IP；不看 kind 的話，一筆
+    字面上剛好等於某個帳號名的條目會把**那個帳號**整筆從報告裡抹掉 ——
+    而這個檔案自己的 docstring 就寫著「帳號與來源是不同的對象…不該合在一起」。
+    """
+    return hit.entity_kind == "src" and hit.entity_fp in suppressed_srcs
+
+
 def correlate(
     hits: tuple[Hit, ...] | list[Hit],
     *,
-    suppressed_fps: frozenset[str] | set[str] = frozenset(),
+    suppressed_srcs: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[Candidate, ...]:
     """合併命中為候選對象清單（尚未評分、尚未套 MIN_SIGNAL_GROUPS 門檻）。
 
     合併鍵是 `(entity_kind, entity_fp)`：帳號與來源是不同的對象，即使 fingerprint
     理論上不會相撞也不該合在一起 —— 報告的事件清單同樣是帳號與 IP 並列、各自成列。
 
-    `suppressed_fps` 是 allowlist 內的來源（如辦公室出口），直接不列入候選。
-    實測辦公室出口 `1.34.41.218` 在三天內就用了 68 個帳號，不抑制的話它永遠是第一名。
+    `suppressed_srcs` 是**全域** allowlist 內的來源 IP（如辦公室出口），
+    不列入候選。實測辦公室出口 `1.34.41.218` 在三天內就用了 68 個帳號，
+    不抑制的話它永遠是第一名。被抑制的命中由 report.build() 另外收集並在報告裡
+    列出來（含「若不抑制會是第幾名」）—— 只給一個數字的話沒有人判斷得出
+    這條例外還該不該存在。
+
+    kwarg 從 `suppressed_fps` 改名為 `suppressed_srcs` 是刻意的：語意由
+    「任何 fingerprint」收窄成「來源 IP」，舊呼叫端必須 TypeError 而不是
+    靜靜地用舊語意通過。
     """
     buckets: dict[tuple[str, str], list[Hit]] = {}
     for h in hits:
-        if h.entity_fp in suppressed_fps:
+        if is_suppressed(h, suppressed_srcs):
             continue
         buckets.setdefault((h.entity_kind, h.entity_fp), []).append(h)
 

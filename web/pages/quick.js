@@ -11,7 +11,7 @@ const INPUT_FIELDS = {
     { key: 'end', label: '結束時間', time: true },
   ],
   'endpoint': [{ key: 'endpoint', label: 'Endpoint', ph: 'Api2/TransDetail', mono: true }],
-  'source_fp': [{ key: 'source_fp', label: 'Source fingerprint', ph: 'src_XXXXXXXXXXXX', mono: true }],
+  'source_fp': [{ key: 'source_fp', label: '來源 IP', ph: '131.143.215.229', mono: true }],
   '兩個時間': [
     { key: 'start_a', label: '日期 A 開始', time: true },
     { key: 'end_a', label: '日期 A 結束', time: true },

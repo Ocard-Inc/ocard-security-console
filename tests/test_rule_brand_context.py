@@ -52,10 +52,15 @@ def test_masked_context_turns_brand_map_into_top_list(monkeypatch):
 def test_r02_finding_carries_brand_breakdown():
     """7/16 的 orderlist/detail 遍歷事件應能展開看到被查閱的品牌。"""
     rule = _rule("R02")
-    findings = engine._eval_sql_threshold(
+    # 回傳 (findings, suppressions)：抑制不再是靜靜丟棄，見 rules/engine.py。
+    # 索引是 allowlist.Index（不是 dict）—— 空索引代表「沒有任何例外」。
+    from console.store import allowlist
+    findings, suppressed = engine._eval_sql_threshold(
         rule, "2026-07-16 00:00:00", "2026-07-16 01:00:00",
-        __import__("datetime").datetime(2026, 7, 16, 1, 0), {})
+        __import__("datetime").datetime(2026, 7, 16, 1, 0),
+        allowlist.build_index([]))
     assert findings, "7/16 應觸發 R02"
+    assert suppressed == [], "沒有 allowlist 時不該有抑制紀錄"
     top = findings[0].context["brand_top"]
     assert top, "R02 事件應帶品牌明細"
     assert len(top) <= brands.BREAKDOWN_LIMIT

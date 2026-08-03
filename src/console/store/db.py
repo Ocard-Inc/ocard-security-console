@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 
 from console.core.config import STATE_DIR
+from console.store import migrate
 
 DB_PATH = STATE_DIR / "monitor.db"
 
@@ -87,23 +88,78 @@ CREATE TABLE IF NOT EXISTS audit_log (
     reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log (at);
+-- 稽核檢視頁的主要篩選是 action 與 who，排序走 id DESC（主鍵最便宜）。
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log (action, id);
+CREATE INDEX IF NOT EXISTS idx_audit_who ON audit_log (who, id);
 
+-- 例外名單。這是整個系統唯一的靜音開關：即時規則引擎與期間掃描都讀它，
+-- 命中就整筆丟棄。欄位變更一律走 store/migrate.py（見那個檔案的說明），
+-- **絕不可**放進 _DERIVED_TABLES 丟掉重建 —— 那是人工核准紀錄。
 CREATE TABLE IF NOT EXISTS allowlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     owner TEXT,
     purpose TEXT,
+    reason TEXT,                            -- 為什麼建立這條例外（新 API 必填）
+    rule_id TEXT,                           -- NULL = 全域（所有規則 + 期間掃描）；
+                                            -- 有值 = 只對該規則，不影響掃描
+    source_ip TEXT,                         -- 原始 IP，不是指紋（見 core/masking.py）
+    endpoint TEXT,                          -- 規則層可再限縮到某端點；NULL/'' = 全部
     integration_type TEXT,
-    endpoint TEXT,
+    -- 以下三欄零讀者，是 2026-08 之前的設計殘留。**不要新增讀者** ——
+    -- token_fp 尤其：留一個沒人比對的憑證欄位在這裡，等於邀請下一個人
+    -- 做出一個「存了看起來生效、實際完全沒作用」的輸入框。
     brand_scope TEXT,
-    source_fp TEXT,
     token_fp TEXT,
     expected_rate TEXT,
     valid_from TEXT,
     valid_to TEXT,
     approved_by TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    updated_by TEXT,
+    -- 讀取端只認 '生效中'（見 store/allowlist.py 的常數）。這個 DEFAULT 是
+    -- 死重量：新 API 一律顯式給值。改 DEFAULT 要重建整張表，不值得。
     status TEXT NOT NULL DEFAULT '待核准'
 );
+CREATE INDEX IF NOT EXISTS idx_allowlist_active ON allowlist (status, source_ip);
+CREATE INDEX IF NOT EXISTS idx_allowlist_rule ON allowlist (rule_id);
+
+-- 規則參數覆寫。YAML 是預設值，這張表是覆寫，rules/effective.py 是唯一的
+-- 合成點。engine 每次評估重讀 → 改了下一個 tick 生效、不必重啟。
+--
+-- **每一欄 NULL = 沿用 YAML。** enabled = 0（停用）與 enabled IS NULL（沒覆寫）
+-- 是兩件完全不同的事，讀取端一律 `if row[col] is not None`，
+-- **不可以用 truthiness** —— 那會讓「停用」靜靜變成「沒覆寫」。
+CREATE TABLE IF NOT EXISTS rule_overrides (
+    rule_id TEXT PRIMARY KEY,
+    enabled INTEGER,
+    static_floor REAL,
+    factor REAL,
+    cooldown_minutes INTEGER,
+    min_events INTEGER,                     -- new_source 規則的門檻（它沒有 threshold）
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    reason TEXT
+);
+
+-- 「哪一條 allowlist 抑制了什麼」。抑制原本是整筆丟棄、只在 log 留一行，
+-- 於是沒有人看得出這個盲區實際遮掉了多少東西。有保留期限（見
+-- settings.yaml 的 allowlist.suppression_retention_days），由每日排程修剪。
+CREATE TABLE IF NOT EXISTS rule_suppressions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,                       -- 台北牆鐘（寫入時刻）
+    allowlist_id INTEGER NOT NULL,
+    rule_id TEXT NOT NULL,
+    source_ip TEXT NOT NULL,
+    entity_label TEXT NOT NULL,             -- 被抑制的對象（帳號 · IP）
+    metric REAL,
+    threshold REAL,
+    window_start TEXT,
+    window_end TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rule_suppr_time ON rule_suppressions (at);
+CREATE INDEX IF NOT EXISTS idx_rule_suppr_entry ON rule_suppressions (allowlist_id, at);
 
 CREATE TABLE IF NOT EXISTS known_sources (
     kind TEXT NOT NULL,                     -- backend_acc_ip / api_src / admin_acc_ip
@@ -197,8 +253,11 @@ CREATE TABLE IF NOT EXISTS slack_queue (
 # 這是 `CREATE TABLE IF NOT EXISTS` 的例外處理 —— 既有 DB 的舊欄位不會自動改名，
 # 而讀取端已改用新名稱，不處理就是「查一個不存在的欄位」。
 #
-# 只有衍生表能這樣做。events / cases / audit_log / allowlist 是人工產出或有稽核
-# 意義的資料，欄位變更一律手動處理（見 CLAUDE.md）。
+# 只有衍生表能這樣做。events / cases / audit_log / allowlist / rule_overrides
+# 是人工產出或有稽核意義的資料，欄位變更一律走 store/migrate.py（見 CLAUDE.md）。
+#
+# rule_suppressions 是機器產出的，但它是**歷史紀錄**而非可重算的衍生資料
+# （抑制發生過就是發生過，重跑得不到當時的 metric），所以也不放進來。
 _DERIVED_TABLES = {
     # 表名 → (必須存在的欄位, 重建方式)
     "ip_intel": "src",           # 舊版是 src_fp；重建：console.intel.refresh
@@ -225,6 +284,15 @@ def get_conn() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         _drop_stale_derived(conn)
+        # **必須在 _SCHEMA 之前。** _SCHEMA 裡的 CREATE INDEX 引用的是遷移**之後**
+        # 的欄位名（idx_allowlist_active 用 source_ip），在還沒改名的舊 DB 上會
+        # 直接 `no such column`。而這個例外發生在 get_conn() 裡 ——
+        # 走到 DB 的請求全部 500、排程器 thread 拿不到連線，
+        # 而 /healthz 不碰 DB、照樣回 200，部署看起來成功。
+        #
+        # 反過來（migrate 在後）沒有任何好處：migrate 對不存在的表一律跳過，
+        # 所以全新的 DB 不需要「先讓 _SCHEMA 把表建起來」。
+        migrate.apply(conn)
         conn.executescript(_SCHEMA)
         conn.commit()
         _local.conn = conn

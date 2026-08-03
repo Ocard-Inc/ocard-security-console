@@ -4,7 +4,7 @@
 - 門檻 = max(靜態地板, 28 天同時段基線 stat×factor)
 - entity 一律以 fingerprint 組合為去重鍵；原始 acc/ip 僅在記憶體內短暫存在
 - 內部帳號的新來源事件自動升級 P1
-- Allowlist（生效中、endpoint 相符）來源的 finding 直接抑制
+- Allowlist（生效中、範圍與 endpoint 相符）來源的 finding 抑制並回報 Suppression
 """
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from console.core import brands, masking, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.rules import baseline
-from console.rules.model import EntityField, Finding, Rule
-from console.store import db
+from console.rules.model import Finding, Rule, Suppression
+from console.store import allowlist, db
 
 logger = logging.getLogger(__name__)
 
@@ -60,31 +60,40 @@ def entity_parts(rule: Rule, row: dict) -> tuple[str, str, bool]:
     return f"{rule.id}|" + "|".join(keys), " · ".join(labels), internal
 
 
-def _active_allowlist_srcs() -> dict[str, set[str]]:
-    """生效中 allowlist：src → 允許的 endpoint 集合（空字串 = 全部）。"""
-    now = timewin.fmt(timewin.taipei_now())
-    rows = db.rows(
-        "SELECT source_fp, COALESCE(endpoint, '') AS ep FROM allowlist"
-        " WHERE status = '生效中'"
-        " AND (valid_from IS NULL OR valid_from <= ?)"
-        " AND (valid_to IS NULL OR valid_to >= ?)",
-        (now, now),
-    )
-    result: dict[str, set[str]] = {}
-    for r in rows:
-        if r["source_fp"]:
-            result.setdefault(r["source_fp"], set()).add(r["ep"])
-    return result
+def _allowlist_hit(rule: Rule, row: dict,
+                   index: allowlist.Index) -> allowlist.Entry | None:
+    """這一列命中了哪一條 allowlist 例外（沒有就 None）。
+
+    **只比對 entity 裡 `fp: "src"` 的欄位值。** 這裡曾經拿
+    `entity_key.split("|")` 逐段比對，而 entity_key 的格式是
+    `f"{rule.id}|" + "|".join(keys)` —— 於是任何一段字面相符就抑制：
+
+    - 一筆 `source_ip='R01'` 的條目 → **整條 R01 失效**
+    - 一筆等於某個帳號名的條目 → 該帳號在所有規則下失效
+    - 一筆等於某個 route 或品牌編號的條目（`fp: null` 的欄位原樣進 keys）→ 同上
+
+    UI 一旦讓人自由輸入，這就從理論問題變成一次打錯字就能關掉整條規則。
+
+    沒有 `fp: src` 欄位的規則仍然可能被抑制 —— 只要它有 endpoint 維度
+    （R02/R04/R06/R11）就能建「只對這條規則、只對這個端點」的例外。
+    實測 `Api2/GetProfile` 同時觸發 R03（src + endpoint）與 R04（只有 endpoint），
+    少了後者那條路徑，例外只能讓 R03 閉嘴而 R04 繼續叫。
+    完全沒有對象維度的規則（R09 的字面常數 scope、R12 的資料來源名）
+    由 `allowlist.allowlistable()` 判定為不適用，API 據此回報 ——
+    否則使用者為 R09 建一條例外，畫面顯示「生效中」而它什麼都不做。
+    """
+    srcs = [row.get(f.col) for f in rule.entity if f.fp == "src"]
+    endpoint = str(row.get("endpoint") or row.get("route2") or "")
+    return allowlist.match(srcs, rule_id=rule.id, endpoint=endpoint, index=index)
 
 
-def _is_allowlisted(entity_key: str, row: dict, allow: dict[str, set[str]]) -> bool:
-    for part in entity_key.split("|"):
-        if part in allow:
-            eps = allow[part]
-            endpoint = str(row.get("endpoint") or row.get("route2") or "")
-            if "" in eps or endpoint in eps:
-                return True
-    return False
+def _suppression(rule: Rule, entry: allowlist.Entry, entity_key: str, label: str,
+                 metric: float, threshold: float, start: str, end: str) -> Suppression:
+    return Suppression(
+        rule_id=rule.id, rule_name=rule.name,
+        allowlist_id=entry.id, allowlist_name=entry.name,
+        source_ip=entry.source_ip, entity_key=entity_key, entity_label=label,
+        metric=metric, threshold=threshold, window_start=start, window_end=end)
 
 
 def _resolve_threshold(rule: Rule, row: dict, window_end: datetime):
@@ -102,9 +111,10 @@ def _resolve_threshold(rule: Rule, row: dict, window_end: datetime):
     return max(t.static_floor, dynamic), base
 
 
-def _eval_sql_threshold(rule: Rule, start: str, end: str,
-                        end_dt: datetime, allow: dict) -> list[Finding]:
+def _eval_sql_threshold(rule: Rule, start: str, end: str, end_dt: datetime,
+                        allow: dict) -> tuple[list[Finding], list[Suppression]]:
     findings: list[Finding] = []
+    suppressed: list[Suppression] = []
     df = query(rule.sql, {"start": start, "end": end})
     for _, row in df.iterrows():
         row = {k: (None if isinstance(v, float) and math.isnan(v) else v)
@@ -118,8 +128,11 @@ def _eval_sql_threshold(rule: Rule, start: str, end: str,
             if den <= 0 or metric / den < rule.ratio.min_ratio:
                 continue
         entity_key, label, _ = entity_parts(rule, row)
-        if _is_allowlisted(entity_key, row, allow):
-            logger.info("%s %s 命中但在 Allowlist 內，抑制", rule.id, label)
+        entry = _allowlist_hit(rule, row, allow)
+        if entry is not None:
+            logger.info("%s %s 命中但在 Allowlist #%d 內，抑制", rule.id, label, entry.id)
+            suppressed.append(_suppression(
+                rule, entry, entity_key, label, metric, round(threshold, 1), start, end))
             continue
         population = rule.threshold.population
         median = None if population else (base.median if base else None)
@@ -139,12 +152,13 @@ def _eval_sql_threshold(rule: Rule, start: str, end: str,
             window_start=start, window_end=end, severity=rule.severity,
             context=context,
         ))
-    return findings
+    return findings, suppressed
 
 
-def _eval_new_source(rule: Rule, start: str, end: str,
-                     end_dt: datetime, allow: dict) -> list[Finding]:
+def _eval_new_source(rule: Rule, start: str, end: str, end_dt: datetime,
+                     allow: dict) -> tuple[list[Finding], list[Suppression]]:
     findings: list[Finding] = []
+    suppressed: list[Suppression] = []
     df = query(rule.sql, {"start": start, "end": end})
     now_str = timewin.fmt(timewin.taipei_now())
     for _, row in df.iterrows():
@@ -159,14 +173,33 @@ def _eval_new_source(rule: Rule, start: str, end: str,
             (rule.known_kind, fp_key))
         if known:
             continue
+        entity_key, label, internal = entity_parts(rule, row)
+
+        # **allowlist 必須判在寫入 known_sources 之前。**
+        # 反過來的話（原本的順序）被抑制的來源仍被記成「已知」，於是日後
+        # 停用那條例外，R08A/B/C **也永遠不會再對它告警** —— 而畫面上
+        # allowlist 是停用的、規則是啟用的，一切看起來正常。
+        # known_sources 有 23 萬列、不在 _DERIVED_TABLES，那是這個功能唯一
+        # 不可逆的資料汙染。
+        #
+        # 代價：例外到期後這個來源會以「新來源（90 天內首見）」的文案告警，
+        # 而它其實已經活躍好幾個月。文案錯，但訊號在 —— 那比訊號永久消失好。
+        # 另一個代價是每個 tick 都會為它留一列抑制紀錄（有保留期限，見
+        # store/rule_suppressions.prune）。那是特性不是缺點：
+        # 「這條例外每五分鐘遮掉一次東西」正是要看見的事。
+        entry = _allowlist_hit(rule, row, allow)
+        if entry is not None:
+            logger.info("%s %s 首見但在 Allowlist #%d 內，抑制（不記入 known_sources）",
+                        rule.id, label, entry.id)
+            suppressed.append(_suppression(
+                rule, entry, entity_key, label, metric, rule.min_events, start, end))
+            continue
+
         with db.tx() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO known_sources (kind, entity_key, first_seen, origin)"
                 " VALUES (?, ?, ?, 'live')",
                 (rule.known_kind, fp_key, now_str))
-        entity_key, label, internal = entity_parts(rule, row)
-        if _is_allowlisted(entity_key, row, allow):
-            continue
         severity = "P1" if internal else rule.severity
         findings.append(Finding(
             rule=rule, entity_key=entity_key, entity_label=label,
@@ -177,7 +210,7 @@ def _eval_new_source(rule: Rule, start: str, end: str,
             context={**_masked_context(rule, row),
                      "note": "內部帳號新來源" if internal else "新來源（90 天內首見）"},
         ))
-    return findings
+    return findings, suppressed
 
 
 def _eval_freshness(rule: Rule, end_dt: datetime) -> list[Finding]:
@@ -224,11 +257,19 @@ def _masked_context(rule: Rule, row: dict) -> dict:
     return ctx
 
 
-def evaluate(rules: tuple[Rule, ...], window_end: datetime) -> tuple[list[Finding], list[str]]:
-    """評估全部規則。回傳 (findings, 失敗規則 id 清單)。"""
+def evaluate(rules: tuple[Rule, ...],
+             window_end: datetime) -> tuple[list[Finding], list[str], list[Suppression]]:
+    """評估全部規則。回傳 (findings, 失敗規則 id, 被 allowlist 抑制的紀錄)。
+
+    呼叫端要餵 `rules.effective.effective_rules()`（含參數覆寫），不是
+    `loader.load_rules()`。落盤由 store 層負責 —— 這裡只算，不寫 events
+    也不寫 rule_suppressions（`_eval_new_source` 的 known_sources 是例外，
+    那是判定本身的一部分）。
+    """
     findings: list[Finding] = []
     failures: list[str] = []
-    allow = _active_allowlist_srcs()
+    suppressed: list[Suppression] = []
+    allow = allowlist.build_index(allowlist.active_entries())
     for rule in rules:
         if not rule.enabled:
             continue
@@ -236,14 +277,21 @@ def evaluate(rules: tuple[Rule, ...], window_end: datetime) -> tuple[list[Findin
             continue
         start_dt = window_end - timedelta(minutes=rule.window_minutes)
         start, end = timewin.fmt(start_dt), timewin.fmt(window_end)
+        # 逐規則的 try 必須包住覆寫套用之後的**全部**評估工作。
+        # 逃到 run_tick 的例外會讓心跳那一列完全沒被更新（見 checker/tick.py），
+        # 在 try 之內的話壞掉的規則只會進 failures、心跳帶出橘燈。
         try:
             if rule.kind == "sql_threshold":
-                findings.extend(_eval_sql_threshold(rule, start, end, window_end, allow))
+                f, s = _eval_sql_threshold(rule, start, end, window_end, allow)
             elif rule.kind == "new_source":
-                findings.extend(_eval_new_source(rule, start, end, window_end, allow))
+                f, s = _eval_new_source(rule, start, end, window_end, allow)
             elif rule.kind == "freshness":
-                findings.extend(_eval_freshness(rule, window_end))
+                f, s = _eval_freshness(rule, window_end), []
+            else:
+                continue
+            findings.extend(f)
+            suppressed.extend(s)
         except Exception:
             logger.exception("規則 %s 評估失敗", rule.id)
             failures.append(rule.id)
-    return findings, failures
+    return findings, failures, suppressed

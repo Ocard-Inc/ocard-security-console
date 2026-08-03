@@ -16,6 +16,9 @@
      CONSOLE_BASE_URL 本來就是掛載點的唯一真相（登入完的回跳路徑也從它推導），
      所以由後端注入不會多一個可能與現實不符的設定。 -->
 <script>window.__MOUNT__ = "{{MOUNT}}";</script>
+<!-- favicon 與側邊欄用同一份檔案（ROS 的 public/logo.svg 原封不動）。
+     沒有這一行時瀏覽器會去要 /favicon.ico —— 掛在 /security 底下時那是 ROS 的路徑。 -->
+<link rel="icon" type="image/svg+xml" href="{{MOUNT}}/static/ds/logo.svg">
 <link rel="stylesheet" href="{{MOUNT}}/static/ds/colors_and_type.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">

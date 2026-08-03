@@ -90,12 +90,44 @@ def current_user(
                        source="ros", ros_role_name=user.role_name)
 
 
+# 端點功能標記的唯一真相。目前**不做分級**（見模組說明），但這個集合仍然有用：
+# 打錯的權限字串是程式錯誤，而它原本是完全靜默的 —— 一個 typo 就讓「這個端點
+# 屬於哪個功能」的標記失去意義，而且沒有任何地方會發現。
+#
+# 之後要恢復分級，這裡就是角色 → 權限對照表的落點。
+PERMISSIONS = frozenset({
+    "view_overview",
+    "view_events",
+    "judge_event",
+    "use_explorer",
+    "view_masked_detail",
+    "view_raw_payload",
+    "view_quick",
+    "view_health",
+    "run_sweep",
+    # 規則與 Allowlist 管理（見 api/rules_routes.py、api/allowlist_routes.py）。
+    # 注意：edit_rules 與 manage_allowlist 目前**擋不住任何人** ——
+    # 這個功能的安全模型是「留痕 + 可見」而不是「阻止」，理由見那兩個模組。
+    "view_rules",
+    "edit_rules",
+    "view_allowlist",
+    "manage_allowlist",
+    "view_audit",
+})
+
+
 def guard(user: CurrentUser, permission: str) -> None:
     """保留呼叫點以標示「這個端點屬於哪個功能」，目前不再分級。
 
     能通過 current_user 的人就有全部功能；真正的關卡是 ROS 的
     security.console。之後若要分級，改這裡即可。
+
+    未知的權限字串一律拋 ValueError（→ 500）。那是程式錯誤，不是使用者錯誤，
+    而且大聲失敗才會在測試打過端點時被抓到。
     """
+    if permission not in PERMISSIONS:
+        raise ValueError(
+            f"未知的權限字串 {permission!r} —— 要新增請加進 auth/roles.PERMISSIONS")
     return None
 
 

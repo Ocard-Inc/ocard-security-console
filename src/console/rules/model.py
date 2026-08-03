@@ -50,6 +50,36 @@ class Rule:
     min_events: float = 0             # new_source：視窗內至少 N 筆才視為有意義的新來源
     cooldown_minutes: int = 60
     note: str = ""
+    # SQL 裡 `HAVING metric >= N` 的字面值（loader 從 sql 解析，抓不到就是 None）。
+    #
+    # 這是**門檻的真正下限**：ClickHouse 端就先濾掉低於它的列了，所以把
+    # static_floor 調到它以下不會讓規則更靈敏 —— UI 顯示新值、events.threshold
+    # 記新值、命中數完全不變。使用者的結論會是「調低門檻也沒有更多告警，
+    # 所以真的沒事」。這個欄位存在的唯一理由就是讓那件事說得出來。
+    sql_floor: float | None = None
+
+
+@dataclass(frozen=True)
+class Suppression:
+    """一次「命中了規則，但被 allowlist 擋掉」的紀錄。
+
+    抑制原本是整筆丟棄、只在 log 留一行（new_source 連 log 都沒有），
+    於是沒有人看得出這個刻意製造的盲區實際遮掉了多少東西 ——
+    而那正是判斷一條例外該不該續期的唯一依據。
+    """
+    rule_id: str
+    rule_name: str
+    allowlist_id: int
+    allowlist_name: str
+    source_ip: str
+    # 與 Finding 相同的去重鍵。store/events.py 靠它認出「這個 active 事件本來
+    # 會命中，只是被抑制了」，因此不該被當成「已恢復」。
+    entity_key: str
+    entity_label: str
+    metric: float
+    threshold: float
+    window_start: str
+    window_end: str
 
 
 @dataclass(frozen=True)

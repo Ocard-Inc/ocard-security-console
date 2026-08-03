@@ -24,6 +24,9 @@ RULES_DIR = CONFIG_DIR / "rules"
 _FP_KINDS = {None, "actor", "src", "token", "resource"}
 # 排除函式呼叫（如 trim(BOTH ' ' FROM splitByChar(...))）與子查詢 FROM (
 _TABLE_RE = re.compile(r"\bFROM\s+([A-Za-z_][\w.]*)\b(?!\s*\()", re.IGNORECASE)
+# SQL 端的預篩門檻。15 條有 SQL 的規則全部寫成 `HAVING metric >= N`（字面值）。
+# 抓不到就留 None 而不是猜一個數字 —— 見 Rule.sql_floor 的說明。
+_SQL_FLOOR_RE = re.compile(r"\bHAVING\s+metric\s*>=\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 class RuleConfigError(ValueError):
@@ -121,11 +124,23 @@ def _parse_rule(path: Path, data: dict) -> Rule:
         min_events=float(data.get("min_events", 0)),
         cooldown_minutes=int(data.get("cooldown_minutes", 60)),
         note=str(data.get("note", "")),
+        sql_floor=_sql_floor(sql),
     )
+
+
+def _sql_floor(sql: str | None) -> float | None:
+    m = _SQL_FLOOR_RE.search(sql) if sql else None
+    return float(m.group(1)) if m else None
 
 
 @lru_cache(maxsize=1)
 def load_rules() -> tuple[Rule, ...]:
+    """YAML 的真相。**不要 cache_clear()** —— 見 rules/effective.py。
+
+    五分鐘檢查與回測用的不是這個函式，而是
+    `rules.effective.effective_rules()`（YAML + SQLite 的參數覆寫）。
+    這裡回傳的是「檔案裡寫了什麼」，供 API 並列顯示「原值 → 目前生效值」。
+    """
     rules: list[Rule] = []
     seen: set[str] = set()
     for path in sorted(RULES_DIR.glob("*.yaml")):

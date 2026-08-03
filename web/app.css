@@ -100,10 +100,17 @@ input, select, textarea { font-family: inherit; }
   display: flex; align-items: center; gap: 10px; padding: 18px 18px 16px;
   border-bottom: 1px solid rgba(255,255,255,.08);
 }
+/* Ocard 品牌標記。圖檔是 ROS 的 public/logo.svg 原封不動搬過來（見 web/ds/logo.svg），
+   寬高比就是原圖的 230.81 × 248.91。黃色六邊形本身就是品牌形狀，不要再包一層黃底。
+
+   這裡用相對路徑是**安全的**，與 index.html 的規則相反：CSS 的 url() 是對
+   樣式檔自己的網址解析，掛在 /security 底下時 /security/static/app.css 會把它
+   解成 /security/static/ds/logo.svg —— 掛載前綴自動跟著走，不必經過 __MOUNT__。
+   （index.html 的 href 是對「文件」網址解析，那裡沒有尾斜線就會打到 ROS，
+   所以必須由後端注入前綴。兩者不同，不要把這行「修正」成絕對路徑。） */
 .nav-logo {
-  width: 30px; height: 30px; background: var(--ocard-yellow, #FFEA00); border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; color: #333; font-size: 15px;
+  width: 28px; height: 30px; flex: none;
+  background: url(ds/logo.svg) center / contain no-repeat;
 }
 .nav-title { color: #fff; font-weight: 700; font-size: 13.5px; line-height: 1.2; }
 .nav-sub { font-size: 11px; color: var(--text-2); }
@@ -177,7 +184,14 @@ tbody tr:hover { background: #FCFCFD; }
 .toggle button + button { border-left: 1px solid #D0D5DD; }
 .toggle button.on { background: var(--nav-bg); color: #fff; }
 
-select, input[type=text], input[type=number], textarea {
+/* `input:not([type])` 是刻意的：省略 type 的 input 語意上就是 text，但**不匹配**
+   `[type=text]`，於是整組邊框、圓角、padding、字級全部落空、退回瀏覽器原生外觀。
+   症狀是「這個框跟旁邊的框長得不一樣」，沒有任何錯誤可查（Explorer 的帳號與
+   來源 IP 兩個框曾經如此）。日期類的 type 也列進來，否則篩選列上的
+   datetime-local 與 select 併排時邊框粗細不一致。 */
+select, textarea,
+input:not([type]), input[type=text], input[type=number],
+input[type=date], input[type=datetime-local] {
   border: 1px solid #D0D5DD; border-radius: 7px; padding: 6px 9px; font-size: 12.5px;
   background: #fff; color: var(--text-1);
 }
@@ -295,10 +309,46 @@ label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; 
 .skel { background: #EAECF0; border-radius: 10px; animation: skpulse 1.4s infinite; }
 .empty-box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 60px; text-align: center; }
 
+/* 版面內的右欄抽屜。**刻意不是 position:fixed。** 設計稿畫的是蓋住全畫面的
+   固定抽屜，但那會蓋掉 header 與左側導覽（編輯設定時失去「我在哪」的上下文），
+   而且要自己處理 scroll lock 與 focus trap，而 .content 的 overflow-y:auto
+   已經替版面內的做法解決了捲動。 */
 .drawer {
   width: 380px; flex: none; background: #fff; border-left: 1px solid var(--line);
   display: flex; flex-direction: column; box-shadow: -4px 0 16px rgba(16,24,40,.06);
 }
+.drawer-h {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.drawer-body { flex: 1; overflow-y: auto; padding: 18px; }
+
+/* 表單欄位。box-sizing 那條是必要的：抽屜只有 380px，少了它 padding 會把
+   width:100% 的輸入框推出去。 */
+.field { margin-bottom: 11px; }
+.field-label { font-size: 12.5px; color: var(--text-2); margin-bottom: 3px; }
+/* 必填一律**同時**有紅色與「必填」二字 —— 顏色與符號都不是文字，
+   螢幕閱讀器與色盲使用者只靠其中一個看不出來。 */
+.field-label .req { color: var(--danger); font-weight: 700; margin-left: 3px; }
+/* checkbox 與 radio 必須排除。它們的寬度是「元件本身多大」而不是「欄位多寬」，
+   套上 width:100% 會把勾選框撐成整行寬、標籤被推到旁邊 —— 整個欄位跑版。
+   （`.field input` 這種泛用選擇器在同一個容器裡混用文字框與勾選框時就會這樣。） */
+.field input:not([type=checkbox]):not([type=radio]),
+.field select, .field textarea { width: 100%; box-sizing: border-box; }
+.field textarea { min-height: 54px; font-family: inherit; }
+.field-hint { font-size: 11px; color: var(--text-2); margin-top: 3px; line-height: 1.6; }
+.field-err { color: var(--danger); font-size: 11.5px; margin-top: 3px; }
+.field-row { display: flex; gap: 8px; }
+/* min-width:0 是必要的：flex 子項預設 min-width:auto，不會縮到比內容的固有
+   最小寬度更窄。少了它，並排的原生輸入框（尤其 datetime-local）會把
+   380px 的抽屜撐破，右邊那一個被切掉一半。 */
+.field-row > .field { flex: 1; min-width: 0; }
+.fieldset { border: 1px solid var(--line); border-radius: 7px; padding: 9px 11px; margin-bottom: 11px; }
+.fieldset legend { font-size: 12.5px; color: var(--text-2); padding: 0 4px; }
+
+/* 設定編輯的「YAML 原值 → 目前值」對照。刪除線只是輔助 ——
+   旁邊一定要有「YAML 原值」四個字，否則那是單一編碼。 */
+.diff-old { text-decoration: line-through; color: var(--text-2); }
 .modal-mask {
   position: fixed; inset: 0; background: rgba(16,24,40,.5); z-index: 60;
   display: flex; align-items: center; justify-content: center;

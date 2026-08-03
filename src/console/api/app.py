@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from console.api import routes
+from console.api import allowlist_routes, audit_routes, routes, rules_routes
 from console.auth import ros
 from console.checker.scheduler import scheduler_loop
 from console.core.config import WEB_DIR, console_mount_path, settings
@@ -56,6 +56,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Ocard Security Log Console", lifespan=lifespan)
 app.include_router(routes.router, prefix="/api")
+# 規則／Allowlist／稽核拆成獨立模組（routes.py 已經 800 行），但 URL 前綴一律
+# /api —— 前端的 lib.js api() 只加 /api，不認別的前綴。
+app.include_router(rules_routes.router, prefix="/api")
+app.include_router(allowlist_routes.router, prefix="/api")
+app.include_router(audit_routes.router, prefix="/api")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 

@@ -46,11 +46,23 @@ def test_actor_and_src_are_separate_objects() -> None:
     assert {c.entity_kind for c in cands} == {"actor", "src"}
 
 
-def test_suppressed_fps_are_dropped() -> None:
+def test_suppressed_srcs_are_dropped() -> None:
     """allowlist 內的來源完全不進候選（例：辦公室出口的大量帳號共用）。"""
-    hits = [_hit("P04", "credential_sharing", fp="src_OFFICE", kind="src"),
-            _hit("P06", "auth_ratio", fp="src_OFFICE", kind="src")]
-    assert correlate.correlate(hits, suppressed_fps={"src_OFFICE"}) == ()
+    hits = [_hit("P04", "credential_sharing", fp="1.34.41.218", kind="src"),
+            _hit("P06", "auth_ratio", fp="1.34.41.218", kind="src")]
+    assert correlate.correlate(hits, suppressed_srcs={"1.34.41.218"}) == ()
+
+
+def test_suppression_does_not_cross_entity_kinds() -> None:
+    """allowlist 只收來源 IP，抑制不可以牽連同名的帳號。
+
+    這裡曾經只比 entity_fp、不比 entity_kind —— 一筆字面上等於某個帳號名的
+    條目會把**那個帳號**整筆從報告裡抹掉，而報告只會顯示「另有 N 個來源已抑制」。
+    """
+    hits = [_hit("P01", "volume", fp="andrew_c", kind="actor"),
+            _hit("P02", "concentration", fp="andrew_c", kind="actor")]
+    cands = correlate.correlate(hits, suppressed_srcs={"andrew_c"})
+    assert len(cands) == 1 and cands[0].entity_kind == "actor"
 
 
 def test_strongest_in_group_uses_ratio_not_raw_metric() -> None:
