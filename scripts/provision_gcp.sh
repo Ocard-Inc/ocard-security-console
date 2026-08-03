@@ -289,17 +289,30 @@ EOF
 
 
 # ── 7. push-to-main trigger ───────────────────────────────────────────
-# 沿用現有的 1st-gen GitHub App 連線（ocard-data-api 用的同一個）。
-# 前提：repo 已在 Ocard-Inc 底下，且 Cloud Build 的 GitHub App 有權限存取它。
+# 走 **2nd-gen** 的 GitHub 連線（`github-ocard`，asia-east1），不是 ocard-data-api
+# 用的 1st-gen GitHub App trigger。1st-gen 需要在 GCP Console 完成一次互動式的
+# repository 連結（`FAILED_PRECONDITION: Repository mapping does not exist`），
+# 2nd-gen 則可以純指令建立映射，因為連線本身已經授權過整個 org。
 stage_trigger() {
+  say "Cloud Build repository 映射"
+  if have g builds repositories describe ocard-security-console \
+       --connection=github-ocard --region="$REGION"; then
+    echo "  已存在"
+  else
+    g builds repositories create ocard-security-console \
+      --connection=github-ocard --region="$REGION" \
+      --remote-uri=https://github.com/Ocard-Inc/ocard-security-console.git
+  fi
+
   say "Cloud Build trigger"
-  if have g builds triggers describe security-console-main; then
+  if have g builds triggers describe security-console-main --region="$REGION"; then
     echo "  已存在"
     return
   fi
   g builds triggers create github \
     --name=security-console-main \
-    --repo-owner=Ocard-Inc --repo-name=ocard-security-console \
+    --region="$REGION" \
+    --repository="projects/${PROJECT}/locations/${REGION}/connections/github-ocard/repositories/ocard-security-console" \
     --branch-pattern='^main$' \
     --build-config=cloudbuild.yaml \
     --service-account="projects/${PROJECT}/serviceAccounts/732142852645-compute@developer.gserviceaccount.com" \
