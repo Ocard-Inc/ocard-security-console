@@ -2,9 +2,17 @@
 // 圖表已移到 web/charts/（ApexCharts 6.7.0），這裡不再放繪圖程式碼。
 
 // 身分由 Ocard ROS 的 session cookie 決定（見後端 auth/ros.py），沒有角色分級。
-// user 只在後端未設定 ros.base_url 的離線模式下當作假身分。
+//
+// **`user` 的初始值刻意是空字串，不是任何一個 email。** 它原本是
+// `'dev@olis.com.tw'`，而 `app.js` 的 loadSession() 一度沒有指派 state.user ——
+// 於是以真實帳號登入時，畫面上顯示的是那個寫死的假位址，而它**看起來完全正常**，
+// 所以沒有人發現（實測連 Allowlist 的「負責人」都被存成它）。
+//
+// 空字串讓「還不知道是誰」不可能被渲染成一個像真的帳號：顯示端要嘛拿到真身分，
+// 要嘛拿到空值並自己說「未取得」。離線模式的假身分由**後端**決定
+// （auth/roles.py 的 X-Dev-User header 預設值），前端不再自己備一份。
 export const state = {
-  user: 'dev@olis.com.tw',
+  user: '',
   authSource: 'dev',
 };
 
@@ -16,7 +24,10 @@ function describe(detail, status) {
 
 export async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  if (state.authSource === 'dev') headers['X-Dev-User'] = state.user;
+  // 只在**已知**身分時才送 —— 空值會讓後端收到 `X-Dev-User: `（空字串），
+  // 那比不送更糟：CurrentUser.email 會是空的，而 `name` 走 email.split('@')[0]
+  // 也變空，畫面上就是一個沒有身分的操作者。不送的話後端用自己的預設值。
+  if (state.authSource === 'dev' && state.user) headers['X-Dev-User'] = state.user;
   // __MOUNT__ 由後端注入（掛在 ROS /security 子路徑時為 "/security"）。
   // 少了它，API 會打到 ROS 自己的路由上。
   const root = window.__MOUNT__ || '';
