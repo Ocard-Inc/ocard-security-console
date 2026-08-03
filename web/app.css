@@ -253,44 +253,49 @@ label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; 
 .rangepick-custom input { display: block; width: 100%; margin-top: 3px; }
 .rangepick-hint { font-size: 11px; color: var(--text-2); margin-top: 2px; }
 
-/* 品牌選擇器（components/brand-picker.js）。
-   命名與版面刻意對齊上面的 .rangepick-* —— 同一種「輸入框下方展開清單」的東西。 */
-.brandpick { position: relative; }
-.brandpick-input { width: 100%; }
+/* 品牌選擇器（components/brand-picker.js）與分店選擇器（components/store-picker.js）。
+   命名與版面刻意對齊上面的 .rangepick-* —— 同一種「輸入框下方展開清單」的東西。
+
+   兩者形狀**完全相同**（輸入框 → 選定後變成一枚可清除的標籤），所以共用同一組
+   宣告而不是複製第三份。這裡已經有兩份幾乎一樣的 CSS（.brandpick 與下面的
+   .eppick）—— 再複製一份會讓「改一次選擇器的外觀」變成要記得改三個地方，
+   而漏改的症狀是三個選擇器長得不一樣，沒有人會發現那是漏改而不是設計。 */
+.brandpick, .storepick { position: relative; }
+.brandpick-input, .storepick-input { width: 100%; }
 /* 已選狀態不是 input，是一枚可清除的標籤：選定之後就不該還能編輯文字，
    否則使用者會以為改字就能換品牌，但實際送出的仍是舊編號。 */
-.brandpick-sel {
+.brandpick-sel, .storepick-sel {
   display: flex; align-items: center; gap: 6px;
   border: 1px solid #D0D5DD; border-radius: 7px; padding: 5px 6px 5px 9px;
   background: #fff; font-size: 12.5px;
 }
-.brandpick-sel-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brandpick-x {
+.brandpick-sel-text, .storepick-sel-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brandpick-x, .storepick-x {
   flex: none; border: none; background: none; cursor: pointer; padding: 0 3px;
   color: var(--text-2); font-size: 12px; line-height: 1;
 }
-.brandpick-x:hover { color: var(--text-1); }
+.brandpick-x:hover, .storepick-x:hover { color: var(--text-1); }
 /* 往「右」展開（left:0）的理由同 .rangepick-pop：.content 是 overflow:auto 的
    捲動容器，往左展開會被 Log Explorer 左欄的邊界裁掉。 */
-.brandpick-pop {
+.brandpick-pop, .storepick-pop {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40;
   max-height: 260px; overflow-y: auto;
   background: #fff; border: 1px solid var(--line); border-radius: 9px;
   box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 4px;
 }
-.brandpick-row {
+.brandpick-row, .storepick-row {
   display: block; width: 100%; text-align: left; border: none; background: none;
   border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12.5px;
   color: var(--text-1); cursor: pointer;
 }
 /* 鍵盤與滑鼠共用同一個 .on —— 兩者不該有各自的高亮，否則會同時亮兩列 */
-.brandpick-row.on { background: var(--line-soft); }
-.brandpick-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brandpick-meta { display: block; font-size: 11px; color: var(--text-2); font-family: var(--mono); }
+.brandpick-row.on, .storepick-row.on { background: var(--line-soft); }
+.brandpick-name, .storepick-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brandpick-meta, .storepick-meta { display: block; font-size: 11px; color: var(--text-2); font-family: var(--mono); }
 /* 停用／已刪除用文字標示，不是只換顏色 —— 同 charts 的第二編碼原則 */
-.brandpick-off { color: var(--warn); font-family: inherit; }
-.brandpick-hint { padding: 7px 8px; font-size: 11.5px; color: var(--text-2); }
-.brandpick-hint.bad { color: var(--danger); }
+.brandpick-off, .storepick-off { color: var(--warn); font-family: inherit; }
+.brandpick-hint, .storepick-hint { padding: 7px 8px; font-size: 11.5px; color: var(--text-2); }
+.brandpick-hint.bad, .storepick-hint.bad { color: var(--danger); }
 
 /* Endpoint 建議選擇器（components/endpoint-picker.js）。形狀同 .brandpick-*，
    但沒有「已選標籤」—— endpoint 是自由前綴字串，選完仍要能繼續編輯。 */

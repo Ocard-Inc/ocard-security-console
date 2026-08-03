@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from console.core import brands, stores, timewin
 from console.queries import entity, entity_history, explorer, exprs
 
 
@@ -267,3 +268,52 @@ def test_timeline_rejects_absurd_day_ranges(client):
 def test_entity_endpoints_404_for_unknown_event(client):
     assert client.get("/api/events/EVT-9999/entity").status_code == 404
     assert client.get("/api/events/EVT-9999/entity/timeline").status_code == 404
+
+
+# --- 母體位置的品牌／分店名稱 -------------------------------------------------
+
+# 品牌 1180「wa10 瓦城」/ 分店 27681「WA10 APP」：R13 的持續高量對象，
+# 2026-08-01 12:00–13:00 有 12,981 次，穩定落在前 12 名內。
+_NAMED = {"brand": 1180, "store": 27681}
+_NAMED_WINDOW = ("2026-08-01 12:00:00", "2026-08-01 13:00:00")
+
+
+def _named_peers():
+    ref = entity.from_filters("api", _NAMED)
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    return entity.peers(ref, start, end)
+
+
+def test_peer_labels_name_the_brand_and_store():
+    """母體位置的每一列都要看得懂是誰。
+
+    橫條圖與底下的表格都直接渲染 `top[].label`（見 web/components/entity-panels.js），
+    而 `_display()` 對 mask 為 None 的維度原樣回傳 —— 品牌與分店因此是裸編號。
+    「1180 · 27681」沒有人認得出是「wa10 瓦城 · WA10 APP」，而這一塊的用途正是
+    讓人一眼看出離群的是誰。事件標題早就解名稱了（engine.entity_parts），
+    同一頁的兩處不一致本身就是缺陷。
+    """
+    result = _named_peers()
+    assert result["top"], "這個區間應該有母體資料"
+
+    self_row = next((r for r in result["top"] if r["is_self"]), None)
+    assert self_row is not None, (
+        f"本對象不在前 {len(result['top'])} 名內，換一個區間或對象："
+        f"{[r['label'] for r in result['top']]}")
+    assert brands.label(_NAMED["brand"]) in self_row["label"], self_row["label"]
+    assert stores.label(_NAMED["store"]) in self_row["label"], self_row["label"]
+
+    bare = [r["label"] for r in result["top"] if "（" not in r["label"]]
+    assert not bare, f"這些列仍是裸編號：{bare}"
+
+
+def test_peer_self_detection_still_uses_the_raw_values():
+    """加了名稱之後，`is_self` 不可以改用標籤比對。
+
+    店名會改，而且「（查無分店）」會讓多列長得一模一樣 —— 用標籤比對的話
+    高亮會落在錯的長條上，或者一次亮好幾條，而畫面看起來完全正常。
+    """
+    result = _named_peers()
+    assert sum(1 for r in result["top"] if r["is_self"]) == 1, (
+        "本對象必須剛好命中一列")

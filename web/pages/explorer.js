@@ -2,6 +2,7 @@
 import { post, num, pct, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import BrandPicker from '../components/brand-picker.js';
+import StorePicker from '../components/store-picker.js';
 import EndpointPicker from '../components/endpoint-picker.js';
 import RangePicker, { presetMinutes, toInputValue, toWallClock }
   from '../components/range-picker.js';
@@ -70,7 +71,8 @@ export default {
   // **不要加 watch** —— page 與 explorerFilter 在同一個 tick 賦值，watcher 永遠
   // 不會觸發；真的觸發就是雙重 run()。
   props: ['initialFilter'],
-  components: { BrandBreakdown, BrandPicker, EndpointPicker, ApexChart, RangePicker },
+  components: { BrandBreakdown, BrandPicker, StorePicker, EndpointPicker,
+                ApexChart, RangePicker },
   data() {
     return {
       f: {
@@ -406,11 +408,11 @@ export default {
              改了還沒按查詢時兩者會不同 —— 那個差異有用，所以留著。 -->
         <div v-if="result && result.meta.brand_filter" class="muted" style="font-size:11.5px;margin-top:3px">
           本次結果：{{ result.meta.brand_filter }}</div></div>
-      <!-- 分店沒有選擇器：沒有「候選分店」端點，而且這個欄位主要是事件帶過來的
-           （單店濫用規則的對象）。手動輸入時 -1 代表品牌層級操作、0 代表未填。 -->
-      <div><div class="muted" style="margin-bottom:3px">分店編號</div>
-        <input v-model.number="f.store" type="number" placeholder="例如 27681"
-               style="width:100%" @keyup.enter="run">
+      <!-- 分店連動上面的品牌：選了品牌就只搜該品牌的分店，選了分店則自動補上
+           它的品牌（每家分店只屬於一個品牌，所以兩個欄位永遠一致）。
+           連動的細節在 components/store-picker.js。 -->
+      <div><div class="muted" style="margin-bottom:3px">分店</div>
+        <StorePicker v-model="f.store" v-model:brand="f.brand" />
         <div v-if="result && result.meta.store_filter" class="muted" style="font-size:11.5px;margin-top:3px">
           本次結果：{{ result.meta.store_filter }}</div></div>
       <!-- Auth Log 沒有可篩的 endpoint 維度：action 半年來只有一個值（auth），
