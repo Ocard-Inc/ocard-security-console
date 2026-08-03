@@ -89,12 +89,38 @@ $ docker exec <container> python -c "import urllib.request;print(urllib.request.
 { source: "/security/:path*", destination: `${SECURITY_CONSOLE_ORIGIN}/:path*` },
 ```
 
-`ocard-ros` 的 Cloud Run 服務要設 `SECURITY_CONSOLE_ORIGIN=http://10.140.0.3:8600`。
-沒設就不掛這條 rewrite，本機開發不受影響。
-
 **內網位址是保留的靜態 IP**（`security-console-internal` = `10.140.0.3`），
 不會因為重啟而漂移。**不能改用內部 DNS 名稱** —— Cloud Run 經 VPC connector
 出去時的 DNS 不解析 VPC 的 `*.internal` 區域。
+
+### rewrite 的目標位址是 build-time 求值的
+
+位址寫死在 `next.config.mjs`（有 `SECURITY_CONSOLE_ORIGIN` 可覆寫，但**必須在
+build 時提供**），不是只靠執行期環境變數。原因是
+**Next.js 在 `next build` 時就把 `rewrites()` 的結果序列化進
+`.next/routes-manifest.json`**，執行期的環境變數改不了它。
+
+實測踩過：只在 ocard-ros 的 Cloud Run 服務設了 `SECURITY_CONSOLE_ORIGIN`，
+而 Dockerfile 的 `RUN npx next build` 看不到它 → `rewrites()` 回空陣列。
+症狀非常容易誤判方向：
+
+| | 結果 | 為什麼 |
+|---|---|---|
+| `GET /security` | 307 → `/login?callbackUrl=%2Fsecurity` **看起來正常** | middleware 是**執行期**的，照樣跑 |
+| `GET /security/static/app.css` | 404，`x-powered-by: Next.js` | manifest 裡沒有 rewrite |
+
+也就是「登入導向對了，但整頁沒有樣式也沒有 JS」——
+很難聯想到問題出在 build-time 求值。內網 IP 不是機密，所以直接寫死比在
+Dockerfile 與 `cloudbuild.yaml` 之間傳 build-arg 簡單也不易出錯。
+
+上版後的驗收（不需登入就能驗）：
+
+```bash
+curl -o /dev/null -w '%{http_code} %{redirect_url}\n' https://ros.ocard.co/security
+#   307 https://ros.ocard.co/login?callbackUrl=%2Fsecurity
+curl -o /dev/null -w '%{http_code} %{content_type}\n' https://ros.ocard.co/security/static/app.css
+#   200 text/css; charset=utf-8      ← 這一行才證明 rewrite 真的生效
+```
 
 ### 誰擋未登入的人
 
@@ -245,6 +271,25 @@ VM 沒有外部 IP、Cloud Build 也不在 VPC 內，所以無法直接打 `/hea
 Build 用的 service account 是 `732142852645-compute@developer.gserviceaccount.com`
 （沿用 `ocard-data-api` 的 trigger 設定）。它在這個 project 有 `roles/editor`，
 所以 `update-container` 不需要額外授權 —— 這是既有狀態，不是這次加的。
+
+trigger 走 **2nd-gen** 連線 `github-ocard`（asia-east1），不是 `ocard-data-api`
+用的 1st-gen GitHub App trigger。1st-gen 需要在 GCP Console 完成一次互動式的
+repository 連結（否則 `FAILED_PRECONDITION: Repository mapping does not exist`），
+2nd-gen 可以純指令建立映射。
+
+`ignoredFiles`（`docs/**`、`*.md`、`tests/**`、`scripts/restart_server.ps1`）
+讓只改文件的 push 不觸發 build —— 否則一個 README 錯字就要 reset 一次 VM。
+`gcloud builds triggers update github --ignored-files` 對 2nd-gen trigger 會回
+`INVALID_ARGUMENT`，要改用 `describe --format=yaml` → 去掉伺服器產生的欄位
+（`id`／`createTime`／`resourceName`）→ 加 `ignoredFiles` → `triggers import`。
+
+### CI 不跑測試（已知缺口）
+
+`uv run pytest` 需要真實的 ClickHouse 連線，而 Cloud Build **不在 VPC 內**，
+出口 IP 不是 ClickHouse 放行的 `34.81.63.175`。要在 CI 跑測試得改用
+private worker pool 並掛上 VPC connector。目前的做法是**本機跑完 287 則測試
+再 push** —— 這是刻意的取捨，不是忘記，但它意味著 CI 只驗證「映像建得起來、
+容器啟動得了」，不驗證行為。
 
 ---
 

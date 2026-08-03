@@ -328,7 +328,15 @@ Cloud Run revision 上，**不要照抄**。
 不用動；入向只開 ROS 的 VPC connector `10.8.0.0/28` 與 IAP。
 `ros.ocard.co/security` 由 `ocard-ros/next.config.mjs` 的 rewrite 指向
 `10.140.0.3:8600`（保留的靜態內網 IP；**不能用 `*.internal`**，Cloud Run 經
-VPC connector 出去時不解析 VPC 內部 DNS）。
+VPC connector 出去時不解析 VPC 內部 DNS）。那個位址**寫死在 next.config.mjs**
+—— Next.js 在 `next build` 時就把 `rewrites()` 序列化進 `routes-manifest.json`，
+只在 Cloud Run 設環境變數改不了它。改壞的症狀是「登入導向正常但整頁沒樣式」
+（middleware 是執行期的照樣跑，靜態資源卻拿到 ROS 的 404）。
+驗收一定要打 `/security/static/app.css` 而不只是 `/security`。
+
+**CI 不跑測試**：pytest 需要真實 ClickHouse，而 Cloud Build 不在 VPC 內、
+出口 IP 不被放行。本機跑完 287 則再 push 是刻意的取捨 ——
+CI 只驗證映像建得起來、容器啟動得了。
 
 ## 圖表（`web/charts/`）
 
