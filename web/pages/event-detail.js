@@ -9,6 +9,16 @@ import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
 
 const JUDGEMENTS = ['已確認攻擊', '合法整合', '誤報', '證據不足', '保持觀察'];
 
+// judgement_note 的三個欄位 → 顯示名稱。**三個都是選填**（2026-08 決定）：
+// 原本三個都必填，實際結果是大量事件停在「完全沒有判定」——
+// 一個空白的理由欄位仍然留下了誰、何時、結論是什麼，比沒有判定多得多。
+// 代價是要讓「沒填」看得出來，見 recorded 與 blankFields。
+const JUDGE_FIELDS = [
+  ['reason', '判定理由', '為什麼做出此判定'],
+  ['evidence', '主要證據', '引用的查詢或數據'],
+  ['next_step', '下一步或處置', '例如：通知平台團隊、持續觀察 48 小時'],
+];
+
 // 分析方式 key → 顯示名稱。標籤本身由 Explorer 持有（唯一真相）。
 const ANALYSIS_LABEL = Object.fromEntries(ANALYSES.map(a => [a.key, a.label]));
 
@@ -34,10 +44,29 @@ export default {
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
     range: '30m', customStart: '', customEnd: '',
-    judge: '', reason: '', evidence: '', nextStep: '', submitting: false, submitted: null,
-    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, PADS, ANALYSIS_LABEL,
+    judge: '', submitting: false, submitted: null,
+    // 表單的三個選填欄位，鍵與後端 payload 相同（見 submitJudge）
+    form: { reason: '', evidence: '', next_step: '' },
+    SEV_LABEL, SOURCE_LABEL, JUDGEMENTS, JUDGE_FIELDS, PADS, ANALYSIS_LABEL,
   }),
   computed: {
+    // 已提交判定的三個選填欄位：填了什麼、哪幾個是空的。
+    // 「全空」是正常狀態，但**必須說得出來** —— 只給一個綠色的「判定已提交」
+    // 橫幅的話，什麼都沒寫的判定看起來跟一份完整的調查紀錄一模一樣。
+    recorded() {
+      const d = this.e?.judgement_detail || {};
+      const filled = [];
+      const blank = [];
+      for (const [key, label] of JUDGE_FIELDS) {
+        const value = (d[key] || '').trim();
+        (value ? filled : blank).push({ key, label, value });
+      }
+      return { filled, blank };
+    },
+    // 送出前列出哪幾欄是空的。選填不等於不重要，只是不阻擋。
+    blankFields() {
+      return JUDGE_FIELDS.filter(([k]) => !this.form[k].trim()).map(f => f[1]);
+    },
     // 「合法整合」的後續動作。判定完才出現（剛提交的或先前已存在的都算）。
     showAllowlistCta() {
       const j = this.submitted?.judgement || this.e?.judgement;
@@ -136,8 +165,10 @@ export default {
         evt_no: this.e.evt_no,
         rule_name: p.rule_name,
         // 判定理由填進「用途」，**不填進「建立理由」** ——
-        // 後者要寫的是「為什麼建立這條例外」，不是「為什麼判定合法整合」
-        purpose: this.submitted?.judgement ? this.reason : '',
+        // 後者要寫的是「為什麼建立這條例外」，不是「為什麼判定合法整合」。
+        // 理由是選填，所以這裡可能是空字串 —— Allowlist 表單的用途仍是必填，
+        // 空的話使用者會在那邊被要求補上，不會靜靜地建出一筆沒有用途的例外。
+        purpose: this.submitted?.judgement ? this.form.reason : '',
       });
     },
     async load() {
@@ -154,10 +185,8 @@ export default {
     async submitJudge() {
       this.submitting = true;
       try {
-        const r = await post(`/events/${this.evtNo}/judge`, {
-          judgement: this.judge, reason: this.reason,
-          evidence: this.evidence, next_step: this.nextStep,
-        });
+        const r = await post(`/events/${this.evtNo}/judge`,
+                             { judgement: this.judge, ...this.form });
         this.submitted = r;
         await this.load();
       } catch (err) { this.error = err.message; }
@@ -179,7 +208,14 @@ export default {
   created() { this._rows = { current: [] }; },
   mounted() { this.load(); },
   watch: {
-    evtNo() { this.load(); this.submitted = null; },
+    // 換事件時把表單清空。留著的話上一個事件打的理由會跟著過來，而提交只差
+    // 一顆按鈕（三個欄位選填之後不再有必填擋在中間）。
+    evtNo() {
+      this.load();
+      this.submitted = null;
+      this.judge = '';
+      this.form = { reason: '', evidence: '', next_step: '' };
+    },
     // 'custom' 由 applyCustomRange 自己觸發，避免 start/end 還沒填好就查
     range(key) { if (key !== 'custom') this.load(); },
   },
@@ -388,6 +424,25 @@ export default {
       <div v-if="e.judgement" class="banner banner-ok" style="margin:0">
         判定已提交：<strong>{{ e.judgement }}</strong>（{{ e.owner }}）。已寫入操作稽核。
       </div>
+      <!-- 判定當下填了什麼。理由／證據／下一步都是選填，所以「有填」與「沒填」
+           必須看得出差別 —— 這三個欄位原本是**只寫不讀**的（寫進
+           judgement_note 而畫面上沒有任何地方顯示），選填之後那等於
+           「打了字也沒人會看到」。 -->
+      <div v-if="e.judgement" class="note-quote" style="margin-top:10px">
+        <template v-if="recorded.filled.length">
+          <div v-for="r in recorded.filled" :key="r.key" style="margin-bottom:8px">
+            <div style="font-weight:500;font-size:12.5px">{{ r.label }}</div>
+            <div style="white-space:pre-wrap">{{ r.value }}</div>
+          </div>
+          <div v-if="recorded.blank.length" class="muted" style="font-size:11.5px">
+            未填：{{ recorded.blank.map(b => b.label).join('、') }}（三個欄位皆為選填）
+          </div>
+        </template>
+        <div v-else class="muted">
+          此判定沒有留下理由、證據或處置紀錄 —— 三個欄位皆為選填。
+          查得到的只有「誰、什麼時候、判定成什麼」。
+        </div>
+      </div>
       <!-- 「合法整合」之後的後續動作。判定完才顯示，而且重新進頁面時仍看得到
            （判定已經存在 e.judgement 裡）。 -->
       <div v-if="showAllowlistCta" class="banner banner-info" style="margin:10px 0 0">
@@ -416,8 +471,14 @@ export default {
           <span v-else style="color:var(--warn)">未生效：{{ m.reason_not_applied }}</span>
         </div>
       </div>
-      <template v-else-if="canJudge">
-        <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      <!-- 判定表單是獨立的 v-if，**不接在上面那個 Allowlist 區塊的 v-else-if 上**：
+           串在一起的話，只要這個來源有任何 Allowlist 條目，整個判定表單就消失，
+           而畫面上不會有任何說明（連「無法提交判定」那句都不會出現）。 -->
+      <template v-if="canJudge">
+        <div v-if="e.judgement" style="font-size:12.5px;font-weight:500;margin:14px 0 8px">
+          重新判定 —— 會覆寫上面那筆紀錄，並在操作稽核留下新的一列（舊的那列仍查得到）
+        </div>
+        <div style="display:flex;gap:6px;margin:12px 0;flex-wrap:wrap">
           <button v-for="j in JUDGEMENTS" :key="j" class="btn"
                   :class="{active: judge===j}"
                   :style="judge===j && j==='已確認攻擊' ? {background:'var(--p1)',borderColor:'var(--p1)',color:'#fff'} : {}"
@@ -428,16 +489,25 @@ export default {
           後續處置請於下方「下一步或處置」記錄。
         </div>
         <div class="grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:12px">
-          <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">判定理由（必填）</div>
-            <textarea v-model="reason" style="width:100%;height:64px" placeholder="為什麼做出此判定"></textarea></div>
-          <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">主要證據（必填）</div>
-            <textarea v-model="evidence" style="width:100%;height:64px" placeholder="引用的查詢或數據"></textarea></div>
-          <div><div style="font-size:12.5px;font-weight:500;margin-bottom:4px">下一步或處置（必填）</div>
-            <textarea v-model="nextStep" style="width:100%;height:64px"
-                      placeholder="例如：通知平台團隊、持續觀察 48 小時"></textarea></div>
+          <div v-for="f in JUDGE_FIELDS" :key="f[0]">
+            <div style="font-size:12.5px;font-weight:500;margin-bottom:4px">
+              {{ f[1] }}<span class="muted" style="font-weight:400">（選填）</span></div>
+            <textarea v-model="form[f[0]]" style="width:100%;height:64px"
+                      :placeholder="f[2]"></textarea>
+          </div>
         </div>
-        <button class="btn btn-primary" :disabled="!judge || !reason || !evidence || !nextStep || submitting"
+        <!-- 選填不等於不重要。三個都留空是允許的，但不可以安靜 —— 三個月後最想
+             知道的就是「當時為什麼這樣判」，而那時只剩這一段文字。 -->
+        <div v-if="judge && blankFields.length" class="banner banner-warn"
+             style="font-size:12.5px">
+          <strong>{{ blankFields.join('、') }}</strong> 未填。三個欄位皆為選填，留空不會擋住提交
+          <template v-if="blankFields.length === JUDGE_FIELDS.length">——
+            但這筆判定將只留下「誰、什麼時候、判定成什麼」，沒有為什麼。</template>
+        </div>
+        <button class="btn btn-primary" :disabled="!judge || submitting"
                 @click="submitJudge">{{ submitting ? '提交中…' : '提交判定' }}</button>
+        <span v-if="!judge" class="muted" style="font-size:12px;margin-left:10px">
+          尚缺：請先選一個判定結果（上方五顆按鈕）</span>
       </template>
       <div v-else class="muted" style="font-size:13px">
         目前無法提交判定（未取得有效的登入 session）。

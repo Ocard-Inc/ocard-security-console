@@ -1,6 +1,8 @@
 """API 煙霧測試（會實際打 ClickHouse，需要有效 .env）。"""
 from __future__ import annotations
 
+import pytest
+
 
 def test_session_reports_identity(client):
     """沒有角色分級：session 回的是身分，不是等級。"""
@@ -51,9 +53,50 @@ def test_event_detail_404(client):
     assert r.status_code == 404
 
 
-def test_judge_requires_all_fields(client):
+def test_judge_accepts_judgement_alone(client):
+    """理由／證據／下一步自 2026-08 起皆為選填 —— 只給判定必須成功。
+
+    原本三個都必填，實際結果是大量事件停在「完全沒有判定」；一個空白的理由
+    仍然留下了誰、何時、結論是什麼。代價是「沒填」必須說得出來，見下一條斷言。
+    """
     r = client.post("/api/events/EVT-0001/judge", json={"judgement": "誤報"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["judgement"] == "誤報"
+    assert body["recorded"] == {"reason": "", "evidence": "", "next_step": ""}
+    # 「可以不填，但不能安靜」：全空時回應必須明說沒有留下任何理由，
+    # 否則畫面上一個什麼都沒寫的判定與一份完整的調查紀錄長得一模一樣。
+    assert "沒有留下任何理由" in body["note"]
+
+
+def test_judge_detail_is_readable_back(client):
+    """填了的欄位必須看得到。
+
+    這三個欄位原本是**只寫不讀**的（寫進 judgement_note，而 `_event_public`
+    沒有回傳它）。既然改成選填，「有填」就必須與「沒填」看得出差別 ——
+    不然選填等於「打了字也沒人會看到」。
+    """
+    r = client.post("/api/events/EVT-0001/judge",
+                    json={"judgement": "合法整合", "reason": "  客戶自家 APP  "})
+    assert r.status_code == 200, r.text
+    assert r.json()["recorded"]["reason"] == "客戶自家 APP", "前後空白要去掉"
+    detail = client.get("/api/events/EVT-0001").json()
+    assert detail["judgement_detail"] == {
+        "reason": "客戶自家 APP", "evidence": "", "next_step": ""}
+
+
+def test_judge_rejects_unjudged_as_a_judgement(client):
+    """「待判定」是篩選器裡 judgement IS NULL 的顯示值，不是可以提交的判定。"""
+    r = client.post("/api/events/EVT-0001/judge", json={"judgement": "待判定"})
     assert r.status_code == 400
+
+
+def test_judge_rejects_unknown_field(client):
+    """沒有 Pydantic：欄名打錯若被靜靜忽略，症狀是「送出成功但什麼都沒存」。"""
+    r = client.post("/api/events/EVT-0001/judge",
+                    json={"judgement": "誤報", "nextStep": "通知平台團隊"})
+    assert r.status_code == 400
+    assert "nextStep" in r.json()["detail"]
 
 
 # ── 圖表相關：時間範圍與 sparkline ────────────────────────────────────────
@@ -134,6 +177,53 @@ def test_events_unjudged_default_off(client):
     a = client.get("/api/events").json()["total"]
     b = client.get("/api/events?unjudged=false").json()["total"]
     assert a == b
+
+
+# ── 判定篩選 ──────────────────────────────────────────────────────────────
+
+def test_events_judgement_filter_matches_breakdown(client):
+    """篩出來的筆數必須等於分布裡的數字。
+
+    兩者對不上就是「畫面說有 4 筆誤報，點進去只有 1 筆」，而那個症狀會被讀成
+    資料在跳動。前端的下拉選項也只能來自這裡的 judgements / unjudged_label ——
+    自己列一份的話，差一個字就是一個永遠篩不到東西的選項。
+    """
+    everything = client.get("/api/events", params={"hours": 2160}).json()
+    labels = [everything["unjudged_label"], *everything["judgements"]]
+    assert set(everything["by_judgement"]) == set(labels)
+    assert sum(everything["by_judgement"].values()) == everything["total"]
+    if everything["total"] >= 300:
+        # SELECT 有 LIMIT 300：撞到上限時篩選後的查詢會看到未篩選那 300 列
+        # 之外的資料，兩邊本來就不該相等。
+        pytest.skip("事件數撞到 LIMIT 300，分布與篩選不可比")
+    for label, n in everything["by_judgement"].items():
+        got = client.get("/api/events",
+                         params={"hours": 2160, "judgement": label}).json()
+        assert got["total"] == n, f"{label}：分布說 {n} 筆，篩選回 {got['total']} 筆"
+        if label == everything["unjudged_label"]:
+            assert all(e["judgement"] is None for e in got["events"])
+        else:
+            assert all(e["judgement"] == label for e in got["events"])
+
+
+def test_events_judgement_rejects_unknown(client):
+    """值是封閉集合，打錯要大聲炸。
+
+    靜靜接受的話 `judgement=誤報x` 回 0 筆，而畫面上的已套用條件寫著
+    「判定 = 誤報x」—— 讀起來像「這段時間沒有誤報」。
+    """
+    r = client.get("/api/events", params={"judgement": "誤報x"})
+    assert r.status_code == 400
+
+
+def test_events_judgement_conflict_with_unjudged(client):
+    """unjudged 與具體判定同時給永遠是 0 筆，那必須是 400 而不是空清單。"""
+    r = client.get("/api/events", params={"judgement": "誤報", "unjudged": "true"})
+    assert r.status_code == 400
+    # 「待判定」與 unjudged 指的是同一件事，不算矛盾（總覽的連結會走到這裡）
+    same = client.get("/api/events", params={"judgement": "待判定", "unjudged": "true"})
+    assert same.status_code == 200, same.text
+    assert all(e["judgement"] is None for e in same.json()["events"])
 
 
 # ── 自適應分桶 ────────────────────────────────────────────────────────────

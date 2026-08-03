@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from console.api import drilldown
+from console.api import drilldown, validate
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
 from console.core import brands, timewin
@@ -29,6 +29,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SEV_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+# 調查判定的允許值。前端 web/pages/event-detail.js 的 JUDGEMENTS 是同一組字，
+# 而 /events 的 judgement 篩選也讀它 —— 提交端與篩選端必須是同一個常數，
+# 否則會出現「存得進去但篩不出來」的判定值。
+JUDGEMENTS = ("已確認攻擊", "合法整合", "誤報", "證據不足", "保持觀察")
+
+# 「還沒有人判定」在篩選器裡的值。events.judgement 存的是 NULL，而 NULL 沒辦法
+# 當成查詢字串傳，所以給它一個顯示用的值。**它不是可以提交的判定** ——
+# judge_event 只接受 JUDGEMENTS。
+UNJUDGED = "待判定"
+
+# judgement_note 的三個欄位。自 2026-08 起全部選填，所以空字串是正常值。
+_JUDGEMENT_FIELDS = ("reason", "evidence", "next_step")
 
 
 # ─────────────────────────── 會話與導覽 ───────────────────────────
@@ -258,6 +271,33 @@ def _event_public(e: dict) -> dict:
     }
 
 
+def _judgement_detail(raw: str | None) -> dict:
+    """判定當下填的理由／證據／下一步。
+
+    **三個欄位自 2026-08 起選填，所以空字串是正常值、不是資料缺損。**
+    這個函式存在的理由是那三個欄位原本是**只寫不讀**的：judge_event 寫進
+    judgement_note，而 `_event_public` 沒有回傳它，畫面上沒有任何地方看得到。
+    既然填不填變成使用者的選擇，就必須看得見填了什麼 —— 不然「選填」等於
+    「打了字也沒人會看到」。
+
+    刻意只在詳細頁算（同 drilldown 的理由）：`_event_public` 也服務 /events
+    一次 300 列與 /overview，那兩處用不到這段自由文字。
+
+    舊資料可能不是 JSON（欄位比現在的表單更早存在）—— 那時整段放進 reason
+    而不是丟掉，那是別人寫下的調查紀錄。
+    """
+    empty = {k: "" for k in _JUDGEMENT_FIELDS}
+    if not raw:
+        return empty
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {**empty, "reason": raw}
+    if not isinstance(parsed, dict):
+        return {**empty, "reason": raw}
+    return {k: str(parsed.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
+
+
 @router.get("/events")
 async def list_events(
     severity: str | None = None,
@@ -265,11 +305,28 @@ async def list_events(
     rule_id: str | None = None,
     source: str | None = None,
     keyword: str | None = None,
+    # 調查判定。JUDGEMENTS 之一 = 只看該判定；UNJUDGED = 還沒有人判定。
+    # 值是封閉集合，**打錯一律 400**：靜靜接受的話 `judgement=誤報x` 會回 0 筆，
+    # 而畫面上的已套用條件寫著「判定 = 誤報x」，讀起來像「這段時間沒有誤報」。
+    judgement: str | None = None,
+    # UNJUDGED 的別名。資安總覽的「前往判定」連結與 test_api_smoke 在用，
+    # 保留是為了不破那個契約；新的呼叫端一律用 judgement。
     unjudged: bool = False,
     hours: int = Query(168, ge=1, le=24 * 90),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_events")
+    if judgement:
+        if judgement not in JUDGEMENTS and judgement != UNJUDGED:
+            raise HTTPException(
+                400, f"judgement 必須是 {'、'.join((*JUDGEMENTS, UNJUDGED))} 之一"
+                     f"（收到 {judgement!r}）")
+        if unjudged and judgement != UNJUDGED:
+            # 兩個條件是 AND，同時給永遠是 0 筆。靜靜回 0 的話使用者的結論會是
+            # 「這段時間沒有這種判定」，而其實是自己把兩個入口都打開了。
+            raise HTTPException(
+                400, f"unjudged=true 與 judgement={judgement} 互相矛盾"
+                     f"（{UNJUDGED} 與已判定不可能同時成立）")
     clauses = ["first_seen >= ?"]
     params: list = [timewin.fmt(timewin.taipei_now() - timedelta(hours=hours))]
     for col, val in (("severity", severity), ("status", status),
@@ -280,18 +337,29 @@ async def list_events(
     if keyword:
         clauses.append("(entity_label LIKE ? OR rule_name LIKE ? OR evt_no LIKE ?)")
         params.extend([f"%{keyword}%"] * 3)
-    # 首頁「待判定」的連結來源：已結束但沒人看過的事件
-    if unjudged:
+    # 「待判定」是 judgement IS NULL 而不是某個字串，兩個入口（總覽橫幅的
+    # unjudged 連結、清單的判定篩選器）都落在這一條。
+    if unjudged or judgement == UNJUDGED:
         clauses.append("judgement IS NULL")
+    elif judgement:
+        clauses.append("judgement = ?")
+        params.append(judgement)
     rows = db.rows(
         f"SELECT * FROM events WHERE {' AND '.join(clauses)}"
         " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1"
         " WHEN 'P2' THEN 2 ELSE 3 END, first_seen DESC LIMIT 300", tuple(params))
     stats = {s: sum(1 for r in rows if r["severity"] == s) for s in _SEV_ORDER}
+    # by_judgement 與 by_severity 一樣是**已套用篩選之後**的統計。前端因此只在
+    # 沒有套用判定篩選時才顯示它 —— 混用兩種範圍（「這段時間全部的待判定數」
+    # 配上「篩選後的清單」）正是這個專案一再警告的誤導。
+    labels = [r["judgement"] or UNJUDGED for r in rows]
     return {
         "events": [_event_public(r) for r in rows],
         "total": len(rows),
         "by_severity": stats,
+        "by_judgement": {k: labels.count(k) for k in (UNJUDGED, *JUDGEMENTS)},
+        "judgements": list(JUDGEMENTS),
+        "unjudged_label": UNJUDGED,
         "ongoing": sum(1 for r in rows if r["status"] == "active"),
     }
 
@@ -319,6 +387,7 @@ async def event_detail(
     # `_event_public()` —— 後者也服務 /events（一次 300 列）與 /overview，
     # 而這裡完全用不到清單頁的成本與風險（見 api/drilldown.py 模組說明）。
     event["drilldown"] = drilldown.build(rule, event)
+    event["judgement_detail"] = _judgement_detail(row["judgement_note"])
     event["allowlist_prefill"] = _allowlist_prefill(rule, event)
     event["allowlist_matches"] = _allowlist_matches(rule, event)
     event["evidence"] = _build_evidence(row, event)
@@ -518,16 +587,28 @@ async def judge_event(
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
+    """提交調查判定。
+
+    **判定本身必填，理由／證據／下一步都是選填**（使用者於 2026-08 決定）。
+    原本三個都必填的論點是「三個月後最想知道的就是當時為什麼這樣判」，但那個
+    要求讓「看過了、確認是誤報」這種一句話就講完的事變成三個輸入框，實際結果是
+    大量事件停在**完全沒有判定**的狀態 —— 一個空白的理由欄位仍然留下了「誰在
+    什麼時候看過、結論是什麼」，比沒有判定多得多。
+
+    代價是可以留下一個沒有任何理由的判定，所以剩下兩件事變成唯一的約束：
+    回應的 note 明說「此判定沒有留下任何理由」，而事件詳細頁會把實際填了什麼
+    原樣顯示出來（見 `_judgement_detail`）。**可以不填，但不能安靜。**
+    """
     guard(user, "judge_event")
-    valid = ("已確認攻擊", "合法整合", "誤報", "證據不足", "保持觀察")
+    validate.reject_unknown_keys(payload, {"judgement", *_JUDGEMENT_FIELDS})
     judgement = payload.get("judgement")
-    if judgement not in valid:
-        raise HTTPException(400, f"判定必須是 {valid} 之一")
-    for field in ("reason", "evidence", "next_step"):
-        if not str(payload.get(field, "")).strip():
-            raise HTTPException(400, "判定理由、主要證據、下一步或處置皆為必填")
-    note = json.dumps({k: payload[k] for k in ("reason", "evidence", "next_step")},
-                      ensure_ascii=False)
+    if judgement not in JUDGEMENTS:
+        raise HTTPException(400, f"判定必須是 {'、'.join(JUDGEMENTS)} 之一"
+                                 f"（收到 {judgement!r}）")
+    # 三個欄位一律寫進 judgement_note，沒填的存成空字串而**不是省略鍵** ——
+    # 讀取端才不用去分辨「這次沒填」與「舊資料還沒有這個欄位」。
+    detail = {k: str(payload.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
+    note = json.dumps(detail, ensure_ascii=False)
     with db.tx() as conn:
         cur = conn.execute(
             "UPDATE events SET judgement = ?, judgement_note = ?, owner = ? WHERE evt_no = ?",
@@ -535,10 +616,13 @@ async def judge_event(
         if cur.rowcount == 0:
             raise HTTPException(404, f"找不到事件 {evt_no}")
     audit.record(who=user.email, role=user.role_label, action="變更事件狀態",
-                 target=f"{evt_no}：判定為 {judgement}", reason=payload["reason"])
-    return {"ok": True, "judgement": judgement,
-            "note": "本系統不會執行任何自動封鎖、停權或 token 撤銷；"
-                    "後續處置請於案件中記錄。"}
+                 target=f"{evt_no}：判定為 {judgement}",
+                 reason=detail["reason"] or None)
+    message = ("本系統不會執行任何自動封鎖、停權或 token 撤銷；"
+               "後續處置請於案件中記錄。")
+    if not any(detail.values()):
+        message += "此判定沒有留下任何理由、證據或處置紀錄。"
+    return {"ok": True, "judgement": judgement, "recorded": detail, "note": message}
 
 
 # ─────────────────────────── Log Explorer ───────────────────────────
