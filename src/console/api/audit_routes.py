@@ -3,9 +3,9 @@
 `store/audit.recent()` 早就寫好了但一直沒有呼叫者 —— 留痕存在卻沒人看得到。
 而 Allowlist 與規則覆寫的約束靠的正是「事後查得到」，所以這一頁不是附加功能。
 
-**這個端點不得呼叫 ClickHouse。** 純 SQLite，所以 `async def` 是對的；
-哪天有人想在這裡 join 什麼豐富顯示，得先改成同步 `def`（見 routes.py 對
-阻塞查詢的說明）。
+**這個端點不得呼叫 ClickHouse。** 純 SQLite 就夠了。
+它是同步 `def`（同全站其餘端點，2026-08 統一改過來）—— 這樣哪天真的有人
+在這裡 join 什麼豐富顯示，也不會因為一個阻塞查詢就凍住整個事件迴圈。
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _parse_at(value: str | None, label: str) -> str | None:
 
 
 @router.get("/audit")
-async def list_audit(
+def list_audit(
     # **全部是具名參數。** 絕不可以寫成 `audit.recent(**request.query_params)`：
     # recent() 把篩選欄名 f-string 進 SQL，而 Python 允許用
     # `f(**{"任意字串": v})` 把非識別字的鍵送進 **kwargs。

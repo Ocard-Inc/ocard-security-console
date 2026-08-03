@@ -10,7 +10,14 @@
 3. 抑制可見化：掃描報告與規則頁列出「被哪一條例外遮掉了什麼」。
 4. 沒有 DELETE，只有停用 —— audit_log.target 裡的 #id 必須永遠解得回一筆條目。
 
-**這些端點不得呼叫 ClickHouse**（純 SQLite，所以 async def 是對的）。
+**這些端點不得呼叫 ClickHouse**（`/allowlist/preview` 是唯一的例外，它要
+回答「這條例外過去 28 天會抑制掉什麼」）。
+
+全部是同步 `def` 而非 `async def`：2026-08 把整批端點改過來。原因不是
+SQLite 慢，而是 `async def` 會讓「哪天有人在這裡加一個 ClickHouse 查詢」
+變成一顆地雷 —— 那個查詢是阻塞的，會佔住事件迴圈讓**整個主控台**停止回應
+（實測 Explorer 一個 56 秒的查詢把不碰 DB 的 `/session` 拖到 53.6 秒，
+五分鐘排程也一起卡住）。同步 `def` 由 FastAPI 丟進 threadpool，沒有這個風險。
 """
 from __future__ import annotations
 
@@ -148,7 +155,7 @@ def _check_period(valid_from: object, valid_to: object) -> tuple[str, str | None
 
 
 @router.get("/allowlist")
-async def list_allowlist(
+def list_allowlist(
     status: str | None = None,
     rule_id: str | None = None,
     scope: str | None = None,
@@ -194,7 +201,7 @@ async def list_allowlist(
 
 
 @router.post("/allowlist/preview")
-async def preview(payload: dict = Body(...),
+def preview(payload: dict = Body(...),
                   user: CurrentUser = Depends(current_user)) -> dict:
     """建立之前先說出後果：這條例外會遮掉什麼。不寫入任何東西。"""
     guard(user, "view_allowlist")
@@ -265,7 +272,7 @@ async def preview(payload: dict = Body(...),
 
 
 @router.post("/allowlist")
-async def create_entry(payload: dict = Body(...),
+def create_entry(payload: dict = Body(...),
                        user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "manage_allowlist")
     validate.reject_unknown_keys(payload, _CREATE_KEYS)
@@ -320,7 +327,7 @@ def _target_text(ip: str, endpoint: str) -> str:
 
 
 @router.patch("/allowlist/{entry_id}")
-async def patch_entry(entry_id: int, payload: dict = Body(...),
+def patch_entry(entry_id: int, payload: dict = Body(...),
                       user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "manage_allowlist")
     row = allowlist.get(entry_id)
@@ -375,7 +382,7 @@ async def patch_entry(entry_id: int, payload: dict = Body(...),
 
 
 @router.post("/allowlist/{entry_id}/disable")
-async def disable_entry(entry_id: int, payload: dict = Body(...),
+def disable_entry(entry_id: int, payload: dict = Body(...),
                         user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "manage_allowlist")
     row = _require(entry_id)
@@ -406,7 +413,7 @@ async def disable_entry(entry_id: int, payload: dict = Body(...),
 
 
 @router.post("/allowlist/{entry_id}/enable")
-async def enable_entry(entry_id: int, payload: dict = Body(...),
+def enable_entry(entry_id: int, payload: dict = Body(...),
                        user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "manage_allowlist")
     row = _require(entry_id)
@@ -428,7 +435,7 @@ async def enable_entry(entry_id: int, payload: dict = Body(...),
 
 
 @router.get("/allowlist/{entry_id}/suppressions")
-async def entry_suppressions(entry_id: int, days: int = Query(28, ge=1, le=90),
+def entry_suppressions(entry_id: int, days: int = Query(28, ge=1, le=90),
                              limit: int = Query(100, ge=1, le=500),
                              user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "view_allowlist")
