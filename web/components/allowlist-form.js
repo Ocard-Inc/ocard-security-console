@@ -125,6 +125,14 @@ export default {
     creator() {
       return this.isEdit ? (this.entry.owner || '（未紀錄）') : (state.user || '');
     },
+    /** 離線模式時必須說出來：那個 email 是假身分，不是任何真實帳號。
+        不說的話畫面上是一個看起來完全正常的位址，而它會被存進核准紀錄。 */
+    creatorNote() {
+      if (this.isEdit) return null;
+      return state.authSource === 'dev'
+        ? '離線模式的假身分（未接 ROS）—— 正式環境會是你的登入帳號'
+        : null;
+    },
   },
   watch: {
     'f.source_ip'() { this.schedulePreview(); },
@@ -339,6 +347,7 @@ export default {
         <div class="field-label">創立人
           <span class="muted" style="font-size:11px">（自動帶入，不可修改）</span></div>
         <input type="text" :value="creator" readonly disabled aria-label="創立人">
+        <div v-if="creatorNote" class="field-hint" style="color:var(--warn)">{{ creatorNote }}</div>
       </div>
     </div>
 

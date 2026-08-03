@@ -100,6 +100,17 @@ const App = {
     async loadSession() {
       try {
         this.session = await api('/session');
+        // **`state.user` 必須在這裡被指派。** 它在 lib.js 的初始值是離線模式的
+        // 假身分（`dev@olis.com.tw`），而在 2026-08 之前這裡只設了 authSource ——
+        // 於是接了 ROS、以真實帳號登入時，側邊欄顯示 session.email（正確），
+        // 但任何讀 `state.user` 的地方都拿到那個假 email。
+        //
+        // 那不只是顯示錯：Allowlist 表單原本把 `state.user` 預填進「負責人」
+        // 並送給後端，而舊的寫入端是「payload 有值就用它」—— 結果**每一筆從 UI
+        // 建立的例外，不論是誰建的，負責人都被存成 dev@olis.com.tw**。
+        // 那個欄位現在改成後端從登入帳號寫入（見 allowlist_routes 的說明），
+        // 但根因在這一行，不修的話下一個讀 state.user 的功能會再錯一次。
+        state.user = this.session.email || '';
         state.authSource = this.session.auth_source;
         this.authError = null;
       } catch (e) {
