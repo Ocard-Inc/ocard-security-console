@@ -45,16 +45,23 @@ gcloud secrets versions add security-console-env --data-file=prod.env  # 改設�
 config/settings.yaml     全域參數（時區、視窗、門檻、敏感 route、內部帳號、污染窗）
 config/rules/*.yaml      16 條宣告式規則
 src/console/core/        ch（查詢）、masking（遮罩）、timewin（時間）、config、logging_setup
-src/console/rules/       loader（YAML→Rule + 驗證）、engine（評估）、baseline（門檻）、model
+src/console/rules/       loader（YAML→Rule + 驗證）、effective（YAML + 覆寫的合成）、
+                         engine（評估）、baseline（門檻）、model
 src/console/checker/     tick（單次檢查）、scheduler（asyncio 常駐）、calibrate、replay
-src/console/store/       db（SQLite WAL）、events（去重狀態機）、audit
+src/console/store/       db（SQLite WAL）、migrate（既有表的欄位遷移）、events（去重狀態機）、
+                         allowlist（例外名單的唯一入口）、rule_overrides、
+                         rule_suppressions（抑制紀錄）、audit
 src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）
 src/console/sweep/       期間異常掃描：probes（探針表）、run（併發）、correlate（交叉計票）、
                          score（評分）、limits（可信度限制）、report（組裝）、narrate（LLM）
 src/console/intel/       來源情報：ranges（離線 CIDR 比對）、classify（型態判定）、
                          refresh（掃描→分類→寫入）、store（ip_intel 讀取）
 data/cloud_ranges/       雲端業者公開的 IP 範圍檔 + ASN 公告前綴快照（版本寫在檔名裡）
-src/console/api/         app（FastAPI + lifespan 排程）、routes
+src/console/api/         app（FastAPI + lifespan 排程）、routes、
+                         rules_routes / allowlist_routes / audit_routes（獨立 router，
+                         前綴同為 /api）、validate（寫入端點的共用驗證）、
+                         allowlist_view（一列 → 公開形狀，兩個 router 共用）、
+                         drilldown（事件 → Explorer 篩選條件的推導）
 web/                     Vue 3 ESM SPA，無建置流程
 web/charts/              ApexCharts 封裝：ApexChart 元件、色票 token、安全 tooltip、圖型設定工廠
 ```
@@ -115,11 +122,61 @@ clickhouse client（thread-local 是為了避開 clickhouse-connect 同 session 
 **遷移**：`known_sources` 與 `ip_intel` 原本以指紋為鍵，政策改變後必須重建，
 否則 R08A/B/C 會把每個來源都當「首見」洪水式告警：
 `console.checker.calibrate --seed-known-sources` + `console.intel.refresh`。
-`db.py` 的 `_DERIVED_TABLES` 會自動丟掉欄位過時的**衍生表**（只有衍生表能這樣做）。
+`db.py` 的 `_DERIVED_TABLES` 會自動丟掉欄位過時的**衍生表**（只有衍生表能這樣做）；
+非衍生表（`allowlist` / `events` / `audit_log` / `rule_overrides`）一律走
+`store/migrate.py`，見「SQLite 欄位遷移」一節。
 
-**權限**：`auth/roles.py` 的 `PERMISSIONS` 是唯一真相，route 內以 `guard(user, perm)`
-強制；前端 `web/app.js` 的 NAV 只是隱藏，不算保護。目前身分由 `X-Dev-Role` /
-`X-Dev-User` header 決定（Phase 4 換 Google SSO）。
+**權限**：`auth/roles.py` 的 `PERMISSIONS` 是端點功能標記的唯一真相，route 內以
+`guard(user, perm)` 呼叫。但目前**不做分級** —— ROS 的角色勾了 `security.console`
+就有全部功能（含規則調整、Allowlist、操作稽核），沒勾就進不來（見 `auth/roles.py`
+與 `auth/ros.py`）。`guard()` 因此只驗權限字串本身存在（打錯拋 `ValueError`，
+那是程式錯誤而且原本完全靜默），不擋人。前端 `web/app.js` 的 NAV 只是隱藏，
+不算保護；**也不要把權限清單加回 `/session`** ——
+`tests/test_api_smoke.py` 反向守著它，沒有分級時那是假的保護。
+
+## SQLite 欄位遷移（`src/console/store/migrate.py`）
+
+`db._SCHEMA` 是 `CREATE TABLE IF NOT EXISTS`，所以它**只能建新表與新索引**；
+對既有的表整段 CREATE 被跳過，**新欄位永遠不會出現在正式環境**。純衍生表靠
+`_DERIVED_TABLES` 丟掉重建，但 `allowlist` / `events` / `audit_log` /
+`rule_overrides` 是人工核准或有稽核意義的資料 —— 丟掉重建等於刪掉別人的核准與
+留痕。剩下的唯一手段就是 `migrate.py`。
+
+**為什麼掛在 `db.get_conn()` 而不是一次性 CLI**：部署流程是 push → build →
+`update-container`（reset VM），**沒有任何步驟能插在新映像啟動之前跑 SQL**，
+所以「先 SSH 遷移再部署」在這個拓樸下做不到。放在 `get_conn()` 就沒有
+「忘記跑遷移」這個狀態。代價是**全程必須 idempotent**：連線是 thread-local，
+排程器 thread、FastAPI threadpool 的每條 thread、每個 CLI process 都各跑一次，
+兩條 thread 同時判斷「欄位不存在」再同時 ALTER 是真的會發生的。
+
+**`migrate.apply()` 必須在 `executescript(_SCHEMA)` 之前。** `_SCHEMA` 裡的
+`CREATE INDEX` 引用的是遷移**之後**的欄位名（`idx_allowlist_active` 用
+`source_ip`），在還沒改名的舊 DB 上會直接 `no such column` —— 而那個例外發生在
+`get_conn()` 裡：走到 DB 的請求全部 500、排程器 thread 拿不到連線，
+而 `/healthz` 不碰 DB、照樣回 200，**部署看起來成功**。
+反過來（migrate 在後）沒有任何好處：migrate 對不存在的表一律跳過。
+`tests/test_schema_migration.py` 用「全新 DB 與遷移後的舊 DB 欄位集合必須完全
+相同」擋住 `_SCHEMA` 改了而 `_ADD_COLUMNS` 沒改的漂移 ——
+那個漂移只在正式環境出現。
+
+**讀取端一律明列欄位，不可用 `row.get(col, default)`。** 「欄位不存在」與
+「值是 NULL」在語意上會撞在一起（`allowlist.rule_id` 的 NULL 是「全域」），
+欄位沒遷移成功時每一筆條目都靜靜變成全域，而畫面完全正常。要炸就大聲炸。
+
+**約束不要寫成 `CREATE TABLE` 裡的 `UNIQUE`。** SQLite 的 `ALTER TABLE` 不能加
+約束，寫在表定義裡只對新建的 DB 生效 —— 本機會擋、正式環境不會，兩邊都不報錯。
+`allowlist` 的唯一性語意是
+`(source_ip, COALESCE(rule_id,'*')) WHERE status <> '已停用'`（同一 IP 要能有
+全域 + 規則層級各一筆；停用的舊條目不可佔位），而 `CREATE UNIQUE INDEX` 在既有
+DB 有重複資料時**會建立失敗**、落進上面那個「整站 500 但 /healthz 200」的坑。
+所以改用**應用層檢查 + 409**（`store/allowlist.conflict()`）作為唯一機制。
+
+**DB 一旦被新版開過就不能退回舊版程式碼**（`source_fp` 已改名為 `source_ip`，
+舊版會 `no such column`）。那是大聲失敗、可接受，但部署前要備份
+`state/monitor.db`、`-wal`、`-shm` 三個檔（在 process 停掉之後做，WAL 才一致）。
+**schema 本身不用回滾**：`ALTER TABLE ADD COLUMN` 對舊程式是向前相容的
+（所有讀取端都明列欄位）—— 這句要寫進 runbook，免得有人因為
+「不敢回滾 schema」而不敢回滾映像。
 
 ## 期間異常掃描（`src/console/sweep/`）
 
@@ -170,7 +227,9 @@ P01（整體峰值）與 P03（敏感路由峰值）對一個本業就是查訂�
 
 `probes.SUFFICIENT_ALONE` 是單一訊號豁免：`source_trust`（客戶端送 `127.0.0.1`
 沒有正當用途）與 `credential_sharing`（一個 IP 持有上百個商家憑證）不需要第二個訊號。
-已知的正當集中出口（辦公室、代操服務）走 `allowlist`，由 `report.allowlisted_fps()` 抑制。
+已知的正當集中出口（辦公室、代操服務）走 `allowlist`，由 `store/allowlist.global_source_ips()`（**只有全域條目**）抑制；被抑制的來源仍會
+列在報告的 `suppressed` 段落裡，含「若不抑制會是第幾名」—— 只給一個數字的話
+沒有人判斷得出這條例外還該不該存在。
 
 `run.py` 的 `ThreadPoolExecutor` 是**模組層級、跨掃描重用**的：`core/ch.py` 的
 thread-local client 沒有回收機制，每次掃描開新 executor 會累積永不關閉的連線。
@@ -234,16 +293,160 @@ notify 與前端都據此切換文案。
 新增規則的完整路徑：寫 YAML → 若用了新的 `baseline_key`，在 `calibrate.py` 加對應的
 分布計算 → 重跑 calibrate → 用 `replay` 對歷史事件與正常日回測 →
 更新 `tests/test_api_smoke.py` 中寫死的規則數（目前 16）。`load_rules()` 有
-`lru_cache`，改 YAML 要重啟 server。
+`lru_cache`，改 YAML 要重啟 server（但 `enabled` / `static_floor` / `factor` /
+`cooldown_minutes` 走 UI 覆寫則立即生效，見下一節）。
+
+**新規則的 `entity` 欄位要能帶到 Log Explorer**：事件詳細頁的「在 Log Explorer
+查此對象」由 `api/drilldown.py` 從規則定義推導，對照表是 `_FILTER_BY_FP`
+（`actor` → `actor`、`src` → `source_ip`）與 `_FILTER_BY_COL`
+（`endpoint`／`route2` → `endpoint`、`_brand` → `brand`）。用了表外的欄位時
+`tests/test_event_drilldown.py` 會失敗 —— 那是刻意的：沒有對照就等於**沒有對象條件**，
+查出來會是「所有人做了什麼」而不是這個事件，數字與事件對不上。
+真的無法對照（entity 是字面常數，如 R09 的 `scope`）就寫進測試的 `UNMAPPABLE_COLS`
+並說明理由。「哪個篩選在哪張表可用」的唯一真相是 `explorer.filter_support()`，
+不要在 drilldown 裡再列一份。
+
+## 規則參數覆寫與 Allowlist
+
+`enabled` / `static_floor` / `factor` / `cooldown_minutes`（`new_source` 規則是
+`min_events`）可從 UI 覆寫，值存在 SQLite 的 `rule_overrides`，
+`rules/effective.effective_rules()` 是唯一的合成點，engine 每個 tick 重讀 ——
+**改了下一個 tick 生效、不必重啟**。SQL、entity、baseline_key、stat、population
+一律唯讀（SQL 是 injection 面，而改 baseline_key 沒重跑 calibrate 會憑空生出假倍數）。
+
+**`load_rules()` 是「YAML 的真相」，永遠不 `cache_clear()`。** 那是最容易被想到
+也最沒用的做法：它重讀的是 YAML 不是覆寫，對「立刻生效」毫無幫助，卻會讓 16 個
+YAML 的解析與 SQL 驗證發生在任意一條請求執行緒裡。`Rule` 的 `frozen=True` 是資產：
+覆寫走 `dataclasses.replace()` 產生新物件，沒人能就地改掉共用的快取版本。
+**`effective_rules()` 刻意不加 lru_cache** —— 加了覆寫就要重啟才生效，
+而且不會有任何錯誤訊息。
+
+這個做法**順帶解決 `store/events.py` 的 cooldown**：`Finding.rule` 就是 engine 收到
+的實例，所以只要餵給 `evaluate()` 的 tuple 是覆寫後的，`f.rule.cooldown_minutes`
+自動正確、`events.py` 一行都不用改。若改成「在每個使用點各自查覆寫」，
+那條路徑會是漏掉的那一個，症狀是「cooldown 改了但通知節奏沒變」。
+
+**覆寫的下限是 SQL 裡的 `HAVING` 字面值，不是 `static_floor`。** 15 條有 SQL 的規則
+全部寫死 `HAVING metric >= N`（R01=400、R03=2000、R07A=10、R10B=15000…），
+ClickHouse 端就先濾掉了。把 `static_floor` 調到那個數字以下，UI 顯示新值、
+`events.threshold` 記新值、**命中數完全不變** —— 使用者的結論會是
+「調低門檻也沒有更多告警，所以真的沒事」。`Rule.sql_floor` 由 loader 從 SQL 解析
+（抓不到留 None、不驗證），寫入端擋、`GET /api/rules` 把它當**可見欄位**回傳。
+
+**覆寫欄位逐 kind 決定**（`effective.editable_fields`）。`new_source`（R08A/B/C）
+沒有 `Threshold`，門檻是 `min_events`；`freshness`（R12）完全忽略 `rule.threshold`，
+讀 `settings().freshness.alert_minutes`；沒有 `baseline_key` 的規則（R07A/R07B）
+改 `factor` 不報錯也不生效。寫錯地方的症狀是「存了、API 回新值、引擎用舊值」。
+
+**`static_floor` 的 0 與 NaN 是兩種不同的災難。** `json.loads` **預設接受**
+`NaN` / `Infinity`（Starlette 的 `Request.json()` 用的就是它），所以這是能從 HTTP
+送進來的：`Infinity` 進 SQLite 是 REAL `inf`（規則永不命中）而 Starlette 的
+`JSONResponse` 是 `allow_nan=False`，序列化時直接 500 —— 那一頁再也打不開；
+`NaN` 進 SQLite **存成 NULL**，讀出來 `float(None)` TypeError。若流進
+`events.threshold`，`/api/events` 與 `/api/overview` 全部 500：一筆壞資料讓整個
+主控台掛掉。一律 `math.isfinite()` + 明確上下限（見 `api/validate.py`）；
+`enabled` 只吃 JSON bool（`bool("false")` 是 **True**）。
+
+**覆寫的套用與抑制的收集必須在 `evaluate()` 的 per-rule `try` 之內。** 逃到
+`run_tick` 的例外原本會讓心跳那一列完全沒被更新 → `consecutive_failures` 留 0 →
+`_monitor_status()` 顯示綠色「正常」→ `notify.on_tick_failure()` 的 `failures == 3`
+永遠不成立 → **Slack 一個字都不發**，唯一痕跡是 log 裡每五分鐘一筆 traceback。
+現在 `run_tick` 對**所有**例外都寫心跳失敗，且 `_monitor_status()` 會判
+`last_tick` 超過三個 tick 沒更新就是「監測中斷」（不會因為上一次成功而繼續綠燈）。
+
+**Allowlist 的範圍語意有四個讀取端，不是兩個。** `rule_id IS NULL` = 全域
+（所有規則 + 期間掃描）；有值 = 只對該規則、不影響掃描。
+① `rules/engine._allowlist_hit`；② `store/allowlist.global_source_ips()`
+（掃描用，帶 `rule_id IS NULL`；漏了它一筆「只對 R07B」的條目會讓該來源從整份
+掃描報告消失）；③ **`intel/refresh.seed_allowlist()` 的去重檢查**要
+`AND rule_id IS NULL` —— 漏了的話一筆規則層級條目會讓全域的辦公室出口播種永遠
+不執行，而它靜靜回到「憑證集中」榜首；那個檢查**刻意不看 status**，
+人工停用的核准不可被每日排程在隔天 06:00 悄悄復活；
+④ `sweep/correlate.is_suppressed` 必須檢查 `entity_kind == "src"`。
+
+**比對只看 entity 裡 `fp: "src"` 的欄位值，不可以拆 `entity_key`。** `entity_key`
+的格式是 `f"{rule.id}|" + "|".join(keys)`，逐段比對的話一筆 `source_ip='R01'` 的
+條目會**讓整條 R01 失效**，一筆等於某帳號名的條目會讓那個帳號在所有規則下失效。
+修這個 bug 一定要**同時**加反向測試（IP 相符時確實有抑制），否則有人把比對改嚴到
+什麼都不匹配也不會有測試失敗，而症狀會被誤讀成「規則太吵」並繼續調高門檻。
+
+**規則範圍的條目可以只有端點、沒有 IP。** 實測 `Api2/GetProfile` 的大量呼叫**同時**
+觸發兩條規則：R03（entity = src + endpoint，例如 `18.182.228.100 · Api2/GetProfile`）
+與 R04（entity **只有** endpoint，`Api2/GetProfile`）。R04 的對象根本沒有來源 IP，
+所以「IP + 端點」的例外只能讓 R03 閉嘴而 R04 繼續叫 —— 那等於沒解決問題
+（瓦城用自家 APP 打 get profile 就是這個形狀）。因此：
+
+- 規則範圍：`source_ip` 與 `endpoint` **至少一個**。兩者都空 = 「這條規則永不觸發」，
+  那應該去停用規則（停用會出現在資安總覽的橫幅上，一筆空例外不會）。
+- 全域：仍然**必須有 IP**。全域 + 只有端點 = 16 條規則都不看那個端點，盲區太大。
+- `store/allowlist.build_index()` 因此回傳 `Index(by_ip, by_rule)` 兩張表 ——
+  沒有 IP 的條目沒有索引鍵可用，要以 `rule_id` 另外收。刻意從 `index_by_ip()`
+  改名：舊呼叫端必須 TypeError 而不是靜靜地只比對到一半。
+- 端點是**完全相等**比對，不是前綴 —— 前綴會連 `Api2/GetProfileExtra` 一起放行。
+  UI 因此用 `EndpointPicker` 給真實值的清單（打錯的端點不會報錯，只會永遠不生效）。
+- 「這條規則還能用什麼縮小」的唯一真相是 `store/allowlist.dimensions(rule)`，
+  由 `GET /api/allowlist` 的 `rules[].filters` 送給前端。**前端不自己推導**
+  哪條規則有哪些維度 —— 猜錯會做出一個永遠不命中的例外。
+  同理 `allowlistable()` 現在是「有來源維度**或**有可縮小維度」，
+  只有 R09（字面常數 scope）與 R12（沒有 entity）完全不適用。
+- 寫入端要擋掉「這條規則吃不到的維度」：對 R04 填 IP、對 R07B 填端點都必須 400。
+  存起來的話它永遠不會命中，而畫面顯示「生效中」。
+
+**`valid_from` / `valid_to` 是字串比較。** 原生 `<input type="datetime-local">` 給的是
+`2026-08-03T00:00`，而另一邊是 `timewin.fmt()` 的空格格式。`'T'`(0x54) > `' '`(0x20)，
+所以帶 T 的 `valid_from` 永遠「還沒到」→ **新建的條目永遠不生效，畫面卻顯示生效中**；
+只給日期的 `valid_to` 會讓最後一天整天提早失效。一律經
+`store/allowlist.normalize_bound()`（date-only 補 `23:59:59`），
+而 `timewin.parse()` 本來就會拒絕帶 T 的字串 —— 那是刻意的，讓它成為可見的 400。
+
+**Allowlist 抑制會燒掉「首見」訊號，所以檢查排在 `known_sources` 寫入之前。**
+反過來的話（原本的順序）被抑制的來源仍被記成「已知」，日後停用那條例外，
+R08A/B/C **也永遠不會再對它告警** —— 而畫面上 allowlist 是停用的、規則是啟用的。
+`known_sources` 有 23 萬列、不在 `_DERIVED_TABLES`，清不回來。代價是例外到期後
+那個來源會以「新來源（90 天內首見）」的文案告警（文案錯，但訊號在），
+以及每個 tick 都會為它留一列抑制紀錄（有保留期限，`rule_suppressions.prune`）。
+
+**停用規則或建立 Allowlist 之後，「已恢復」是假的。** `store/events.py` 的收尾迴圈
+只知道「這個 tick 沒命中」，而沒命中有兩種完全不同的原因：指標真的回落，
+或者**我們停止看了**。原本兩者不分，所以停用一條規則之後 15 分鐘該規則所有進行中
+事件被標 resolved、P0/P1 還在 Slack 顯示「已恢復」；而 `status` 是就地 UPDATE、
+沒有逐 tick 歷史，那個誤標**無法從資料還原**（部署 reset VM 後的 catch-up 會在
+幾秒內一次發出一整批，很容易被當成好消息）。現在 `_silenced_keys()` 讓那些事件
+**暫停計時**（`miss_ticks` 不動、不標 resolved）。
+**「已恢復」只能在「規則仍啟用、entity 未被抑制、指標真的回到門檻以下」時出現。**
+
+**這個功能的安全模型是「留痕 + 可見」，不是「阻止」。** `guard()` 不分級、
+主控台在 VPC 內也拿不到操作者的來源 IP，所以連「不准把自己的 IP 加進去」都檢查
+不了。一筆全域條目會同時讓 16 條規則與整份掃描看不見那個來源。因此約束靠：
+必填名稱／用途／理由（負責人留空 = 登入者自己）、
+每次寫入進 `audit_log`（`target` 一定要帶 before→after，那張表沒有 diff 欄位）、
+發 Slack ops 訊息（唯一一個當事人改不掉的通道）、資安總覽固定顯示
+「目前有多少監測被關閉」、掃描報告列出被抑制的來源與「若不抑制會是第幾名」。
+沒有 DELETE 只有停用 —— `audit_log.target` 裡的 `#id` 必須永遠解得回一筆條目。
+`web/pages/audit-mode.js` 是**對稽查人員的承諾清單**，新增可寫端點必須同步。
+
+**到期日是選填**（使用者於 2026-08 決定）。留空 = 永不到期，也就是**永久的盲區**，
+沒有任何機制會提醒人回頭檢查。原本的設計論點是「會自己到期的抑制比任何核准流程
+有效」，那個保證已經不成立，所以剩下的三件事變成唯一的約束，**不可以拿掉**：
+建立時回應裡帶 `warnings` 明說「這是永久盲區」、清單的 `summary.no_expiry` 與每列的
+「永不到期」warn pill、資安總覽的橫幅把它算進「目前有多少監測被關閉」。
+**可以永久，但不能安靜。** 有填的話上限仍是 730 天 —— 一個 9999 年的到期日
+看起來有期限而其實沒有，比留空更糟，所以那種值一律 400 並要求改成留空。
+
+**`measured_since` 是必填的呈現資訊。** `rule_suppressions` 剛上線是空的，
+「0 次」必須渲染成「自 X 起沒有紀錄」而不是「從未抑制」——
+把「沒有資料」說成「沒有發生」是這個專案一再警告的錯誤。
 
 ## 狀態與去重
 
 SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
-（`CREATE TABLE IF NOT EXISTS`，**改欄位不會自動 migrate**，要手動處理既有 DB）。
+（`CREATE TABLE IF NOT EXISTS`，**只能建新表與新索引**；既有表的欄位變更走
+`store/migrate.py`，見上面那一節）。
 
 事件去重鍵是 `(rule_id, entity_key)`，`entity_key` 由 fingerprint 組合而成（含 rule id）。
 狀態機在 `store/events.py`：新事件 → cooldown 內只累計 → 超過 cooldown 仍持續則升級通知 →
-連續 `resolve_after_ticks` 個 tick 未命中標 resolved。原始 acc/ip 只在 engine 記憶體內
+連續 `resolve_after_ticks` 個 tick 未命中標 resolved，**除非**該規則已停用或該對象
+被 Allowlist 抑制（那時暫停計時，見上一節）。原始 acc/ip 只在 engine 記憶體內
 短暫存在，落盤的一律是 fingerprint。
 
 ## 測試注意事項
@@ -254,9 +457,30 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
   全部連到假主機（見 commit becb2ce）。
 - 共用 `tests/conftest.py` 的 session 範圍 `client` fixture，不要各自建 `TestClient`
   （多個 TestClient 會累積 thread-local ClickHouse 連線撞上併發限制）。TestClient 未進入
-  context manager，因此測試期間 lifespan 排程器不會啟動。
+  context manager，因此測試期間 lifespan 排程器不會啟動 ——
+  「覆寫立即生效」這類需要排程器的事只能人工驗收。
+- **SQLite 跑在一份 session 範圍的真實複本上，不是空 DB。** `conftest.state_db`
+  用 `VACUUM INTO` 複製 `state/monitor.db` 到 tmp 再 monkeypatch `db.DB_PATH`。
+  - 用複本而非空 DB：大量測試依賴真實資料（EVT-0001、`andrew_c`、品牌 1180、
+    23 萬列 `known_sources`），空 DB 會讓它們以錯誤的理由失敗。
+  - 用 `VACUUM INTO` 而非 `shutil.copy`：DB 是 WAL 模式，複製 `.db` 檔會漏掉
+    WAL 裡尚未 checkpoint 的內容（實測 20 MB）—— 症狀是「複本比真實資料舊」。
+  - **必須排在 `client` 之前**（`client` fixture 宣告依賴它）：連線是 thread-local，
+    TestClient 的 portal thread 一旦建立連線就固定了檔案路徑，之後在測試 thread 裡
+    monkeypatch **改不到端點實際寫入的檔案**。
+  - `tests/test_db_isolation.py` 斷言 `db.DB_PATH` 不等於真實路徑 ——
+    隔離靜靜失效的症狀是「測試全過，只是資料庫每次多幾百列」。
 - `test_masking_audit.py` 是驗收條件的自動化檢查：掃描各端點實際回應，比對已知真實識別值
   與 IP／手機／Email 樣式。
+  **`EMAIL_ALLOW` 與 `EMAIL` regex 永遠不放寬。** `/api/audit`、`/api/allowlist`、
+  `/api/rules` 會回傳操作者 Email（刻意留痕），本機 DB 裡就有白名單外的位址。
+  正確做法是 `_scan_json()` 的**結構性豁免**：掃描前把 `who` / `owner` /
+  `approved_by` / `updated_by` 這些鍵整個移除，再另外斷言它們符合內部網域樣式。
+  放寬樣式的話，之後任何真正的洩漏都可能剛好落在被放寬的範圍裡 ——
+  那正是這個檔案存在的理由被抽掉。
+  `audit_log.reason` 是人工自由文字，`audit.record()` 寫入前一律過
+  `masking.scrub_text()`，否則有人打了一個客戶手機號，這個測試會在**幾天後**
+  看起來像「不穩定的測試」那樣失敗。
 
 ## 設定與前端
 
@@ -268,6 +492,12 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 `app.py` 的 `cache_policy` 對 `/static/vendor/` 發 `immutable`（那些檔案內容永不就地變更），
 其餘 `/static/` 與 `/` 發 `no-store`，否則瀏覽器快取會讓改動不生效。**分支順序不可對調。**
 新增頁面需同時改 `web/app.js` 的 `NAV`、`TITLES`、components 與模板中的 `v-else-if` 分支。
+`TITLES` **兼作 hash 路由的白名單**（見 `applyHash`），少一筆就開不起來；
+帶參數的路由（`#/events/EVT-0001`、`#/rules/R06`）必須判在 `TITLES[head]` **之前** ——
+順序顛倒的話 `#/rules/R06` 會靜靜落進清單頁而把 `R06` 丟掉。
+跨頁帶參數一律用**專用 slot**（`explorerFilter` / `allowlistDraft`），不要共用：
+`goto()` 也是側邊選單的 handler，共用的話點選單會靜靜復活上一次的條件或預填表單，
+所以 `goto()` 裡要把它們清成 null。
 
 **掛載前綴由後端注入，不是前端推導。** `web/index.html` 裡的 `{{MOUNT}}` 由
 `app.py` 的 `_index_html()` 以 `console_mount_path()`（推導自 `CONSOLE_BASE_URL`）取代。
