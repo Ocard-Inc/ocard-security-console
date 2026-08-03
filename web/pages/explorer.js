@@ -22,7 +22,22 @@ function fmtWallClock(d) {
     + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-const ANALYSES = [
+// 台北牆鐘字串 ± 分鐘。解析與格式化都走「本地」語意，所以來回是一致的
+// （同 jumpToExtent 的做法）；台北沒有日光節約時間，不會有換算誤差。
+// 只用在使用者按下「往前後各拉 N 分鐘」這種**相對**位移上 ——
+// 事件視窗本身的邊界一律由後端的 core/timewin 算好（見 api/drilldown.py）。
+function shiftWallClock(wall, minutes) {
+  return fmtWallClock(new Date(new Date(wall.replace(' ', 'T')).getTime() + minutes * 60000));
+}
+
+// 「這些條件還是事件帶過來的那一組嗎」的比對鍵。刻意不含 analysis / bucket /
+// limit —— 換一種分析方式看同一組條件，來源提示條仍然成立。
+const ORIGIN_KEYS = ['source', 'start', 'end', 'actor', 'source_ip', 'endpoint',
+                     'brand', 'only_error'];
+
+// 匯出給事件詳細頁用：它要在跳轉按鈕旁寫出「會用哪一種分析」。
+// 兩邊各寫一份標籤遲早會不一致，所以只有這一份。
+export const ANALYSES = [
   { key: 'trend', label: 'Request 趨勢' },
   { key: 'endpoint', label: 'Endpoint 排名' },
   { key: 'brand', label: '品牌排名' },
@@ -48,6 +63,13 @@ const LIMITS = {
 export default {
   // 區間由本頁的 RangePicker 持有。舊的 defaultRange prop 是為了接全域 header
   // 而設計的，但 app.js 從來沒傳過 —— 已隨 header 的區間下拉一起移除。
+  //
+  // initialFilter 是事件詳細頁帶過來的 drilldown（後端從規則定義推導，
+  // 見 src/console/api/drilldown.py）。只在 mounted() 讀一次就夠：v-else-if
+  // 沒有 keep-alive，離開頁面就 unmount，所以每次跳轉都是新的一次 mounted。
+  // **不要加 watch** —— page 與 explorerFilter 在同一個 tick 賦值，watcher 永遠
+  // 不會觸發；真的觸發就是雙重 run()。
+  props: ['initialFilter'],
   components: { BrandBreakdown, BrandPicker, EndpointPicker, ApexChart, RangePicker },
   data() {
     return {
@@ -66,6 +88,9 @@ export default {
       payloadLoading: null,   // 正在讀取的 row_id
       payload: null,          // {source_label, time, fields, warning}
       payloadError: null,
+      // 篩選條件從哪個事件帶過來的。條件一旦被手動改動就設回 null ——
+      // 留著會讓「條件來自 EVT-0010」變成謊話。
+      origin: null,           // {evt_no, rule_id, rule_name, window_minutes, dropped, window}
     };
   },
   computed: {
@@ -78,6 +103,10 @@ export default {
     endpointPlaceholder() {
       return { api: 'Api2/TransDetail', backend: 'orderlist/detail',
                admin: 'Boss_initial/auth_v2' }[this.f.source] || '';
+    },
+    // 事件視窗被截短時，提示條要寫出實際查了多長
+    clampedHours() {
+      return Math.round((this.origin?.window?.max_minutes ?? 0) / 60);
     },
     hasTrend() {
       return this.f.analysis === 'trend' && !!this.result?.rows?.length;
@@ -255,6 +284,41 @@ export default {
       Object.assign(this.f, { brand: null, endpoint: '', only_error: false,
                               actor: '', source_ip: '' });
     },
+
+    // ── 從異常事件帶過來的篩選（後端推導，見 src/console/api/drilldown.py）──
+
+    /** 套用 drilldown。回 true 表示已套用，mounted() 就不要再套預設區間。 */
+    applyDrilldown() {
+      const d = this.initialFilter;
+      if (!d || !d.supported || !d.filter) return false;
+      this.reset();                     // 不留任何不屬於這次跳轉的殘留條件
+      Object.assign(this.f, d.filter);
+      // 事件視窗是分鐘級的絕對區間，任何 preset 都表達不了它。
+      // range 的 watcher 對 'custom' 早退，所以這裡不會又觸發一次查詢。
+      this.range = 'custom';
+      this.origin = { ...(d.origin || {}), dropped: d.dropped || [],
+                      window: d.window || null, applied: this.originSnapshot() };
+      this.run();
+      return true;
+    },
+    originSnapshot() {
+      return Object.fromEntries(ORIGIN_KEYS.map(k => [k, this.f[k]]));
+    },
+    /** 往前後各拉 N 分鐘。等長視窗在趨勢圖上是一片高原，看不出事件之前的常態。 */
+    padWindow(minutes) {
+      const landed = fmtWallClock(new Date(Date.now() - LAG_MS));
+      this.f.start = shiftWallClock(this.f.start, -minutes);
+      // 右界不要推進未曾落地的資料 —— 圖上看不見，但會讓區間標示變成謊話
+      this.f.end = [shiftWallClock(this.f.end, minutes), landed].sort()[0];
+      this.origin.applied = this.originSnapshot();
+      this.run();
+    },
+    /** 放寬成「只看這個對象」：R01/R05/R08A 會同時帶 actor 與來源 IP。 */
+    dropFilter(field) {
+      this.f[field] = field === 'brand' ? null : '';
+      this.origin.applied = this.originSnapshot();
+      this.run();
+    },
   },
   watch: {
     // 選了預設就換算成絕對區間並重查；'custom' 由 applyCustomRange/setBound 自己處理
@@ -263,6 +327,17 @@ export default {
       this.applyPreset(key);
       this.run();
     },
+    // 條件被手動改動之後就不能再說「條件來自 EVT-XXXX」—— 那會變成謊話。
+    // 用快照比對而不是「攔截每個入口」：Filter Builder 的欄位是直接 v-model，
+    // 沒有經過任何 method，攔不到。padWindow / dropFilter 會自己更新快照。
+    f: {
+      deep: true,
+      handler() {
+        if (this.origin && ORIGIN_KEYS.some(k => this.f[k] !== this.origin.applied[k])) {
+          this.origin = null;
+        }
+      },
+    },
     // 換到不支援 endpoint 篩選的來源（auth）時，欄位會隱藏 —— 但殘留的值仍會
     // 被送出去而換來一個 400。看不見的篩選條件比沒有篩選條件更糟。
     'f.source'() {
@@ -270,6 +345,8 @@ export default {
     },
   },
   mounted() {
+    // 從事件跳過來時區間已經是絕對的事件視窗，不可以再被預設的「最近 1 小時」蓋掉。
+    if (this.applyDrilldown()) return;
     this.applyPreset(this.range);
     this.run();
   },
@@ -306,16 +383,17 @@ export default {
       <!-- 依對象反查。這是「掃描結果 → 明細」的那一步：把看到的帳號或 IP 貼進來。
            完全相等比對，不是前綴 —— 貼 1.34.41.21 不會連帶命中 1.34.41.218。 -->
       <div><div class="muted" style="margin-bottom:3px">帳號</div>
-        <input v-model.trim="f.actor" class="mono" placeholder="貼上帳號，如 andrew_c"
-               style="width:100%;font-size:12px" @keyup.enter="run"
+        <input type="text" v-model.trim="f.actor" class="mono" placeholder="貼上帳號，如 andrew_c"
+               style="width:100%" @keyup.enter="run"
                :disabled="f.source === 'auth'">
         <div v-if="f.source === 'auth'" class="muted" style="font-size:11px;margin-top:3px">
           Auth Log 的操作者是不可逆的 token 指紋，無法反查原始 token。
         </div>
       </div>
       <div><div class="muted" style="margin-bottom:3px">來源 IP</div>
-        <input v-model.trim="f.source_ip" class="mono" placeholder="貼上 IP，如 131.143.215.229"
-               style="width:100%;font-size:12px" @keyup.enter="run">
+        <input type="text" v-model.trim="f.source_ip" class="mono"
+               placeholder="貼上 IP，如 131.143.215.229"
+               style="width:100%" @keyup.enter="run">
         <div v-if="f.source === 'api'" class="muted" style="font-size:11px;margin-top:3px">
           API Log 的來源由 headers 推導，此篩選需解析 JSON，長區間會明顯變慢。
         </div>
@@ -348,6 +426,33 @@ export default {
 
   <!-- 中：分析結果 -->
   <div style="flex:1;min-width:0">
+    <!-- 篩選條件不是使用者自己打的時候，必須說出它從哪來、以及有什麼沒帶進來。
+         不說的話畫面上就是一組來歷不明的條件，看的人無法判斷數字代表什麼。
+         手動改動任一條件後這一條會自己消失（見 watch.f）。 -->
+    <div v-if="origin" class="banner banner-info" style="margin-bottom:12px">
+      <div>
+        篩選條件來自
+        <a class="mono" :href="'#/events/' + origin.evt_no">{{ origin.evt_no }}</a>
+        · {{ origin.rule_id }}「{{ origin.rule_name }}」，
+        區間為該事件的偵測視窗 {{ f.start }} ~ {{ f.end }}。
+      </div>
+      <div v-if="origin.window && origin.window.clamped" style="margin-top:4px">
+        事件完整跨越 {{ origin.window.full_start }} ~ {{ origin.window.full_end }}，
+        已截到最近的 {{ clampedHours }} 小時
+        —— 這張表的來源 IP 要解析 headers JSON，更長的區間會跑上數十秒。
+      </div>
+      <div v-if="origin.dropped && origin.dropped.length" style="margin-top:4px">
+        以下對象欄位沒有帶進來：<template v-for="(d,i) in origin.dropped" :key="i"
+          ><template v-if="i"> ；</template><span class="mono">{{ d.col }}</span>（{{ d.reason }}）</template>。
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm" @click="padWindow(30)">往前後各拉 30 分鐘</button>
+        <button v-if="f.actor && f.source_ip" class="btn btn-sm"
+                @click="dropFilter('source_ip')">移除來源 IP 條件</button>
+        <button v-if="f.actor && f.source_ip" class="btn btn-sm"
+                @click="dropFilter('actor')">移除帳號條件</button>
+      </div>
+    </div>
     <!-- 0 筆時說明原因：是這個對象不存在，還是它不在你選的區間。
          只顯示空表格會讓人以為「查無此對象」。 -->
     <div v-if="result && result.empty_reason" class="banner"
