@@ -233,8 +233,11 @@ def hour_profile(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS) -> dic
         "hour": h,
         "own": own.get(h, 0),
         "site": site.get(h, 0),
-        "own_share": round(own.get(h, 0) / own_total * 100, 3) if own_total else None,
-        "site_share": round(site.get(h, 0) / site_total * 100, 3) if site_total else None,
+        # 小數（0..1），不是百分比。前端的 `pct()` 會乘 100 —— 這個專案的慣例
+        # 是「比例一律用小數傳」，回百分比的話同一個值會被乘兩次
+        # （實測 97.47 顯示成 9747.0%）。
+        "own_share": round(own.get(h, 0) / own_total, 6) if own_total else None,
+        "site_share": round(site.get(h, 0) / site_total, 6) if site_total else None,
     } for h in range(24)]
 
     return {
@@ -304,7 +307,7 @@ def endpoint_share(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS,
         "label": (masking.DISPLAY_FUNCS[mask](str(r["s"])) or str(r["s"]))
                  if mask else str(r["s"]),
         "count": int(r["c"]),
-        "share": round(int(r["c"]) / total * 100, 2),
+        "share": round(int(r["c"]) / total, 6),
         "is_self": own_ip is not None and str(r["s"]) == own_ip.value,
     } for _, r in df.iterrows()]
 
@@ -314,6 +317,6 @@ def endpoint_share(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS,
         # 而使用者無法分辨「沒進前六名」與「查不到」。
         c = int(query(f"SELECT count() AS c {base} AND {src_expr} = %(own)s",
                       {**params, "own": own_ip.value}).iloc[0]["c"] or 0)
-        own_share = round(c / total * 100, 2)
+        own_share = round(c / total, 6)
 
     return {**shape, "total": total, "rows": rows, "own_share": own_share}

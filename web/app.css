@@ -49,6 +49,17 @@
   --chart-bar-warn:   #DC6803;   /* 倍數 ≥ 2 */
   --chart-bar-alert:  #B42318;   /* 倍數 ≥ 5 */
 
+  /* 母體排名裡「不是本對象」的其他對象。與 --chart-event 配對，validator：
+       node scripts/validate_palette.js "#B42318,#667085" \
+         --mode light --surface "#FFFFFF" --pairs all
+     結果：contrast 3:1 PASS、CVD deutan ΔE 14.0、normal ΔE 20.9 全部過關，
+     只有 chroma floor FAIL（「reads gray」）—— **那正是這裡要的語意**：
+     它不是一個類別，而是刻意去強調的背景。validator 自己的 scope 註記寫的是
+     categorical palettes only。
+     不可以改回 --chart-baseline(#98A2B3)：那個值 contrast 只有 2.58 而觸發
+     WARN，而 contrast WARN 依 dataviz 規則是不可忽略的（長條會淡到看不清）。 */
+  --chart-peer:       #667085;
+
   /* 基準帶與基準線屬於「圖表外框」而非資料序列，所以用灰階、不佔序列色 */
   --chart-band:       rgba(23, 92, 211, .10);
   --chart-baseline:   #98A2B3;

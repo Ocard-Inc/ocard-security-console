@@ -4,6 +4,10 @@ import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
 import RangePicker from '../components/range-picker.js';
+// 對象視角的面板。各自打自己的端點（見兩個檔頭）—— 這一頁的主查詢不等它們，
+// 而它們也不互相等：三個便宜面板約 3 秒、長期時序 5–7 秒。
+import EntityPanels from '../components/entity-panels.js';
+import EntityTimeline from '../components/entity-timeline.js';
 import { ANALYSES } from './explorer.js';
 import { token } from '../charts/tokens.js';
 import { timeSeriesOptions, baselineSeries } from '../charts/time-series.js';
@@ -41,7 +45,7 @@ const PADS = [
 export default {
   props: ['evtNo', 'canJudge'],
   emits: ['back', 'drilldown', 'new-allowlist'],
-  components: { BrandBreakdown, ApexChart, RangePicker },
+  components: { BrandBreakdown, ApexChart, RangePicker, EntityPanels, EntityTimeline },
   data: () => ({
     e: null, loading: true, error: null, showTable: false,
     range: '30m', customStart: '', customEnd: '',
@@ -124,6 +128,19 @@ export default {
       });
     },
     trendSignature() { return `evt|${this.evtNo}|${this.range}|${this.hasBaseline}`; },
+    // 全站量是否遠低於同時段基線。**只在有基線可比時才算** —— 沒有基線就
+    // 什麼都不說，不可以把「沒有基線」當成「量正常」。
+    // 門檻取 median 的一半：那是「明顯少了一截」而不是日常波動的量級
+    // （實測 2026-08 全站 API 日量掉到原本的四成，逐桶都在 20–36%）。
+    volumeShortfall() {
+      const rows = this.trendRows.filter(r => r.median != null && r.median > 0);
+      if (rows.length < 4) return null;
+      const low = rows.filter(r => r.count < r.median / 2).length;
+      if (low * 2 < rows.length) return null;      // 過半才算，避免單一凹陷就報
+      const actual = rows.reduce((s, r) => s + r.count, 0);
+      const expected = rows.reduce((s, r) => s + r.median, 0);
+      return { pct: Math.round(actual / expected * 100), low, buckets: rows.length };
+    },
     isCustom() { return this.range === 'custom' && !!this.customStart && !!this.customEnd; },
     // 自訂區間含今天時，右界會被夾到資料實際落地的時間 —— 要講出來
     rangeClamped() {
@@ -273,6 +290,12 @@ export default {
       </div>
     </div>
 
+    <!-- 對象視角。**擺在核心判定之前**是刻意的：這一頁要能一進來就看出
+         「它怪在哪、跟其他對象差多少、趨勢往哪走」，而那三件事全都在這裡。
+         核心判定講的是規則的算式（目前值 vs 門檻），那是原本就有、而且
+         被實際使用者判斷為不足的部分。 -->
+    <EntityPanels :evt-no="evtNo" />
+
     <div class="grid" style="grid-template-columns:2fr 3fr;margin-bottom:14px">
       <!-- 核心判定卡 -->
       <div class="card">
@@ -323,46 +346,13 @@ export default {
           規則說明：{{ e.rule_note }}</div>
       </div>
 
-      <!-- 趨勢 -->
-      <div class="card">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-          <div class="card-h">事件趨勢</div>
-          <!-- 事件視窗常常只有一兩個小時，只看前後 30 分鐘看不出事件之前長什麼樣。
-               預設是「往前後各再拉多久」，也可以直接指定絕對區間。
-               分桶由後端依總長自動選。 -->
-          <RangePicker v-model="range" :presets="PADS" allow-custom
-                       :start="customStart" :end="customEnd"
-                       @apply-custom="applyCustomRange" />
-          <span v-if="e.trend.bucket_minutes && trendRows.length" class="muted"
-                style="font-size:11.5px">
-            {{ trendRows[0].bucket }} ~ {{ trendRows[trendRows.length-1].bucket }} ·
-            {{ e.trend.bucket_minutes }} 分鐘分桶<span v-if="rangeClamped"
-              style="color:var(--warn)"> · 右界止於已落地的資料</span></span>
-          <div class="toggle" style="margin-left:auto">
-            <button :class="{on:!showTable}" @click="showTable=false">圖表</button>
-            <button :class="{on:showTable}" @click="showTable=true">表格</button>
-          </div>
-        </div>
-        <template v-if="hasTrend && !showTable">
-          <ApexChart :series="trendSeries" :options="trendOptions" :signature="trendSignature"
-                     :height="240" aria-label="事件請求量趨勢，含同時段基線；詳細數值請切換表格檢視" />
-          <div v-if="hasBaseline" class="muted" style="font-size:11px;margin-top:4px">
-            虛線 = 同時段 median · 淡帶 = median–P95 範圍（逐時間桶）
-          </div>
-        </template>
-        <table v-else-if="hasTrend" style="font-size:12.5px">
-          <thead><tr><th>時間桶</th><th class="right">請求量</th>
-            <th class="right">median</th><th class="right">P95</th></tr></thead>
-          <tbody>
-            <tr v-for="r in e.trend.rows" :key="r.bucket">
-              <td>{{ r.bucket }}</td><td class="right" style="font-weight:500">{{ num(r.count) }}</td>
-              <td class="right muted">{{ num(r.median) }}</td><td class="right muted">{{ num(r.p95) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="muted" style="padding:20px 0;font-size:13px">{{ e.trend.note }}</div>
-        <div v-if="hasTrend" class="muted" style="font-size:11.5px;margin-top:6px">{{ e.trend.note }}</div>
-      </div>
+      <!-- 面板 A：對象自己的長期趨勢。這個位置原本是「全站流量趨勢」——
+           那張圖與事件對象無關，卻擺在最顯眼的地方，實際造成的誤讀是
+           「量比平常低，所以沒事」。全站圖沒有刪掉，降級到頁面下方
+           並改成明確的標題（它的工作是「監測環境正常嗎」）。
+           門檻傳進去畫水平線：原本整頁都沒有畫過門檻，而「離觸發還有多遠」
+           是最常被問的第一個問題。 -->
+      <EntityTimeline :evt-no="evtNo" :threshold="e.threshold" />
     </div>
 
     <!-- 證據矩陣 -->
@@ -389,6 +379,59 @@ export default {
       <div style="margin-top:6px;line-height:1.9">
         <div v-for="(x,i) in e.limitations" :key="i">· {{ x }}</div>
       </div>
+    </div>
+
+    <!-- 面板 E：全站流量。**降級後的位置與標題。**
+         這張圖原本擺在最上面、標題只寫「事件趨勢」，於是被讀成這個事件的量 ——
+         而它畫的是整張表的總量，跟事件對象無關。它並非沒有價值：它回答
+         「這個資料來源還活著嗎、全站現在比平常多還是少」，那是監測環境的健康度。
+         所以保留，但標題必須自己說清楚畫的是誰。 -->
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div class="card-h">{{ SOURCE_LABEL[e.source] }} 全站流量<span class="muted"
+          style="font-weight:400;font-size:12px">（不是這個對象）</span></div>
+        <RangePicker v-model="range" :presets="PADS" allow-custom
+                     :start="customStart" :end="customEnd"
+                     @apply-custom="applyCustomRange" />
+        <span v-if="e.trend.bucket_minutes && trendRows.length" class="muted"
+              style="font-size:11.5px">
+          {{ trendRows[0].bucket }} ~ {{ trendRows[trendRows.length-1].bucket }} ·
+          {{ e.trend.bucket_minutes }} 分鐘分桶<span v-if="rangeClamped"
+            style="color:var(--warn)"> · 右界止於已落地的資料</span></span>
+        <div class="toggle" style="margin-left:auto">
+          <button :class="{on:!showTable}" @click="showTable=false">圖表</button>
+          <button :class="{on:showTable}" @click="showTable=true">表格</button>
+        </div>
+      </div>
+      <!-- 全站量遠低於同時段基線時要說。目前沒有任何規則會對「量掉一半」告警
+           （R12 只看新鮮度，資料有進來、只是變少），所有規則的靈敏度因此被
+           同步稀釋，而且完全靜默。實測 2026-08 全站 API 日量掉到原本的四成。 -->
+      <div v-if="volumeShortfall" class="banner banner-warn"
+           style="font-size:12px;margin-bottom:8px">
+        這段時間的全站量只有同時段基線 median 的
+        <b>{{ volumeShortfall.pct }}%</b>（{{ volumeShortfall.buckets }} 個分桶中有
+        {{ volumeShortfall.low }} 個低於一半）。這不是這個事件的證據，而是
+        <b>整體監測靈敏度被稀釋</b>的訊號 —— 目前沒有規則會對「量掉一半」告警。
+      </div>
+      <template v-if="hasTrend && !showTable">
+        <ApexChart :series="trendSeries" :options="trendOptions" :signature="trendSignature"
+                   :height="240" aria-label="全站請求量趨勢，含同時段基線；詳細數值請切換表格檢視" />
+        <div v-if="hasBaseline" class="muted" style="font-size:11px;margin-top:4px">
+          虛線 = 同時段 median · 淡帶 = median–P95 範圍（逐時間桶）
+        </div>
+      </template>
+      <table v-else-if="hasTrend" style="font-size:12.5px">
+        <thead><tr><th>時間桶</th><th class="right">請求量</th>
+          <th class="right">median</th><th class="right">P95</th></tr></thead>
+        <tbody>
+          <tr v-for="r in e.trend.rows" :key="r.bucket">
+            <td>{{ r.bucket }}</td><td class="right" style="font-weight:500">{{ num(r.count) }}</td>
+            <td class="right muted">{{ num(r.median) }}</td><td class="right muted">{{ num(r.p95) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="muted" style="padding:20px 0;font-size:13px">{{ e.trend.note }}</div>
+      <div v-if="hasTrend" class="muted" style="font-size:11.5px;margin-top:6px">{{ e.trend.note }}</div>
     </div>
 
     <!-- 涉及對象。2026-08 起帳號、來源 IP、訂單號為原始值（見 core/masking.py）；

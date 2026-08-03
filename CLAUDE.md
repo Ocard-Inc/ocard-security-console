@@ -51,7 +51,9 @@ src/console/checker/     tick（單次檢查）、scheduler（asyncio 常駐）�
 src/console/store/       db（SQLite WAL）、migrate（既有表的欄位遷移）、events（去重狀態機）、
                          allowlist（例外名單的唯一入口）、rule_overrides、
                          rule_suppressions（抑制紀錄）、audit
-src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）
+src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）、
+                         entity（事件對象視角：母體位置／24 小時作息／端點集中度）、
+                         entity_history（對象自己的 28 天時序 + 自身基線帶）
 src/console/sweep/       期間異常掃描：probes（探針表）、run（併發）、correlate（交叉計票）、
                          score（評分）、limits（可信度限制）、report（組裝）、narrate（LLM）
 src/console/intel/       來源情報：ranges（離線 CIDR 比對）、classify（型態判定）、
@@ -84,6 +86,23 @@ web/charts/              ApexCharts 封裝：ApexChart 元件、色票 token、�
 所以 `BUCKET_LADDER` 的每個分桶都必須出現在 `calibrate.GRANULARITIES` 裡
 （`tests/test_trend_buckets.py` 會擋）。**改階梯 → 改 GRANULARITIES → 重跑 calibrate**，
 順序不可顛倒；新粒度算出來之前 `baseline.get()` 回 None，前端就不畫 median 線（正確的降級）。
+
+**基線與 metric 的「對象粒度」也必須成對**（同一條規則的另一半，2026-08 修）。
+上一條講的是時間維度，這一條講對象維度，症狀完全一樣：不報錯，只給錯的數字。
+R03 的 metric 是 `GROUP BY src, endpoint`，但它一度讀 `api_src_60m` ——
+那個基線是 `GROUP BY src`、跨全部 endpoint 算的。實測同一時段兩者的
+P99 差 **26 倍**（109 vs 2,835）：粗粒度把同一個 IP 的全部 endpoint 加總，值天生更大，
+於是門檻（`p99 × 3`）系統性偏高、**規則長期漏抓**，而事件頁「資料限制」顯示的
+median/P95/P99 也在陳述錯的母體（使用者拿它當同儕比較的依據）。
+現在 R03 用 `api_src_ep_60m`。**新增或修改規則時，`baseline_key` 的 GROUP BY
+必須與 SQL 的 GROUP BY 逐欄位相同**；`queries/entity.peers()` 用執行期對帳
+（見「事件對象視角」一節）把不成對的情況變成畫面上的警語。
+
+**母體分布刻意不做 (hour, day_class)**：實測 `api_src_ep_60m` 逐小時的結果是
+凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的 p99 = 148 ——
+低流量時段活著的幾乎只有機器整合，它們撐高了自己的門檻。逐小時會讓 04:00 的
+門檻變成 18,180（全域是 504），在最該敏感的時段把規則關掉。低流量端的保護
+交給 `static_floor`。
 
 **時間**：ClickHouse 伺服器時區是 UTC，但四張表的 `create_time` 存的是**台北牆鐘時間**。
 所有邊界一律由 `core/timewin.py` 在 Python 端算好、以含秒的完整字串傳參，
@@ -515,6 +534,67 @@ EVT-0001 三個欄位都填著同一句「APP 讀取資料」—— 必填只是
 既有資料的事實，回填成現在的時間會宣稱一個假的結案紀錄。
 `status` 是封閉集合，`/events` 的篩選打錯一律 400（同 `judgement`）。
 
+## 事件對象視角（`queries/entity.py` / `entity_history.py`）
+
+事件詳細頁原本唯一的圖是 `routes._event_trend()` —— **整個資料來源的總量**，
+與事件對象無關。實際造成的誤讀（2026-08，真實使用者）：圖上實際值 12–20 萬、
+同時段基線 median 39–58 萬，於是結論變成「量比平常低，所以沒事」，
+而圖上沒有任何一個像素跟那個對象有關。`api/drilldown.py` 的註解早就記下這個缺口。
+
+現在這一頁回答四個問題，各自一塊：
+
+| 問題 | 在哪 | 端點 | 實測成本 |
+|---|---|---|---|
+| 跟其他對象差多少 | `entity.peers()` | `GET /events/{n}/entity` | 0.2 秒 |
+| 這是機器還是人 | `entity.hour_profile()` | 同上 | 1.4 秒 |
+| 這個 endpoint 正常嗎 | `entity.endpoint_share()` | 同上 | 1.5 秒 |
+| 一直都在還是新的 | `entity_history.timeline()` | `.../entity/timeline` | **5–7 秒** |
+
+**兩個端點都是同步 `def`**（同 `/sweep`）。寫成 `async def` 會讓阻塞查詢佔住事件迴圈、
+連五分鐘排程一起卡住。時序那支因為 5–7 秒而**獨立端點 + 前端點了才載入** ——
+綁進事件詳細頁的主查詢會讓每次開頁都多等那麼久。
+
+**`EntityRef` 一律由 `drilldown.build()` 的結果推導，不從規則 entity 直接推。**
+「規則 entity → 篩選欄位」的唯一真相在 `drilldown`（含 legacy 指紋、被清洗的值、
+該表不支援的欄位這三種逐欄位剔除），「篩選欄位 → SQL」的唯一真相是
+`explorer.entity_meta()`。跳過 drilldown 的捷徑會讓不支援的組合靜靜產生一個
+永遠命中 0 筆的面板（`tests/test_event_entity.py` 有反向測試守著）。
+
+**比對是完全相等，不是前綴。** `explorer.entity_expr()` 回的是 `GROUP_BY` 的運算式
+（事件的 entity 值就是它算出來的），不是 Explorer 篩選器用的 `FILTER_COLUMN`——
+後者對 endpoint 是 `startsWith`，會把 `Api2/GetProfileExtra` 算進 `Api2/GetProfile`
+的對象裡，數字比事件大而且不會報錯。backend 兩者刻意不同（`route2` vs 完整 `route`）。
+
+**`peers()` 的執行期單位對帳。** 它數的是「該對象在此區間的**全部**記錄數」，
+對 R03/R04/R08/R10 剛好等於規則的 metric，但 R07A 只算登入失敗、R09 只算錯誤回應、
+R05 還限非上班時間 —— 那些規則不同單位。這裡**刻意不重建各規則的 WHERE**
+（等於把規則 SQL 抄第二份，遲早漂移，而漂移的症狀是一個看起來精確的錯數字），
+改成把事件的 `metric_value` 傳進去比：對不上就 `comparable=False` + 一段說明，
+畫面照實顯示「這是總活動量的排名，不是規則指標的排名」。
+
+**自身基線帶在 `entity_history` 現算，不進 `calibrate`。** `baselines` 沒有逐對象的列
+也不該有（23 萬來源 × 24 小時 × 2 day_class 不可能每日重算）。由同一趟查詢的結果
+現算的附帶好處是**分桶與基線粒度天生成對**。基線一律取 `first_seen` **之前**
+（同 `sweep/run.build_params()`）；不足 `MIN_BAND_BUCKETS` 個桶就 `band=None` 並說明，
+**不生假的帶**。
+
+**「線落在自己的帶裡面」不等於沒事，畫面必須說出來。** 長跑的整合程式必然落在
+自己的帶內，因為「事件之前」幾乎等於「這個行為的全部」（實測某對象事件當天才觸發，
+行為從四月就在）。正確的結論是「**對它自己是常態，對全體是離群**」——
+`summary.self_normal` 就是為了讓前端講出這句話而存在的。同理
+`summary.starts_before_window`：頁首的「開始」是我們什麼時候開始告警，
+不是這件事什麼時候開始，兩者常常差幾個月。
+
+**降級一律說原因。** R09（entity 是字面常數 `scope`）與 R12（沒有 entity）
+→ `from_filters()` 回 None → 面板整塊顯示「這條規則沒有可追蹤的對象」。
+**不可以退回畫全站圖假裝有內容** —— 那正是這次改版要消滅的誤讀來源。
+沒有 endpoint 維度的規則不出現集中度面板；只有 endpoint 沒有來源的規則（R04）
+集中度面板仍有用（回答「誰在打這個 endpoint」）但 `own_share` 是 None 並附
+`self_note`，畫面不可以顯示一個空白的佔比。
+
+**比例一律以小數（0..1）傳，不是百分比。** `lib.js` 的 `pct()` 會乘 100 ——
+回百分比的話同一個值被乘兩次（實測 97.47 顯示成 **9747.0%**）。
+
 ## 狀態與去重
 
 SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
@@ -676,6 +756,18 @@ CI 只驗證映像建得起來、容器啟動得了。
   實測固定浪費 2.4 倍軸高（資料最大值 8,323 被推到軸頂 20,000），線因此被壓在底部。
   一律用 `yaxis.max: niceMax`（`charts/format.js`）—— 它是純函式，ApexCharts 繪製時才
   帶入資料最大值，所以設定仍與資料無關，浪費降到約 1.05 倍。
+- **不要加 `xaxis.logarithmic`。** 那不是 ApexCharts 的合法選項（值軸的對數設定不在
+  `xaxis` 上），實測症狀是**整組長條完全不畫、只留下 y 軸標籤，而 console 沒有任何錯誤**。
+  要壓縮量級差就改成只畫前 N 名（前 N 名的跨度通常只有一個數量級：母體整體跨
+  3.7 個數量級，但前 12 名只跨 8.8 倍，線性軸完全讀得出來）。
+- **不要自己包一層 `.chart-frame`。** `ApexChart.js` 的 template 自己就渲染一個，
+  並以 `:height` prop 設高度。外面再包一層的結果是兩個嵌套的 frame（外層你設的高度、
+  內層預設 260px），症狀是圖與下一個元素之間一大塊空白。高度一律走 `:height`。
+- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（四張表的量
+  都是計數），但百分比序列（24 小時作息的兩條線）四捨五入成整數會讓所有刻度變成同一個
+  數字，圖要傳達的結論就從畫面上消失了。
+- **比例值一律以小數（0..1）在 API 與 series 裡流動**，顯示時才經 `lib.js` 的 `pct()`。
+  那個函式會乘 100 —— 傳百分比進去等於乘兩次（實測 97.47 顯示成 9747.0%）。
 
 ### 首頁趨勢是 2×2 小倍數，不是一張四線圖
 
