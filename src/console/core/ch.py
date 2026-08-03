@@ -24,9 +24,30 @@ logger = logging.getLogger(__name__)
 
 _local = threading.local()
 
-_QUERY_SETTINGS = {"max_execution_time": 55}
+QUERY_TIMEOUT_SECONDS = 55
+QUERY_TIMEOUT_SECONDS_TEXT = str(QUERY_TIMEOUT_SECONDS)
+
+_QUERY_SETTINGS = {"max_execution_time": QUERY_TIMEOUT_SECONDS}
 
 _ALLOWED_PREFIXES = ("select", "with", "describe", "show", "explain")
+
+# 超時要改寫成人話。Log Explorer 的上限放寬到 180 天之後（見 settings.yaml 的
+# audit_export.max_range_days），來源排名與逐筆明細在長區間會撞這個上限 ——
+# 把「code: 159. DB::Exception: Timeout exceeded」丟給使用者，他只會覺得系統壞了，
+# 而不知道「縮小範圍」就能解決。只改寫超時；其餘 SQL 錯誤的原文是除錯用的，不可吞。
+_TIMEOUT_MARKERS = ("TIMEOUT_EXCEEDED", "code: 159")
+_TIMEOUT_MESSAGE = (
+    f"查詢超過 {QUERY_TIMEOUT_SECONDS} 秒上限而中止。請縮小時間範圍，"
+    "或改用成本較低的分析（趨勢、Endpoint／品牌／Actor 排名在全區間都跑得完；"
+    "來源排名與逐筆明細最貴）。"
+)
+
+
+def _describe_query_error(exc: Exception) -> str:
+    text = str(exc)
+    if any(m in text for m in _TIMEOUT_MARKERS):
+        return _TIMEOUT_MESSAGE
+    return f"ClickHouse 查詢失敗：{exc}"
 
 
 class ChQueryError(RuntimeError):
@@ -89,9 +110,9 @@ def query(sql: str, params: dict | None = None) -> pd.DataFrame:
         except OperationalError as exc:
             raise ChConnectionError(f"ClickHouse 連線失敗：{exc}") from exc
         except ClickHouseError as exc:
-            raise ChQueryError(f"ClickHouse 查詢失敗：{exc}") from exc
+            raise ChQueryError(_describe_query_error(exc)) from exc
     except ClickHouseError as exc:
-        raise ChQueryError(f"ClickHouse 查詢失敗：{exc}") from exc
+        raise ChQueryError(_describe_query_error(exc)) from exc
 
 
 def query_rows(sql: str, params: dict | None = None) -> list[dict]:

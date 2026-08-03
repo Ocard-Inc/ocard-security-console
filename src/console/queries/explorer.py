@@ -93,6 +93,33 @@ _ENTITY_FILTER_UNSUPPORTED = {
 }
 
 
+def filter_support(field: str, source: str) -> str | None:
+    """`(篩選欄位, 資料來源)` 不支援的原因；支援回 None。
+
+    **這是「哪些篩選在哪張表可用」的唯一真相**，`where_clause()` 與
+    `api/drilldown.py` 都問這裡。之前只有 `where_clause()` 內部知道，於是
+    「從事件跳過來」的一方只能自己再列一份 —— 同 `FILTER_COLUMN` 與
+    `SUGGEST_EXPR` 的教訓（兩邊各寫一份遲早會不一致，而症狀是 400 或 0 筆）。
+
+    `field` 是 `ExplorerFilter` 的欄位名：`endpoint` / `source_ip` / `actor` / `brand`。
+    """
+    if source not in settings()["data_sources"]:
+        return f"未知資料來源 {source!r}"
+    label = settings()["data_sources"][source]["label"]
+    if field == "brand":
+        return None                      # 四張表都有 _brand
+    if field == "endpoint":
+        return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
+    if field in _ENTITY_FILTER:
+        reason = _ENTITY_FILTER_UNSUPPORTED.get((field, source))
+        if reason:
+            return reason
+        if _ENTITY_FILTER[field].get(source) is None:
+            return f"{label} 不支援依{'來源 IP' if field == 'source_ip' else '帳號'}篩選"
+        return None
+    return f"未知篩選欄位 {field!r}"
+
+
 @dataclass(frozen=True)
 class ExplorerFilter:
     source: str = "api"
@@ -138,26 +165,20 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
         clauses.append("_brand = %(brand)s")
         params["brand"] = f.brand
     if f.endpoint:
-        col = FILTER_COLUMN.get(f.source)
-        if col is None:
-            raise FilterError(
-                f"{settings()['data_sources'][f.source]['label']} 不支援 endpoint 篩選"
-                "（該表沒有對應欄位）")
-        clauses.append(f"startsWith({col}, %(endpoint)s)")
+        reason = filter_support("endpoint", f.source)
+        if reason:
+            raise FilterError(reason)
+        clauses.append(f"startsWith({FILTER_COLUMN[f.source]}, %(endpoint)s)")
         params["endpoint"] = f.endpoint
     # 依對象反查。這是「從掃描結果或排名追到明細」的那一步 ——
     # 把看到的帳號或 IP 貼進來，就只剩那個對象的資料。
     for field, value in (("source_ip", f.source_ip), ("actor", f.actor)):
         if not value:
             continue
-        reason = _ENTITY_FILTER_UNSUPPORTED.get((field, f.source))
+        reason = filter_support(field, f.source)
         if reason:
             raise FilterError(reason)
-        expr = _ENTITY_FILTER[field].get(f.source)
-        if expr is None:
-            label = settings()["data_sources"][f.source]["label"]
-            raise FilterError(f"{label} 不支援依{'來源 IP' if field == 'source_ip' else '帳號'}篩選")
-        clauses.append(f"{expr} = %({field})s")
+        clauses.append(f"{_ENTITY_FILTER[field][f.source]} = %({field})s")
         params[field] = str(value).strip()
     if f.only_error and f.source == "api":
         clauses.append("has_error = 1")
