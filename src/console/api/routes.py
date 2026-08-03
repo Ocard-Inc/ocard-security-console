@@ -997,7 +997,10 @@ def search_stores(
     if brand.strip() and brand_id is None:
         raise HTTPException(400, f"品牌編號 {brand!r} 不是整數")
     try:
-        return {"rows": store_search.search(q, brand=brand_id, limit=limit)}
+        rows = store_search.search(q, brand=brand_id, limit=limit)
+        # 沒被截斷就不必再查一趟 —— 分店選擇器打字時是 debounce 逐次呼叫的。
+        total = len(rows) if len(rows) < limit else store_search.count(q, brand=brand_id)
+        return {"rows": rows, "total": total}
     except ChQueryError as exc:
         # 不吞成空陣列 —— 空陣列在 UI 上等於「查無此分店」，與查詢失敗是兩回事。
         raise HTTPException(502, f"分店查詢失敗：{exc}") from exc
