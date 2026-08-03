@@ -31,14 +31,20 @@ from console.store import allowlist, audit, db, rule_suppressions
 
 router = APIRouter()
 
-# 必填的文字欄位。**owner 與 valid_to 刻意不在裡面**（使用者決定）：
-# owner 直接帶登入帳號，到期日留空 = 永不到期。
+# 必填的文字欄位。**valid_to 刻意不在裡面**（使用者決定）：留空 = 永不到期。
 # 那讓「會自己到期」不再是一個保證，所以剩下的三件事更重要：
 # 沒有到期日的條目在清單上有 warn pill、summary 有 no_expiry 計數、
 # 資安總覽的橫幅會把它算進「目前有多少監測被關閉」。**可以永久，但不能安靜。**
+#
+# **`owner`（創立人）不是可寫欄位**（2026-08 使用者決定）。原本它是可填的
+# 「負責人」、留空才帶登入帳號 —— 於是它可能是任何字串（實測播種列是
+# 「Ocard 內部」，不是一個帳號），當不了「這筆核准是誰建的」的答案。
+# 現在由 `store/allowlist.create()` 從登入帳號直接寫入、之後不可修改，
+# 所以它也**不在 _CREATE_KEYS／_PATCH_KEYS 裡** —— 送 owner 進來是 400，
+# 不是靜靜忽略。靜靜忽略的話前端可以顯示一個「已存」的值而資料庫是別的。
 _REQUIRED_TEXTS = ("name", "purpose", "reason")
-_TEXT_FIELDS = ("name", "owner", "purpose", "reason")
-_LABELS = {"name": "名稱", "owner": "負責人", "purpose": "用途",
+_TEXT_FIELDS = ("name", "purpose", "reason")
+_LABELS = {"name": "名稱", "owner": "創立人", "purpose": "用途",
            "reason": "建立理由", "valid_to": "到期日", "source_ip": "來源 IP",
            "endpoint": "端點"}
 _CREATE_KEYS = set(_TEXT_FIELDS) | {"source_ip", "rule_id", "endpoint",
@@ -264,8 +270,6 @@ async def create_entry(payload: dict = Body(...),
     guard(user, "manage_allowlist")
     validate.reject_unknown_keys(payload, _CREATE_KEYS)
     texts = validate.require_text(payload, _REQUIRED_TEXTS, _LABELS)
-    # 負責人留空就是登入者自己 —— 那是絕大多數情況，強迫再打一次沒有意義。
-    owner = str(payload.get("owner") or "").strip() or user.email
     ip = (validate.source_ip(payload["source_ip"])
           if str(payload.get("source_ip") or "").strip() else "")
     rid = _check_rule_scope(payload.get("rule_id"))
@@ -285,8 +289,9 @@ async def create_entry(payload: dict = Body(...),
             "existing_id": dup["id"], "existing_name": dup["name"],
         })
 
+    # 創立人不在這裡傳 —— `create()` 從 who 寫入（見它的 docstring）
     entry_id = allowlist.create(
-        {**texts, "owner": owner, "source_ip": ip, "rule_id": rid,
+        {**texts, "source_ip": ip, "rule_id": rid,
          "endpoint": endpoint or None,
          "valid_from": valid_from, "valid_to": valid_to}, who=user.email)
     scope = "全域" if rid is None else rid
@@ -333,9 +338,7 @@ async def patch_entry(entry_id: int, payload: dict = Body(...),
     for f in ("name", "purpose"):
         if f in payload:
             fields[f] = validate.require_text(payload, (f,), _LABELS)[f]
-    if "owner" in payload:
-        # 負責人可以清空 —— 清空就回到「登入者自己」
-        fields["owner"] = str(payload["owner"] or "").strip() or user.email
+    # owner（創立人）不可修改，也不在 _PATCH_KEYS 裡 —— 送進來已經是 400。
     if "rule_id" in payload:
         fields["rule_id"] = _check_rule_scope(payload["rule_id"])
     if "endpoint" in payload:

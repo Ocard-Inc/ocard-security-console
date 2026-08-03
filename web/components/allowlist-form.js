@@ -40,7 +40,7 @@ export default {
   emits: ['saved', 'close'],
   data() {
     return {
-      f: { name: '', owner: '', purpose: '', reason: '', source_ip: '',
+      f: { name: '', purpose: '', reason: '', source_ip: '',
            scope: 'global', rule_id: '', endpoint: '',
            valid_from: '', valid_to: '' },
       preview: null, previewing: false,
@@ -96,7 +96,7 @@ export default {
         return REQUIRED.some(k => this.f[k]) || !!this.f.source_ip || !!this.f.endpoint;
       }
       const e = this.entry;
-      return this.f.name !== (e.name || '') || this.f.owner !== (e.owner || '')
+      return this.f.name !== (e.name || '')
         || this.f.purpose !== (e.purpose || '') || this.f.reason.trim() !== ''
         || this.f.valid_to !== (e.valid_to || '')
         || this.f.endpoint !== (e.endpoint || '')
@@ -121,6 +121,10 @@ export default {
     neverExpires() { return !this.f.valid_to; },
     // state 是模組層的 import，Vue 模板只讀得到元件屬性
     sessionUser() { return state.user || ''; },
+    /** 創立人。編輯時是那筆條目原本的創立人，新增時是登入者自己。 */
+    creator() {
+      return this.isEdit ? (this.entry.owner || '（未紀錄）') : (state.user || '');
+    },
   },
   watch: {
     'f.source_ip'() { this.schedulePreview(); },
@@ -163,7 +167,8 @@ export default {
       this.submitting = true;
       this.error = null;
       const body = {
-        name: this.f.name.trim(), owner: this.f.owner.trim(),
+        // owner（創立人）刻意不送：後端從登入帳號寫入，送進來是 400。
+        name: this.f.name.trim(),
         purpose: this.f.purpose.trim(), reason: this.f.reason.trim(),
         rule_id: this.f.scope === 'rule' ? this.f.rule_id : null,
         endpoint: this.f.scope === 'rule' ? this.f.endpoint.trim() : '',
@@ -193,16 +198,13 @@ export default {
     if (this.isEdit) {
       const e = this.entry;
       Object.assign(this.f, {
-        name: e.name || '', owner: e.owner || '', purpose: e.purpose || '',
+        name: e.name || '', purpose: e.purpose || '',
         reason: '', source_ip: e.source_ip || '',
         scope: e.rule_id ? 'rule' : 'global', rule_id: e.rule_id || '',
         endpoint: e.endpoint || '',
         valid_from: e.valid_from || '', valid_to: e.valid_to || '',
       });
     } else {
-      // 負責人預設是登入者自己。留空後端也會補，這裡填進去只是讓它看得見、
-      // 而且要改成別人時不用先猜格式。
-      this.f.owner = state.user || '';
       if (this.origin) {
         // 跨頁預填。掃描來的預設全域、事件判定來的預設該規則 —— 見 app.js 的接線。
         Object.assign(this.f, {
@@ -331,11 +333,12 @@ export default {
         <input type="text" v-model.trim="f.name" aria-required="true"
                placeholder="食時創新 POS 夜間批次">
       </div>
+      <!-- 創立人是唯讀的：它要回答「這筆核准是誰建的」，那個問題只有一個
+           正確答案（登入帳號），可填的欄位反而讓它變成一段自由文字。 -->
       <div class="field">
-        <div class="field-label">負責人
-          <span class="muted" style="font-size:11px">（預設你自己）</span></div>
-        <input type="text" v-model.trim="f.owner" aria-label="負責人"
-               :placeholder="sessionUser">
+        <div class="field-label">創立人
+          <span class="muted" style="font-size:11px">（自動帶入，不可修改）</span></div>
+        <input type="text" :value="creator" readonly disabled aria-label="創立人">
       </div>
     </div>
 

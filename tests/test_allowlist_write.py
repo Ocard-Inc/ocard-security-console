@@ -11,7 +11,7 @@ from console.core import timewin
 from console.store import allowlist, audit, db
 
 IP = "203.0.113.55"
-BASE = {"name": "測試整合", "owner": "測試人", "purpose": "自動測試用",
+BASE = {"name": "測試整合", "purpose": "自動測試用",
         "reason": "驗收", "source_ip": IP, "valid_to": "2026-12-31"}
 EP = "Api2/GetProfile"
 
@@ -60,15 +60,42 @@ def test_required_text_fields_are_named(client):
     assert r.status_code == 400
     for label in ("名稱", "用途", "建立理由"):
         assert label in r.text, f"訊息要列出缺哪些欄位，少了「{label}」"
-    assert "負責人" not in r.text, "負責人不是必填（預設帶登入帳號）"
+    assert "創立人" not in r.text, "創立人不是使用者填的欄位（由登入帳號自動帶入）"
 
 
-def test_owner_defaults_to_the_signed_in_account(client):
-    """負責人留空就是登入者自己 —— 絕大多數情況都是，強迫再打一次沒有意義。"""
-    body = {k: v for k, v in BASE.items() if k != "owner"}
-    r = client.post("/api/allowlist", json=body)
+def test_creator_is_the_signed_in_account_and_matches_approved_by(client):
+    """創立人一律是登入帳號（2026-08 使用者決定：不給填、唯讀）。
+
+    原本它是可填的「負責人」、留空才帶登入帳號 —— 於是它可能是任何字串
+    （實測播種列是「Ocard 內部」，不是一個帳號），當不了「這筆核准是誰建的」
+    的答案，而那是這個欄位唯一有稽核意義的用途。
+    """
+    r = client.post("/api/allowlist", json=BASE)
     assert r.status_code == 200, r.text
-    assert "@" in r.json()["entry"]["owner"], "負責人應自動帶入登入帳號"
+    entry = r.json()["entry"]
+    assert "@" in entry["owner"], "創立人必須是登入帳號"
+    assert entry["owner"] == entry["approved_by"], \
+        "新資料的創立人與 approved_by 都來自 who，必須一致"
+
+
+def test_creator_cannot_be_supplied_or_modified(client):
+    """送 owner 進來一律 400，**不是靜靜忽略**。
+
+    靜靜忽略的話前端可以顯示一個「已存」的值而資料庫是另一個 —— 而這張表
+    沒有 DELETE、只有停用，稽核紀錄裡的 #id 必須永遠解得回同一筆條目。
+    """
+    bad = client.post("/api/allowlist", json={**BASE, "owner": "別人"})
+    assert bad.status_code == 400, bad.text
+
+    ok = client.post("/api/allowlist", json=BASE)
+    assert ok.status_code == 200, ok.text
+    entry_id = ok.json()["entry"]["id"]
+    mine = ok.json()["entry"]["owner"]
+
+    patched = client.patch(f"/api/allowlist/{entry_id}",
+                           json={"reason": "改創立人", "owner": "別人"})
+    assert patched.status_code == 400, patched.text
+    assert allowlist.get(entry_id)["owner"] == mine, "創立人被改掉了"
 
 
 def test_valid_to_is_optional_and_means_never_expires(client):

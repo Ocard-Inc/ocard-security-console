@@ -170,11 +170,11 @@ def test_empty_source_value_never_matches():
 def two_entries():
     """一筆全域、一筆規則範圍，指向不同 IP。"""
     gid = allowlist.create(
-        {"name": "全域測試", "owner": "t", "purpose": "t", "reason": "t",
+        {"name": "全域測試", "purpose": "t", "reason": "t",
          "rule_id": None, "source_ip": "203.0.113.1",
          "valid_from": None, "valid_to": None}, who="test@olis.com.tw")
     rid = allowlist.create(
-        {"name": "規則範圍測試", "owner": "t", "purpose": "t", "reason": "t",
+        {"name": "規則範圍測試", "purpose": "t", "reason": "t",
          "rule_id": "R07B", "source_ip": "203.0.113.2",
          "valid_from": None, "valid_to": None}, who="test@olis.com.tw")
     yield gid, rid
@@ -197,7 +197,7 @@ def test_engine_sees_both(two_entries):
 
 def test_expired_entry_is_not_active():
     eid = allowlist.create(
-        {"name": "已到期", "owner": "t", "purpose": "t", "reason": "t",
+        {"name": "已到期", "purpose": "t", "reason": "t",
          "rule_id": None, "source_ip": "203.0.113.9",
          "valid_from": "2026-01-01 00:00:00", "valid_to": "2026-01-02 23:59:59"},
         who="test@olis.com.tw")

@@ -128,7 +128,7 @@ export default {
       <option value="global">全域</option>
       <option value="rule">單一規則</option>
     </select>
-    <input type="text" v-model.trim="f.q" placeholder="名稱 / IP / 負責人"
+    <input type="text" v-model.trim="f.q" placeholder="名稱 / IP / 創立人"
            style="width:200px" @keyup.enter="load">
     <label class="inline"><input type="checkbox" v-model="f.expiringOnly">只看即將到期或無期限</label>
     <button class="btn btn-sm btn-primary" style="margin-left:auto"
@@ -163,9 +163,13 @@ export default {
       <div style="overflow-x:auto">
         <table style="font-size:12.5px" aria-label="Allowlist 例外清單">
           <thead><tr style="background:#FCFCFD">
-            <th>狀態</th><th>名稱</th><th>對象</th><th>範圍</th><th>負責人</th>
+            <!-- 「創立人」與原本的「建立者」（approved_by）合併成一欄：2026-08 起
+                 兩者在新資料上必然是同一個登入帳號，並排顯示只會讓人以為壞了。
+                 approved_by 仍留在 API 回應裡 —— seeded 就是由它判斷的。
+                 （註解裡不可以出現反引號：整個 template 是一個 JS 樣板字串。） -->
+            <th>狀態</th><th>名稱</th><th>對象</th><th>範圍</th><th>創立人</th>
             <th>用途</th><th>有效期</th><th class="right">近 7 天抑制</th>
-            <th>建立者</th><th></th>
+            <th></th>
           </tr></thead>
           <tbody>
             <tr v-for="e in rows" :key="e.id">
@@ -187,7 +191,13 @@ export default {
                         title="規則已不存在，本條目不會有任何效果">規則已移除</span>
                 </template>
               </td>
-              <td class="muted">{{ e.owner || '—' }}</td>
+              <!-- owner 空的舊列退回 approved_by：那兩個欄位在 2026-08 之前
+                   可能不同（舊版的 owner 是使用者自填的「負責人」）。 -->
+              <td class="muted" style="font-size:11.5px">
+                {{ e.owner || e.approved_by || '—' }}
+                <span v-if="e.seeded" class="pill"
+                      style="background:var(--line-soft);color:var(--text-2)">自動播種</span>
+              </td>
               <td class="muted" style="max-width:220px">{{ e.purpose || '—' }}</td>
               <td class="mono muted" style="font-size:11px;white-space:nowrap">
                 {{ e.valid_from || '—' }}<br>
@@ -199,11 +209,6 @@ export default {
                 <span v-else-if="data.suppression_measured_since" class="muted"
                       :title="'此統計自 ' + data.suppression_measured_since + ' 開始記錄'">0 次</span>
                 <span v-else class="muted" title="抑制紀錄尚未有資料">尚未統計</span>
-              </td>
-              <td class="muted" style="font-size:11.5px">
-                {{ e.approved_by || '—' }}
-                <span v-if="e.seeded" class="pill"
-                      style="background:var(--line-soft);color:var(--text-2)">自動播種</span>
               </td>
               <td style="white-space:nowrap">
                 <button class="btn btn-sm" @click="openEdit(e)">編輯</button>
