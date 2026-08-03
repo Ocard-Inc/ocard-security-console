@@ -33,7 +33,7 @@ function shiftWallClock(wall, minutes) {
 // 「這些條件還是事件帶過來的那一組嗎」的比對鍵。刻意不含 analysis / bucket /
 // limit —— 換一種分析方式看同一組條件，來源提示條仍然成立。
 const ORIGIN_KEYS = ['source', 'start', 'end', 'actor', 'source_ip', 'endpoint',
-                     'brand', 'only_error'];
+                     'brand', 'store', 'only_error'];
 
 // 匯出給事件詳細頁用：它要在跳轉按鈕旁寫出「會用哪一種分析」。
 // 兩邊各寫一份標籤遲早會不一致，所以只有這一份。
@@ -74,7 +74,7 @@ export default {
   data() {
     return {
       f: {
-        source: 'api', start: '', end: '', brand: null, endpoint: '',
+        source: 'api', start: '', end: '', brand: null, store: null, endpoint: '',
         // bucket 預設 auto：依實際視窗長度走與總覽相同的階梯，
         // 但手動選項全部保留 —— Explorer 是臨時調查工具，要能自己決定顆粒度。
         source_ip: '', actor: '',
@@ -281,7 +281,7 @@ export default {
       this.run();
     },
     reset() {
-      Object.assign(this.f, { brand: null, endpoint: '', only_error: false,
+      Object.assign(this.f, { brand: null, store: null, endpoint: '', only_error: false,
                               actor: '', source_ip: '' });
     },
 
@@ -315,7 +315,9 @@ export default {
     },
     /** 放寬成「只看這個對象」：R01/R05/R08A 會同時帶 actor 與來源 IP。 */
     dropFilter(field) {
-      this.f[field] = field === 'brand' ? null : '';
+      // brand / store 的「沒有篩選」是 null，其餘是空字串 —— 給錯型別的話
+      // 後端會收到 0 或 ''，那是一個查不到東西的合法篩選，而不是「不篩」。
+      this.f[field] = ['brand', 'store'].includes(field) ? null : '';
       this.origin.applied = this.originSnapshot();
       this.run();
     },
@@ -404,6 +406,13 @@ export default {
              改了還沒按查詢時兩者會不同 —— 那個差異有用，所以留著。 -->
         <div v-if="result && result.meta.brand_filter" class="muted" style="font-size:11.5px;margin-top:3px">
           本次結果：{{ result.meta.brand_filter }}</div></div>
+      <!-- 分店沒有選擇器：沒有「候選分店」端點，而且這個欄位主要是事件帶過來的
+           （單店濫用規則的對象）。手動輸入時 -1 代表品牌層級操作、0 代表未填。 -->
+      <div><div class="muted" style="margin-bottom:3px">分店編號</div>
+        <input v-model.number="f.store" type="number" placeholder="例如 27681"
+               style="width:100%" @keyup.enter="run">
+        <div v-if="result && result.meta.store_filter" class="muted" style="font-size:11.5px;margin-top:3px">
+          本次結果：{{ result.meta.store_filter }}</div></div>
       <!-- Auth Log 沒有可篩的 endpoint 維度：action 半年來只有一個值（auth），
            篩了等於沒篩。後端也會拒絕（400），所以這裡直接不顯示。 -->
       <div v-if="endpointLabel"><div class="muted" style="margin-bottom:3px">{{ endpointLabel }}</div>

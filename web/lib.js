@@ -90,3 +90,17 @@ export const SOURCE_LABEL = {
   admin: 'Admin Log', backend: 'Backend System Log',
   api: 'API Log', auth: 'Auth Log', all: '全部來源',
 };
+
+// events.status 的三個值。active / resolved 由五分鐘排程的狀態機寫，
+// closed（已處理完畢）只由人寫（見 store/events.py 的模組說明）。
+//
+// 這裡是前端的唯一真相：原本清單、詳細頁、篩選器各自寫死，於是同一個
+// resolved 在表格是「已停止」、在篩選器是「已恢復」—— 兩個名字看起來像
+// 兩種狀態。多一個 closed 之後那種漂移只會更貴。
+export const STATUS_LABEL = {
+  active: '持續中', resolved: '已恢復', closed: '已處理完畢',
+};
+
+export const STATUS_COLOR = {
+  active: 'var(--warn)', resolved: 'var(--text-3)', closed: 'var(--ok)',
+};

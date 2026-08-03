@@ -1,5 +1,6 @@
 // 異常事件清單 + 快速預覽 Drawer（設計稿 8 節）
-import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL } from '../lib.js';
+import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL,
+         STATUS_LABEL, STATUS_COLOR } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import RangePicker from '../components/range-picker.js';
 
@@ -12,16 +13,47 @@ const RANGES = [
   ['90d', '最近 90 天', 2160],
 ];
 
+// 判定下拉的選項一律來自後端回應的 `judgements` / `unjudged_label`
+// （唯一真相是 routes.JUDGEMENTS 與 routes.UNJUDGED）。**前端不自己列一份**：
+// 差一個字就是一個永遠篩不到東西的選項，而畫面看起來完全正常。
+//
+// 唯一的例外是下面這個常數 —— 資安總覽的「前往判定」連結帶的是
+// `{unjudged:true}`，而它必須在第一次查詢就生效、來不及等後端回應。
+// 它敢寫死是因為後端對 judgement 做封閉集合驗證：字串一旦漂掉會是一個
+// 看得見的 400，不會靜靜地變成「沒有待判定事件」。
+const UNJUDGED = '待判定';
+
+const EMPTY_FILTER = { severity: '', status: '', rule_id: '', source: '',
+                       keyword: '', judgement: '', hours: 168 };
+
 export default {
   props: ['initialFilter'],
   emits: ['open-event'],
   components: { BrandBreakdown, RangePicker },
   data: () => ({
     data: null, loading: true, error: null, rules: [],
-    // unjudged 是布林：false 代表「不過濾」，所以送出時要跳過（見 load()）
-    f: { severity: '', status: '', rule_id: '', source: '', keyword: '', unjudged: false, hours: 168 },
+    f: { ...EMPTY_FILTER },
     drawer: null, range: '7d', RANGES, SEV_LABEL, SOURCE_LABEL,
+    STATUS_LABEL, STATUS_COLOR,
   }),
+  computed: {
+    // 後端給的判定選項（含「待判定」）。載入前是空陣列 —— 下拉會只有「全部」，
+    // 那是正確的降級：寧可少一個選項，也不要一個字串對不上的假選項。
+    judgementOptions() {
+      const d = this.data;
+      if (!d) return [];
+      return [d.unjudged_label, ...(d.judgements || [])].filter(Boolean);
+    },
+    // 判定分布只在「沒有套用判定篩選」時顯示：by_judgement 與 by_severity 一樣
+    // 是篩選**之後**的統計，套用篩選後其餘欄位必然是 0，擺出來只會讓人以為
+    // 這段時間真的只有這一種判定。
+    judgementBreakdown() {
+      if (this.f.judgement || !this.data?.by_judgement) return [];
+      return this.judgementOptions
+        .map(k => [k, this.data.by_judgement[k] || 0])
+        .filter(([, n]) => n > 0);
+    },
+  },
   watch: {
     range(key) {
       this.f.hours = RANGES.find(r => r[0] === key)?.[2] ?? 168;
@@ -41,23 +73,29 @@ export default {
       this.loading = false;
     },
     clearFilters() {
-      this.f = { severity: '', status: '', rule_id: '', source: '', keyword: '',
-                 unjudged: false, hours: 168 };
+      this.f = { ...EMPTY_FILTER, hours: this.f.hours };
       this.load();
     },
     activeChips() {
       const chips = [];
       if (this.f.severity) chips.push({ key: 'severity', text: '嚴重度 = ' + this.f.severity });
-      if (this.f.status) chips.push({ key: 'status', text: '狀態 = ' + (this.f.status === 'active' ? '持續中' : '已恢復') });
+      if (this.f.status) chips.push({ key: 'status', text: '狀態 = ' + STATUS_LABEL[this.f.status] });
       if (this.f.rule_id) chips.push({ key: 'rule_id', text: '規則 = ' + this.f.rule_id });
       if (this.f.source) chips.push({ key: 'source', text: '來源 = ' + SOURCE_LABEL[this.f.source] });
       if (this.f.keyword) chips.push({ key: 'keyword', text: '關鍵字 = ' + this.f.keyword });
-      if (this.f.unjudged) chips.push({ key: 'unjudged', text: '只看待判定' });
+      if (this.f.judgement) chips.push({ key: 'judgement', text: '判定 = ' + this.f.judgement });
       return chips;
     },
     removeChip(key) {
-      this.f[key] = key === 'unjudged' ? false : '';
+      this.f[key] = '';
       this.load();
+    },
+    /** 已處理完畢那一格的 title：誰結的、什麼時候、以及**關閉當下的狀態**。
+     *  「回落之後才結案」與「還在持續命中就結案」是兩件不同的事，後者代表
+     *  這一筆是被人從待處理清單移走的，不是它自己停了。 */
+    closedTitle(e) {
+      const from = e.closed_from === 'active' ? '關閉時仍在持續命中' : '關閉時已回落';
+      return `${e.closed_by || '未記錄'} 於 ${e.closed_at || '未記錄'} 標為已處理完畢（${from}）`;
     },
     async preview(evtNo) {
       this.drawer = { loading: true, evt_no: evtNo };
@@ -68,8 +106,9 @@ export default {
   },
   async mounted() {
     if (this.initialFilter?.severity) this.f.severity = this.initialFilter.severity;
-    // 首頁「待判定」橫幅帶過來的
-    if (this.initialFilter?.unjudged) this.f.unjudged = true;
+    // 首頁「待判定」橫幅帶過來的。落進同一個 judgement 篩選器，所以帶進來之後
+    // 使用者看到的是一個可以直接改掉的下拉，而不是一個來源不明的隱藏條件。
+    if (this.initialFilter?.unjudged) this.f.judgement = UNJUDGED;
     this.load();
     try { this.rules = (await api('/rules')).rules; } catch { /* 規則清單非必要 */ }
   },
@@ -84,8 +123,7 @@ export default {
         </select>
         <select v-model="f.status" @change="load">
           <option value="">狀態：全部</option>
-          <option value="active">持續中</option>
-          <option value="resolved">已恢復</option>
+          <option v-for="(l,k) in STATUS_LABEL" :key="k" :value="k">{{ l }}</option>
         </select>
         <select v-model="f.rule_id" @change="load">
           <option value="">規則：全部</option>
@@ -94,6 +132,10 @@ export default {
         <select v-model="f.source" @change="load">
           <option value="">資料來源：全部</option>
           <option v-for="(l,k) in SOURCE_LABEL" :key="k" :value="k === 'all' ? '' : k">{{ l }}</option>
+        </select>
+        <select v-model="f.judgement" @change="load">
+          <option value="">判定：全部</option>
+          <option v-for="j in judgementOptions" :key="j" :value="j">{{ j }}</option>
         </select>
         <RangePicker v-model="range" :presets="RANGES" />
         <input type="text" v-model="f.keyword" @keyup.enter="load"
@@ -119,6 +161,21 @@ export default {
           {{ s }}：<strong :style="{color:'var(--'+s.toLowerCase()+')'}">{{ data.by_severity[s] || 0 }}</strong>
         </span>
         <span>持續中：<strong style="color:var(--text-1)">{{ data.ongoing }}</strong></span>
+        <!-- 已處理完畢是人工結案，與「已恢復」是兩回事：後者是指標回落，
+             前者是有人說處理完了。數字為 0 時不顯示（沒有這個概念比顯示 0 清楚）。 -->
+        <span v-if="data.by_status && data.by_status.closed">
+          已處理完畢：<strong style="color:var(--ok)">{{ data.by_status.closed }}</strong></span>
+      </div>
+      <!-- 判定分布。只在沒有套用判定篩選時出現（見 judgementBreakdown），
+           而且與上面那一行同屬「符合條件的 {{ data.total }} 筆」，不是全部歷史。 -->
+      <div v-if="judgementBreakdown.length"
+           style="display:flex;gap:16px;font-size:12.5px;margin:-4px 0 10px;padding:0 2px;flex-wrap:wrap"
+           class="muted">
+        <span>這 {{ num(data.total) }} 筆的判定：</span>
+        <span v-for="[k,n] in judgementBreakdown" :key="k" style="display:flex;gap:5px">
+          <a @click="f.judgement = k; load()">{{ k }}</a>
+          <strong style="color:var(--text-1)">{{ num(n) }}</strong>
+        </span>
       </div>
 
       <div v-if="!data.events.length" class="empty-box">
@@ -151,9 +208,12 @@ export default {
                   門檻 {{ num(e.threshold) }}</span>
               </td>
               <td class="right"><BrandBreakdown :count="e.brands" :rows="e.brand_top" /></td>
-              <td :style="{color: e.status==='active' ? 'var(--warn)' : 'var(--text-2)'}">
-                {{ e.status === 'active' ? '持續中' : '已停止' }}</td>
-              <td>{{ e.judgement || '待確認' }}</td>
+              <td :style="{color: STATUS_COLOR[e.status] || 'var(--text-2)'}"
+                  :title="e.status === 'closed' ? closedTitle(e) : ''">
+                {{ STATUS_LABEL[e.status] || e.status }}</td>
+              <!-- 沒有判定時的字要與篩選器的選項一致（原本這裡是「待確認」而
+                   篩選與總覽都寫「待判定」——三種說法指同一個狀態）。 -->
+              <td :class="{muted: !e.judgement}">{{ e.judgement || '待判定' }}</td>
               <td><button class="btn btn-sm" @click="preview(e.evt_no)">預覽</button></td>
             </tr>
           </tbody>

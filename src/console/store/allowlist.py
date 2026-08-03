@@ -19,7 +19,7 @@
 與 R04（entity 只有 endpoint，`Api2/GetProfile`）。R04 的對象**根本沒有來源 IP**，
 所以「IP + endpoint」的例外只能讓 R03 閉嘴，R04 會繼續叫 —— 那等於沒解決問題。
 因此規則範圍的條目只要有 `source_ip` 或 `endpoint` 其中一個就成立。
-**全域條目仍然必須有 IP**：全域 + 只有 endpoint 等於「16 條規則都不看這個端點」，
+**全域條目仍然必須有 IP**：全域 + 只有 endpoint 等於「17 條規則都不看這個端點」，
 那個盲區太大而且沒有已知用途。
 兩者都沒有的話等於「這條規則永不觸發」—— 那應該去停用規則（停用會出現在
 資安總覽的橫幅上，靜靜掛一筆空例外不會）。
@@ -266,8 +266,15 @@ def conflict(source_ip: str, rule_id: str | None, endpoint: str = "",
 
 # ─────────────────────────── 寫入 ───────────────────────────
 
-_WRITABLE = ("name", "owner", "purpose", "reason", "rule_id", "endpoint",
+_WRITABLE = ("name", "purpose", "reason", "rule_id", "endpoint",
              "valid_from", "valid_to")
+
+# `owner`（畫面上的「創立人」）**刻意不在 _WRITABLE 裡**：它由 `create()` 直接
+# 從 `who` 寫入，之後不可修改。原本它是使用者可填的「負責人」，留空才帶登入帳號 ——
+# 於是同一個欄位可能是任何字串（實測播種列是「Ocard 內部」，不是一個帳號）。
+# 一個可以填任何字的欄位當不了「這筆核准是誰建的」的答案，而那正是唯一有稽核
+# 意義的問題。放在這裡而不是只在 route 擋，是為了讓「不可修改」是結構性的：
+# `update()` 收到 owner 會直接 KeyError 而不是靜靜改掉別人的核准紀錄。
 
 # source_ip 刻意不可修改：一筆條目是「對某個特定來源的核准紀錄」，就地改 IP
 # 會讓 audit_log 裡「#12 核准了 1.2.3.4」在事後解讀成別的 IP —— 稽核痕跡被
@@ -275,12 +282,20 @@ _WRITABLE = ("name", "owner", "purpose", "reason", "rule_id", "endpoint",
 
 
 def create(fields: dict, *, who: str) -> int:
-    """新增一筆生效中的條目，回傳 id。呼叫端負責驗證與寫稽核。"""
+    """新增一筆生效中的條目，回傳 id。呼叫端負責驗證與寫稽核。
+
+    `owner`（創立人）與 `approved_by` 都由 `who` 決定，呼叫端給不了 ——
+    兩者在新資料上必然相同，這是刻意的：`approved_by` 已經被
+    `allowlist_view` 用來判斷「是不是排程播種的」（`seeded`），
+    語意是「這筆是誰放進來的」；`owner` 是畫面上顯示的那一個。
+    分開留著是為了不動既有欄位，**2026-08 之前建立的列兩者可能不同**
+    （舊版的 owner 是使用者自填的「負責人」）。
+    """
     now = timewin.fmt(timewin.taipei_now())
-    cols = list(_WRITABLE) + ["source_ip", "status", "approved_by",
+    cols = list(_WRITABLE) + ["owner", "source_ip", "status", "approved_by",
                               "created_at", "updated_at", "updated_by"]
     values = [fields.get(c) for c in _WRITABLE] + [
-        fields.get("source_ip") or None, STATUS_ACTIVE, who, now, now, who]
+        who, fields.get("source_ip") or None, STATUS_ACTIVE, who, now, now, who]
     placeholders = ",".join("?" * len(cols))
     with db.tx() as conn:
         cur = conn.execute(

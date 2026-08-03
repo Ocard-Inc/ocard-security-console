@@ -1,0 +1,36 @@
+id: R13
+name: 單一分店高量呼叫
+severity: P2
+source: api
+kind: sql_threshold
+window_minutes: 60
+# 這條規則的對象天生是「一直都在」的（實測 8 個對象在 28 天裡活躍 26~28 天），
+# 所以通知節奏要配合「持續」而不是「突發」：120 分鐘的話同一個對象一天叫 12 次。
+cooldown_minutes: 720
+sql: |
+  SELECT _brand, _store, count() AS metric
+  FROM ods_api_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND _store > 0
+  GROUP BY _brand, _store
+  HAVING metric >= 500
+threshold:
+  # 生效門檻 = max(1000, p99 × 5) = 1085（2026-08-04 的母體）。
+  # SQL 的 `HAVING metric >= 500` 才是真正的下限 —— 把 static_floor 覆寫到 500
+  # 以下不會有更多命中（見 model.Rule.sql_floor）。
+  static_floor: 1000
+  baseline_key: brand_store_60m
+  population: true
+  stat: p99
+  factor: 5
+entity:
+  - {col: _brand, fp: null}
+  - {col: _store, fp: null}
+note: >-
+  長期持續的單店濫用（本輪調查：7 家 POS 門店的 Api2/TransDetail 輪詢迴圈打掉
+  全站 API log 六成，從 4 月跑到 7/31）。R04 抓不到 —— 它的基線是 endpoint
+  自己的歷史，濫用者就是基線；R10B 也抓不到 —— 品牌母體的 p99/median 是 365 倍，
+  被迫用 30000/15 分的地板，四個持續濫用的品牌只有一個過得了。改以
+  (品牌 × 分店) 為對象後母體同質得多（p99/median 24 倍），門檻低兩個數量級。
+  對象刻意不含 endpoint：去重鍵要穩定，「同一件事被拆成好幾筆」正是這條規則
+  要解決的問題（R03 的對象是輪替 IP，實測同一家店 37 天產生 13~21 個 entity_key）。

@@ -43,7 +43,7 @@ gcloud secrets versions add security-console-env --data-file=prod.env  # 改設�
 
 ```
 config/settings.yaml     全域參數（時區、視窗、門檻、敏感 route、內部帳號、污染窗）
-config/rules/*.yaml      16 條宣告式規則
+config/rules/*.yaml      17 條宣告式規則
 src/console/core/        ch（查詢）、masking（遮罩）、timewin（時間）、config、logging_setup
 src/console/rules/       loader（YAML→Rule + 驗證）、effective（YAML + 覆寫的合成）、
                          engine（評估）、baseline（門檻）、model
@@ -51,7 +51,9 @@ src/console/checker/     tick（單次檢查）、scheduler（asyncio 常駐）�
 src/console/store/       db（SQLite WAL）、migrate（既有表的欄位遷移）、events（去重狀態機）、
                          allowlist（例外名單的唯一入口）、rule_overrides、
                          rule_suppressions（抑制紀錄）、audit
-src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）
+src/console/queries/     explorer、quick_templates、trends、health、exprs（共用 SQL 片段）、
+                         entity（事件對象視角：母體位置／24 小時作息／端點集中度）、
+                         entity_history（對象自己的 28 天時序 + 自身基線帶）
 src/console/sweep/       期間異常掃描：probes（探針表）、run（併發）、correlate（交叉計票）、
                          score（評分）、limits（可信度限制）、report（組裝）、narrate（LLM）
 src/console/intel/       來源情報：ranges（離線 CIDR 比對）、classify（型態判定）、
@@ -84,6 +86,31 @@ web/charts/              ApexCharts 封裝：ApexChart 元件、色票 token、�
 所以 `BUCKET_LADDER` 的每個分桶都必須出現在 `calibrate.GRANULARITIES` 裡
 （`tests/test_trend_buckets.py` 會擋）。**改階梯 → 改 GRANULARITIES → 重跑 calibrate**，
 順序不可顛倒；新粒度算出來之前 `baseline.get()` 回 None，前端就不畫 median 線（正確的降級）。
+
+**基線與 metric 的「對象粒度」也必須成對**（同一條規則的另一半，2026-08 修）。
+上一條講的是時間維度，這一條講對象維度，症狀完全一樣：不報錯，只給錯的數字。
+R03 的 metric 是 `GROUP BY src, endpoint`，但它一度讀 `api_src_60m` ——
+那個基線是 `GROUP BY src`、跨全部 endpoint 算的。實測同一時段兩者的
+P99 差 **26 倍**（109 vs 2,835）：粗粒度把同一個 IP 的全部 endpoint 加總，值天生更大，
+於是門檻（`p99 × 3`）系統性偏高、**規則長期漏抓**，而事件頁「資料限制」顯示的
+median/P95/P99 也在陳述錯的母體（使用者拿它當同儕比較的依據）。
+現在 R03 用 `api_src_ep_60m`。**新增或修改規則時，`baseline_key` 的 GROUP BY
+必須與 SQL 的 GROUP BY 逐欄位相同**；`queries/entity.peers()` 用執行期對帳
+（見「事件對象視角」一節）把不成對的情況變成畫面上的警語。
+
+**成對的不只 GROUP BY，還有定義母體的 WHERE**（2026-08 加 R13 時發現的第三種）。
+R13 的對象是 (品牌 × 分店)，而 `_store` 有兩個哨兵值：`-1` 是品牌層級操作
+（7 月橫跨 301 個品牌、132 萬次）、`0` 是未填。calibrate 8b 的母體帶 `_store > 0`，
+規則 SQL 就**必須帶同一個條件** —— 漏了的話那兩個哨兵值會拿一個不含自己的母體
+當門檻，而且事件對象是一個在 Explorer 查不到東西的「分店 -1」。
+`tests/test_rule_store_volume.py` 用行為驗證這件事（規則不可吐出 `_store <= 0`，
+且 top 對象的 metric 必須等於母體單位下的計數），不比對 SQL 字串。
+
+**母體分布刻意不做 (hour, day_class)**：實測 `api_src_ep_60m` 逐小時的結果是
+凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的 p99 = 148 ——
+低流量時段活著的幾乎只有機器整合，它們撐高了自己的門檻。逐小時會讓 04:00 的
+門檻變成 18,180（全域是 504），在最該敏感的時段把規則關掉。低流量端的保護
+交給 `static_floor`。
 
 **時間**：ClickHouse 伺服器時區是 UTC，但四張表的 `create_time` 存的是**台北牆鐘時間**。
 所有邊界一律由 `core/timewin.py` 在 Python 端算好、以含秒的完整字串傳參，
@@ -292,7 +319,7 @@ notify 與前端都據此切換文案。
 
 新增規則的完整路徑：寫 YAML → 若用了新的 `baseline_key`，在 `calibrate.py` 加對應的
 分布計算 → 重跑 calibrate → 用 `replay` 對歷史事件與正常日回測 →
-更新 `tests/test_api_smoke.py` 中寫死的規則數（目前 16）。`load_rules()` 有
+更新 `tests/test_api_smoke.py` 與 `tests/test_rule_overrides.py` 中寫死的規則數（目前 17）。`load_rules()` 有
 `lru_cache`，改 YAML 要重啟 server（但 `enabled` / `static_floor` / `factor` /
 `cooldown_minutes` 走 UI 覆寫則立即生效，見下一節）。
 
@@ -378,7 +405,7 @@ ClickHouse 端就先濾掉了。把 `static_floor` 調到那個數字以下，UI
 
 - 規則範圍：`source_ip` 與 `endpoint` **至少一個**。兩者都空 = 「這條規則永不觸發」，
   那應該去停用規則（停用會出現在資安總覽的橫幅上，一筆空例外不會）。
-- 全域：仍然**必須有 IP**。全域 + 只有端點 = 16 條規則都不看那個端點，盲區太大。
+- 全域：仍然**必須有 IP**。全域 + 只有端點 = 17 條規則都不看那個端點，盲區太大。
 - `store/allowlist.build_index()` 因此回傳 `Index(by_ip, by_rule)` 兩張表 ——
   沒有 IP 的條目沒有索引鍵可用，要以 `rule_id` 另外收。刻意從 `index_by_ip()`
   改名：舊呼叫端必須 TypeError 而不是靜靜地只比對到一半。
@@ -417,8 +444,11 @@ R08A/B/C **也永遠不會再對它告警** —— 而畫面上 allowlist 是停
 
 **這個功能的安全模型是「留痕 + 可見」，不是「阻止」。** `guard()` 不分級、
 主控台在 VPC 內也拿不到操作者的來源 IP，所以連「不准把自己的 IP 加進去」都檢查
-不了。一筆全域條目會同時讓 16 條規則與整份掃描看不見那個來源。因此約束靠：
-必填名稱／用途／理由（負責人留空 = 登入者自己）、
+不了。一筆全域條目會同時讓 17 條規則與整份掃描看不見那個來源。因此約束靠：
+必填名稱／用途／理由（**創立人不給填** —— 由 `store/allowlist.create()` 從登入帳號
+寫入、之後不可修改，送 `owner` 進寫入端點一律 400。原本它是可填的「負責人」、
+留空才帶登入帳號，於是它可能是任何字串，當不了「這筆核准是誰建的」的答案，
+而那是這個欄位唯一有稽核意義的用途）、
 每次寫入進 `audit_log`（`target` 一定要帶 before→after，那張表沒有 diff 欄位）、
 發 Slack ops 訊息（唯一一個當事人改不掉的通道）、資安總覽固定顯示
 「目前有多少監測被關閉」、掃描報告列出被抑制的來源與「若不抑制會是第幾名」。
@@ -436,6 +466,145 @@ R08A/B/C **也永遠不會再對它告警** —— 而畫面上 allowlist 是停
 **`measured_since` 是必填的呈現資訊。** `rule_suppressions` 剛上線是空的，
 「0 次」必須渲染成「自 X 起沒有紀錄」而不是「從未抑制」——
 把「沒有資料」說成「沒有發生」是這個專案一再警告的錯誤。
+
+## 調查判定（`POST /api/events/{evt_no}/judge`）
+
+判定結果（`JUDGEMENTS` 五個值之一）必填，**理由／證據／下一步三個欄位全部選填**
+（使用者於 2026-08 決定）。原本三個都必填，論點是「三個月後最想知道的就是當時
+為什麼這樣判」；實測的結果是**大量事件停在完全沒有判定**，而唯一一筆判定過的
+EVT-0001 三個欄位都填著同一句「APP 讀取資料」—— 必填只是逼人打字繞過去。
+一個空白的理由仍然留下了「誰、什麼時候、結論是什麼」，比沒有判定多得多。
+
+代價是可以留下一個沒有任何理由的判定，所以剩下的三件事變成唯一的約束：
+提交回應在三欄全空時明說「此判定沒有留下任何理由、證據或處置紀錄」、
+事件詳細頁把實際填了什麼原樣顯示（含「未填：…」）、選了判定但有欄位空著時
+表單顯示 warn banner。**可以不填，但不能安靜**（同 Allowlist 到期日的處理）。
+
+**`judgement_note` 原本是只寫不讀的。** `judge_event` 把三個欄位 JSON 進
+`events.judgement_note`，而 `_event_public()` 沒有回傳它 —— 畫面上沒有任何地方
+看得到。三個欄位還是必填時這只是浪費，改成選填之後那等於「打了字也沒人會看到」，
+所以詳細頁加了 `judgement_detail`（`_judgement_detail()`，只在詳細頁算，理由同
+`drilldown`）。三個鍵**一律存在、沒填存空字串**，讀取端才不必分辨「這次沒填」
+與「舊資料還沒有這個欄位」；舊的非 JSON 值整段放進 `reason` 而不是丟掉。
+
+**「待判定」是 `judgement IS NULL` 的顯示值，不是可以提交的判定。**
+`routes.UNJUDGED` 同時是 `GET /api/events` 的 `judgement` 篩選值與前端下拉的選項，
+但 `judge_event` 只接受 `JUDGEMENTS` —— 存得進去卻篩不出來的判定值是這裡最容易
+出現的漂移，所以提交端與篩選端共用同一組常數。前端的下拉選項一律來自回應的
+`judgements` / `unjudged_label`，**不自己列一份**（差一個字就是一個永遠篩不到
+東西的選項，而畫面完全正常）。
+
+`judgement` 是封閉集合，**打錯一律 400**：靜靜接受的話 `judgement=誤報x` 回 0 筆，
+而畫面上的已套用條件寫著「判定 = 誤報x」，讀起來像「這段時間沒有誤報」。
+同理 `unjudged=true` 與具體判定同時給是 400 而不是空清單。`unjudged` 保留是為了
+不破資安總覽「前往判定」連結與既有測試的契約，新的呼叫端一律用 `judgement`；
+前端把它翻成同一個篩選器的值，所以帶進來之後是一個看得見、改得掉的下拉，
+而不是一個來源不明的隱藏條件。
+
+`by_judgement` 與 `by_severity` 一樣是**套用篩選之後**的統計，所以前端只在沒有
+套用判定篩選時顯示它 —— 混用兩種範圍（「這段時間全部的待判定數」配上「篩選後
+的清單」）正是這個專案一再警告的誤導。
+
+## 人工結案（`status = 'closed'`，已處理完畢）
+
+`events.status` 有三個值，但 `store/events.py` 只寫兩個：`active` / `resolved` 是
+狀態機的結論（「還在命中」／「指標回到門檻以下」），**`closed` 只由人寫**
+（`POST /api/events/{evt_no}/close`，可由 `/reopen` 復原）。前端的狀態字一律走
+`web/lib.js` 的 `STATUS_LABEL`（原本清單寫「已停止」、篩選器寫「已恢復」，
+同一個 resolved 兩個名字看起來像兩種狀態）。
+
+**用一個狀態機不認識的值是刻意的。** 每一條機器端 SQL 都寫 `status = 'active'`，
+所以 closed 自動退出狀態機：不累加 `miss_ticks`、不會被標 resolved、不發「已恢復」，
+資安總覽的 attention 也自動看不到它。若改成「只加 `closed_at`、status 留著 active」，
+每一個既有的 `status = 'active'` 查詢都得記得加 `AND closed_at IS NULL` ——
+漏掉任何一處的症狀是「已處理完畢的事件還在發通知」，而那是靜靜發生的。
+反過來漏掉的方向是「多開一個新事件」，那是看得見的。
+
+**因此關閉一個仍在命中的事件，下一個 tick 會建立一個新的 EVT 編號**
+（狀態機找不到 active 列）。那不是 bug 而是唯一誠實的行為：你說處理完了，而它又
+發生了。`close` 的回應因此帶 `warnings`、前端在按下去**之前**就顯示同一段話，
+而 `apply_findings` 開新事件時會查有沒有同一 `(rule_id, entity_key)` 的 closed 列，
+有的話留一行 warning log（「結案後再犯」與「第一次出現」是完全不同的結論）。
+
+**結案必須先有判定。** 沒有判定的結案回答不了「處理的結論是什麼」，而且會與資安
+總覽的「待判定」橫幅直接矛盾 —— 那條查的是 `judgement IS NULL`、**不看 status**，
+所以一筆「已處理完畢但沒有判定」會同時顯示這兩件事。判定現在只要按一顆按鈕
+（三個文字欄都選填），所以這個前置條件不構成負擔。反過來說：**不要為了讓結案
+可以跳過判定而去改那條橫幅的查詢** —— 那等於讓人用結案清空待判定積壓。
+
+**`/reopen` 一律回到 `closed_from`，不可一律回 `active`。** 一筆早就回落的事件被
+復原成 active 之後，狀態機會在三個 tick 內把它標 resolved 並對 P0/P1 發一則
+「已恢復」—— 那個事件從頭到尾都是靜的，那是假的恢復（同 `_silenced_keys` 擋的
+那件事）。`closed_from` 就是為此存在的第三個欄位，不是冗餘。
+另外 **reopen 前要擋「同一對象已經有一筆 active」**：結案期間再犯會另開新事件，
+復原會讓同一個去重鍵有兩筆 active，而狀態機的 `db.one` 只拿到其中一筆、
+另一筆從此不再更新並在三個 tick 後被標 resolved。那也是靜靜發生的，所以回 409。
+
+`closed_at` / `closed_by` / `closed_from` 三個欄位走 `store/migrate.py`
+（`events` 不是衍生表）。**既有列一律 NULL、刻意不回填** —— 「沒有人結案過」正是
+既有資料的事實，回填成現在的時間會宣稱一個假的結案紀錄。
+`status` 是封閉集合，`/events` 的篩選打錯一律 400（同 `judgement`）。
+
+## 事件對象視角（`queries/entity.py` / `entity_history.py`）
+
+事件詳細頁原本唯一的圖是 `routes._event_trend()` —— **整個資料來源的總量**，
+與事件對象無關。實際造成的誤讀（2026-08，真實使用者）：圖上實際值 12–20 萬、
+同時段基線 median 39–58 萬，於是結論變成「量比平常低，所以沒事」，
+而圖上沒有任何一個像素跟那個對象有關。`api/drilldown.py` 的註解早就記下這個缺口。
+
+現在這一頁回答四個問題，各自一塊：
+
+| 問題 | 在哪 | 端點 | 實測成本 |
+|---|---|---|---|
+| 跟其他對象差多少 | `entity.peers()` | `GET /events/{n}/entity` | 0.2 秒 |
+| 這是機器還是人 | `entity.hour_profile()` | 同上 | 1.4 秒 |
+| 這個 endpoint 正常嗎 | `entity.endpoint_share()` | 同上 | 1.5 秒 |
+| 一直都在還是新的 | `entity_history.timeline()` | `.../entity/timeline` | **5–7 秒** |
+
+**兩個端點都是同步 `def`**（同 `/sweep`）。寫成 `async def` 會讓阻塞查詢佔住事件迴圈、
+連五分鐘排程一起卡住。時序那支因為 5–7 秒而**獨立端點 + 前端點了才載入** ——
+綁進事件詳細頁的主查詢會讓每次開頁都多等那麼久。
+
+**`EntityRef` 一律由 `drilldown.build()` 的結果推導，不從規則 entity 直接推。**
+「規則 entity → 篩選欄位」的唯一真相在 `drilldown`（含 legacy 指紋、被清洗的值、
+該表不支援的欄位這三種逐欄位剔除），「篩選欄位 → SQL」的唯一真相是
+`explorer.entity_meta()`。跳過 drilldown 的捷徑會讓不支援的組合靜靜產生一個
+永遠命中 0 筆的面板（`tests/test_event_entity.py` 有反向測試守著）。
+
+**比對是完全相等，不是前綴。** `explorer.entity_expr()` 回的是 `GROUP_BY` 的運算式
+（事件的 entity 值就是它算出來的），不是 Explorer 篩選器用的 `FILTER_COLUMN`——
+後者對 endpoint 是 `startsWith`，會把 `Api2/GetProfileExtra` 算進 `Api2/GetProfile`
+的對象裡，數字比事件大而且不會報錯。backend 兩者刻意不同（`route2` vs 完整 `route`）。
+
+**`peers()` 的執行期單位對帳。** 它數的是「該對象在此區間的**全部**記錄數」，
+對 R03/R04/R08/R10 剛好等於規則的 metric，但 R07A 只算登入失敗、R09 只算錯誤回應、
+R05 還限非上班時間 —— 那些規則不同單位。這裡**刻意不重建各規則的 WHERE**
+（等於把規則 SQL 抄第二份，遲早漂移，而漂移的症狀是一個看起來精確的錯數字），
+改成把事件的 `metric_value` 傳進去比：對不上就 `comparable=False` + 一段說明，
+畫面照實顯示「這是總活動量的排名，不是規則指標的排名」。
+
+**自身基線帶在 `entity_history` 現算，不進 `calibrate`。** `baselines` 沒有逐對象的列
+也不該有（23 萬來源 × 24 小時 × 2 day_class 不可能每日重算）。由同一趟查詢的結果
+現算的附帶好處是**分桶與基線粒度天生成對**。基線一律取 `first_seen` **之前**
+（同 `sweep/run.build_params()`）；不足 `MIN_BAND_BUCKETS` 個桶就 `band=None` 並說明，
+**不生假的帶**。
+
+**「線落在自己的帶裡面」不等於沒事，畫面必須說出來。** 長跑的整合程式必然落在
+自己的帶內，因為「事件之前」幾乎等於「這個行為的全部」（實測某對象事件當天才觸發，
+行為從四月就在）。正確的結論是「**對它自己是常態，對全體是離群**」——
+`summary.self_normal` 就是為了讓前端講出這句話而存在的。同理
+`summary.starts_before_window`：頁首的「開始」是我們什麼時候開始告警，
+不是這件事什麼時候開始，兩者常常差幾個月。
+
+**降級一律說原因。** R09（entity 是字面常數 `scope`）與 R12（沒有 entity）
+→ `from_filters()` 回 None → 面板整塊顯示「這條規則沒有可追蹤的對象」。
+**不可以退回畫全站圖假裝有內容** —— 那正是這次改版要消滅的誤讀來源。
+沒有 endpoint 維度的規則不出現集中度面板；只有 endpoint 沒有來源的規則（R04）
+集中度面板仍有用（回答「誰在打這個 endpoint」）但 `own_share` 是 None 並附
+`self_note`，畫面不可以顯示一個空白的佔比。
+
+**比例一律以小數（0..1）傳，不是百分比。** `lib.js` 的 `pct()` 會乘 100 ——
+回百分比的話同一個值被乘兩次（實測 97.47 顯示成 **9747.0%**）。
 
 ## 狀態與去重
 
@@ -565,7 +734,7 @@ VPC connector 出去時不解析 VPC 內部 DNS）。那個位址**寫死在 nex
 驗收一定要打 `/security/static/app.css` 而不只是 `/security`。
 
 **CI 不跑測試**：pytest 需要真實 ClickHouse，而 Cloud Build 不在 VPC 內、
-出口 IP 不被放行。本機跑完 287 則再 push 是刻意的取捨 ——
+出口 IP 不被放行。本機跑完 508 則再 push 是刻意的取捨 ——
 CI 只驗證映像建得起來、容器啟動得了。
 
 ## 圖表（`web/charts/`）
@@ -598,6 +767,18 @@ CI 只驗證映像建得起來、容器啟動得了。
   實測固定浪費 2.4 倍軸高（資料最大值 8,323 被推到軸頂 20,000），線因此被壓在底部。
   一律用 `yaxis.max: niceMax`（`charts/format.js`）—— 它是純函式，ApexCharts 繪製時才
   帶入資料最大值，所以設定仍與資料無關，浪費降到約 1.05 倍。
+- **不要加 `xaxis.logarithmic`。** 那不是 ApexCharts 的合法選項（值軸的對數設定不在
+  `xaxis` 上），實測症狀是**整組長條完全不畫、只留下 y 軸標籤，而 console 沒有任何錯誤**。
+  要壓縮量級差就改成只畫前 N 名（前 N 名的跨度通常只有一個數量級：母體整體跨
+  3.7 個數量級，但前 12 名只跨 8.8 倍，線性軸完全讀得出來）。
+- **不要自己包一層 `.chart-frame`。** `ApexChart.js` 的 template 自己就渲染一個，
+  並以 `:height` prop 設高度。外面再包一層的結果是兩個嵌套的 frame（外層你設的高度、
+  內層預設 260px），症狀是圖與下一個元素之間一大塊空白。高度一律走 `:height`。
+- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（四張表的量
+  都是計數），但百分比序列（24 小時作息的兩條線）四捨五入成整數會讓所有刻度變成同一個
+  數字，圖要傳達的結論就從畫面上消失了。
+- **比例值一律以小數（0..1）在 API 與 series 裡流動**，顯示時才經 `lib.js` 的 `pct()`。
+  那個函式會乘 100 —— 傳百分比進去等於乘兩次（實測 97.47 顯示成 9747.0%）。
 
 ### 首頁趨勢是 2×2 小倍數，不是一張四線圖
 

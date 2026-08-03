@@ -42,6 +42,10 @@ export function timeSeriesOptions(spec) {
     colors, strokeWidth, dashArray,
     dense = false, showMarkers = false, type = 'line',
     compact = false, id, group,
+    // y 軸刻度的格式化。預設是整數（四張表的量都是計數），但 24 小時作息圖的
+    // 兩條線是**百分比**（4.29%），四捨五入成整數會讓整條線的刻度全變成 4
+    // ——「機器沒有日夜節律」那個結論就從圖上消失了。
+    yFormatter = v => num(Math.round(v)),
   } = spec;
 
   const base = baseOptions();
@@ -95,7 +99,7 @@ export function timeSeriesOptions(spec) {
       min: 0,
       tickAmount: compact ? 2 : 4,
       max: niceMax,
-      labels: { formatter: v => num(Math.round(v)), style: axisLabelStyle() },
+      labels: { formatter: yFormatter, style: axisLabelStyle() },
       axisBorder: { show: false },
       axisTicks: { show: false },
     },

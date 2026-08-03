@@ -37,6 +37,11 @@ _ADD_COLUMNS = (
     ("allowlist", "created_at", "TEXT"),
     ("allowlist", "updated_at", "TEXT"),
     ("allowlist", "updated_by", "TEXT"),
+    # 人工結案（status='closed'）。既有列一律 NULL，也就是「沒有人結案過」——
+    # 那正是既有資料的事實，不需要回填。
+    ("events", "closed_at", "TEXT"),
+    ("events", "closed_by", "TEXT"),
+    ("events", "closed_from", "TEXT"),
 )
 
 # (表, 舊名, 新名)。

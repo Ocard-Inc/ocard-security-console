@@ -155,7 +155,10 @@ def calibrate() -> dict:
         all_rows.extend(rows)
         logger.info("api_endpoint_60m：%d endpoints → %d 列", len(top_eps), len(rows))
 
-    # 6. API 單一來源 60 分鐘分布（R03，全域；headers 解析成本高 → 取 7 天）
+    # 6. API 單一來源 60 分鐘分布（全域；headers 解析成本高 → 取 7 天）。
+    #    這是 **per (來源 IP)、跨全部 endpoint** 的分布，讀取端是
+    #    trends.risk_rankings() 的「高流量來源」排名（那裡的 GROUP BY 也只有 src）。
+    #    **不是 R03 的門檻依據** —— R03 的 metric 是 per (src, endpoint)，見 6b。
     s7, e7 = _range(7)
     inner = (
         f"SELECT src, toStartOfHour(create_time) AS b, count() AS c FROM"
@@ -163,6 +166,28 @@ def calibrate() -> dict:
         f" WHERE src != '' GROUP BY src, b"
     )
     all_rows.append(("api_src_60m", -1, "all",
+                     *_global_distribution(inner, {"start": s7, "end": e7})))
+
+    # 6b. API (來源 IP × endpoint) 60 分鐘分布（R03 的門檻依據）。
+    #     **必須與 R03 的 metric 同單位。** R03 的 SQL 是 `GROUP BY src, endpoint`，
+    #     一度誤用 6 的 `api_src_60m`（只 GROUP BY src），實測同一時段兩者的
+    #     P99 差 26 倍（109 vs 2,835）—— 粗粒度的分布把同一個 IP 的全部 endpoint
+    #     加總，值天生更大，於是門檻（p99 × 3）系統性偏高、規則長期漏抓，
+    #     而事件頁「資料限制」顯示的 median/P95/P99 也在陳述錯的母體。
+    #     這與 trends.BUCKET_LADDER 那條「分桶與基線粒度必須成對」是同一類錯誤，
+    #     只是錯在**對象維度**而非時間維度。
+    #
+    #     **刻意只算全域一列，不做 (hour, day_class)。** 實測逐小時的結果是：
+    #     凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的
+    #     p99 = 168。原因是低流量時段活著的幾乎只有機器整合，它們撐高了自己的
+    #     門檻 —— 逐小時會讓 04:00 的門檻變成 18,180（全域是 504），
+    #     在最該敏感的時段把規則關掉。低流量端的保護交給 static_floor。
+    inner = (
+        f"SELECT src, ep, toStartOfHour(create_time) AS b, count() AS c FROM"
+        f" (SELECT {exprs.API_SRC_IP} AS src, {exprs.ENDPOINT} AS ep, create_time"
+        f"  FROM ods_api_log WHERE {tf}{excl}) WHERE src != '' GROUP BY src, ep, b"
+    )
+    all_rows.append(("api_src_ep_60m", -1, "all",
                      *_global_distribution(inner, {"start": s7, "end": e7})))
 
     # 7. API error 5 分鐘分布（R09，全域）
@@ -180,6 +205,42 @@ def calibrate() -> dict:
             f" count() AS c FROM {table} WHERE {tf}{excl} GROUP BY _brand, b"
         )
         all_rows.append((mk, -1, "all", *_global_distribution(inner, params)))
+
+    # 8b. API (品牌 × 分店) 60 分鐘分布。目前沒有規則讀它 —— 這是「長期持續的
+    #     單店濫用」那條規則的門檻依據，先算出母體才有依據決定 factor 與 floor。
+    #
+    #     **為什麼不用既有的品牌層級（8 的 brand_api_15m）。** 品牌的母體撐不起低
+    #     門檻：實測每小時計數在品牌層級是 median 12、p99 4,378、max 136,238，
+    #     p99/median = 365 倍，因為同一個母體裡混著 621 個單店品牌與 8 個百店品牌。
+    #     R10B 因此被迫用 static_floor 30000/15 分，而 2026-07-29 那天四個持續濫用
+    #     的品牌只有 414 過得了那個地板（15 分峰值 34,616），2604／9016／8653 是
+    #     10,408／6,358／4,419，全部漏抓 —— 且那四個品牌的濫用佔比是 99.5~100%，
+    #     所以漏抓的原因是地板太高，不是被同品牌其他分店稀釋。同一份樣本改成
+    #     (品牌 × 分店) 後 p99/median 降到 24 倍，門檻可以低兩個數量級。
+    #
+    #     **`_store > 0` 是必要的，不是清理。** `-1` 是品牌層級操作（7 月橫跨 301 個
+    #     品牌、1,329,425 次）、`0` 是無分店（950 個品牌）。不濾掉的話這兩個哨兵值會
+    #     把數百個品牌的伺服器端流量併成同一個對象，門檻失去意義，而事件的對象會是
+    #     一個在 Explorer 查不到東西的「分店 -1」。**讀這個基線的規則 SQL 必須帶同一個
+    #     條件**，母體與 metric 的對象粒度不成對就會憑空生出假倍數（同 6b）。
+    #
+    #     **刻意只算全域一列，理由同 6b 且更嚴重。** 實測平日逐小時：04:00 只有
+    #     1,394 個樣本、p99 = 5,520（門檻會變 27,600），而全域 1,092,520 個樣本的
+    #     p99 = 212（門檻 1,060）。撐高凌晨那幾格的正是長跑的濫用者本身
+    #     （414/1018 平均 40,945、6710/23726 平均 25,670，它們 24 小時不停），
+    #     逐小時等於讓濫用者自己決定自己的門檻，而且是在真人絕不可能操作的時段。
+    #
+    #     **刻意不加 endpoint 維度。** 實測 (品牌 × 分店 × endpoint) 的 max 與不含
+    #     endpoint 完全相同（都是 42,136）—— 輪詢迴圈天生集中在單一 endpoint，多這
+    #     一維不增加偵測力，卻讓去重鍵在對象換 endpoint 時斷開。「同一件事被拆成好
+    #     幾筆」正是這條規則要解決的問題（R03 的對象是輪替 IP，實測同一家店 37 天
+    #     產生 13~21 個 entity_key）。
+    inner = (
+        f"SELECT _brand, _store, toStartOfHour(create_time) AS b, count() AS c"
+        f" FROM ods_api_log WHERE {tf}{excl} AND _store > 0 GROUP BY _brand, _store, b"
+    )
+    all_rows.append(("brand_store_60m", -1, "all",
+                     *_global_distribution(inner, params)))
 
     n = baseline.upsert_many(all_rows, now_str)
     logger.info("基線寫入 %d 列（樣本 %s ~ %s）", n, start, end)

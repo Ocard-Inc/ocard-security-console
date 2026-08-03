@@ -8,15 +8,15 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from console.api import drilldown
+from console.api import drilldown, validate
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
-from console.core import brands, timewin
+from console.core import brands, masking, stores, timewin
 from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
 from console.queries import (
-    brand_search, endpoint_suggest, explorer, health, quick_templates,
-    sparklines, trends,
+    brand_search, endpoint_suggest, entity, entity_history, explorer, health,
+    quick_templates, sparklines, trends,
 )
 from console.rules import effective
 from console.rules.loader import load_rules
@@ -29,6 +29,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SEV_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+# 調查判定的允許值。前端 web/pages/event-detail.js 的 JUDGEMENTS 是同一組字，
+# 而 /events 的 judgement 篩選也讀它 —— 提交端與篩選端必須是同一個常數，
+# 否則會出現「存得進去但篩不出來」的判定值。
+JUDGEMENTS = ("已確認攻擊", "合法整合", "誤報", "證據不足", "保持觀察")
+
+# 「還沒有人判定」在篩選器裡的值。events.judgement 存的是 NULL，而 NULL 沒辦法
+# 當成查詢字串傳，所以給它一個顯示用的值。**它不是可以提交的判定** ——
+# judge_event 只接受 JUDGEMENTS。
+UNJUDGED = "待判定"
+
+# judgement_note 的三個欄位。自 2026-08 起全部選填，所以空字串是正常值。
+_JUDGEMENT_FIELDS = ("reason", "evidence", "next_step")
+
+# events.status 的三個值。active / resolved 由狀態機寫，closed（已處理完畢）
+# 只由人寫 —— 見 store/events.py 的模組說明。這裡是 /events 篩選的白名單：
+# 打錯一律 400，靜靜接受的話 `status=closd` 回 0 筆而畫面寫著「狀態 = closd」。
+STATUSES = ("active", "resolved", "closed")
+CLOSED = "closed"
 
 
 # ─────────────────────────── 會話與導覽 ───────────────────────────
@@ -254,8 +273,40 @@ def _event_public(e: dict) -> dict:
         "first_seen": e["first_seen"], "last_seen": e["last_seen"],
         "peak": e["peak_value"], "hit_count": e["hit_count"],
         "status": e["status"], "judgement": e["judgement"],
+        # 人工結案。closed_from 是關閉當下狀態機的值 —— 清單上要能說出
+        # 「這件事是在還在持續命中的時候被結案的」，那與「回落之後才結案」
+        # 是兩種不同的事。
+        "closed_at": e["closed_at"], "closed_by": e["closed_by"],
+        "closed_from": e["closed_from"],
         "case_no": e["case_id"], "owner": e["owner"], "context": ctx,
     }
+
+
+def _judgement_detail(raw: str | None) -> dict:
+    """判定當下填的理由／證據／下一步。
+
+    **三個欄位自 2026-08 起選填，所以空字串是正常值、不是資料缺損。**
+    這個函式存在的理由是那三個欄位原本是**只寫不讀**的：judge_event 寫進
+    judgement_note，而 `_event_public` 沒有回傳它，畫面上沒有任何地方看得到。
+    既然填不填變成使用者的選擇，就必須看得見填了什麼 —— 不然「選填」等於
+    「打了字也沒人會看到」。
+
+    刻意只在詳細頁算（同 drilldown 的理由）：`_event_public` 也服務 /events
+    一次 300 列與 /overview，那兩處用不到這段自由文字。
+
+    舊資料可能不是 JSON（欄位比現在的表單更早存在）—— 那時整段放進 reason
+    而不是丟掉，那是別人寫下的調查紀錄。
+    """
+    empty = {k: "" for k in _JUDGEMENT_FIELDS}
+    if not raw:
+        return empty
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {**empty, "reason": raw}
+    if not isinstance(parsed, dict):
+        return {**empty, "reason": raw}
+    return {k: str(parsed.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
 
 
 @router.get("/events")
@@ -265,11 +316,31 @@ async def list_events(
     rule_id: str | None = None,
     source: str | None = None,
     keyword: str | None = None,
+    # 調查判定。JUDGEMENTS 之一 = 只看該判定；UNJUDGED = 還沒有人判定。
+    # 值是封閉集合，**打錯一律 400**：靜靜接受的話 `judgement=誤報x` 會回 0 筆，
+    # 而畫面上的已套用條件寫著「判定 = 誤報x」，讀起來像「這段時間沒有誤報」。
+    judgement: str | None = None,
+    # UNJUDGED 的別名。資安總覽的「前往判定」連結與 test_api_smoke 在用，
+    # 保留是為了不破那個契約；新的呼叫端一律用 judgement。
     unjudged: bool = False,
     hours: int = Query(168, ge=1, le=24 * 90),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_events")
+    if status and status not in STATUSES:
+        raise HTTPException(400, f"status 必須是 {'、'.join(STATUSES)} 之一"
+                                 f"（收到 {status!r}）")
+    if judgement:
+        if judgement not in JUDGEMENTS and judgement != UNJUDGED:
+            raise HTTPException(
+                400, f"judgement 必須是 {'、'.join((*JUDGEMENTS, UNJUDGED))} 之一"
+                     f"（收到 {judgement!r}）")
+        if unjudged and judgement != UNJUDGED:
+            # 兩個條件是 AND，同時給永遠是 0 筆。靜靜回 0 的話使用者的結論會是
+            # 「這段時間沒有這種判定」，而其實是自己把兩個入口都打開了。
+            raise HTTPException(
+                400, f"unjudged=true 與 judgement={judgement} 互相矛盾"
+                     f"（{UNJUDGED} 與已判定不可能同時成立）")
     clauses = ["first_seen >= ?"]
     params: list = [timewin.fmt(timewin.taipei_now() - timedelta(hours=hours))]
     for col, val in (("severity", severity), ("status", status),
@@ -280,18 +351,30 @@ async def list_events(
     if keyword:
         clauses.append("(entity_label LIKE ? OR rule_name LIKE ? OR evt_no LIKE ?)")
         params.extend([f"%{keyword}%"] * 3)
-    # 首頁「待判定」的連結來源：已結束但沒人看過的事件
-    if unjudged:
+    # 「待判定」是 judgement IS NULL 而不是某個字串，兩個入口（總覽橫幅的
+    # unjudged 連結、清單的判定篩選器）都落在這一條。
+    if unjudged or judgement == UNJUDGED:
         clauses.append("judgement IS NULL")
+    elif judgement:
+        clauses.append("judgement = ?")
+        params.append(judgement)
     rows = db.rows(
         f"SELECT * FROM events WHERE {' AND '.join(clauses)}"
         " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1"
         " WHEN 'P2' THEN 2 ELSE 3 END, first_seen DESC LIMIT 300", tuple(params))
     stats = {s: sum(1 for r in rows if r["severity"] == s) for s in _SEV_ORDER}
+    # by_judgement 與 by_severity 一樣是**已套用篩選之後**的統計。前端因此只在
+    # 沒有套用判定篩選時才顯示它 —— 混用兩種範圍（「這段時間全部的待判定數」
+    # 配上「篩選後的清單」）正是這個專案一再警告的誤導。
+    labels = [r["judgement"] or UNJUDGED for r in rows]
     return {
         "events": [_event_public(r) for r in rows],
         "total": len(rows),
         "by_severity": stats,
+        "by_judgement": {k: labels.count(k) for k in (UNJUDGED, *JUDGEMENTS)},
+        "by_status": {k: sum(1 for r in rows if r["status"] == k) for k in STATUSES},
+        "judgements": list(JUDGEMENTS),
+        "unjudged_label": UNJUDGED,
         "ongoing": sum(1 for r in rows if r["status"] == "active"),
     }
 
@@ -319,6 +402,7 @@ async def event_detail(
     # `_event_public()` —— 後者也服務 /events（一次 300 列）與 /overview，
     # 而這裡完全用不到清單頁的成本與風險（見 api/drilldown.py 模組說明）。
     event["drilldown"] = drilldown.build(rule, event)
+    event["judgement_detail"] = _judgement_detail(row["judgement_note"])
     event["allowlist_prefill"] = _allowlist_prefill(rule, event)
     event["allowlist_matches"] = _allowlist_matches(rule, event)
     event["evidence"] = _build_evidence(row, event)
@@ -326,6 +410,89 @@ async def event_detail(
     event["trend"] = _event_trend(row, pad_minutes=pad_minutes,
                                   start=win_start, end=win_end)
     return event
+
+
+def _entity_context(evt_no: str) -> tuple[dict, object, object | None, str | None]:
+    """`(events 列, 規則, EntityRef|None, 不適用的原因)`。
+
+    對象視角的兩個端點共用。`EntityRef` 一律由 `drilldown.build()` 的結果推導 ——
+    「規則 entity → 篩選欄位」的唯一真相在那裡，這裡不重做判定
+    （重做就會有兩份會漂移的規則，而漂移的症狀是面板靜靜查到 0 筆）。
+    """
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    rule = next((r for r in load_rules() if r.id == row["rule_id"]), None)
+    event = _event_public(row)
+    dd = drilldown.build(rule, event)
+    if not dd.get("supported"):
+        return row, rule, None, dd.get("reason") or "這個事件的對象無法反查。"
+    ref = entity.from_filters(row["source_key"], dd.get("filter") or {})
+    if ref is None:
+        # R09（entity 是字面常數 scope）與 R12（沒有 entity）走這裡。
+        # 這不是缺陷，是「這條規則沒有可追蹤的對象」—— 必須照實說，
+        # **不可以退回畫全站圖假裝有內容**。
+        return row, rule, None, (
+            f"{row['rule_name']}沒有可追蹤的對象"
+            "（它的偵測範圍是整張表，不是某個帳號或來源），因此不提供對象面板。")
+    return row, rule, ref, None
+
+
+# 刻意用同步 def，不是 async def（同 /sweep 與 /explorer/payload）。裡面的
+# ClickHouse 查詢是阻塞的，寫成 async def 會佔住事件迴圈、連五分鐘排程一起卡住。
+@router.get("/events/{evt_no}/entity")
+def event_entity(evt_no: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """對象視角的三個便宜面板：母體位置、24 小時作息、端點來源集中度。
+
+    與事件詳細頁分開的端點，讓頁面先畫得出來（實測這裡合計約 3 秒）。
+    """
+    guard(user, "view_events")
+    row, rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+
+    end = timewin.parse(row["last_seen"])
+    window = rule.window_minutes if rule else 60
+    try:
+        peers = entity.peers(ref, end - timedelta(minutes=window), end,
+                             expected=row["metric_value"])
+        profile = entity.hour_profile(ref, end)
+        share = entity.endpoint_share(ref, end)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象面板查詢失敗：{exc}"}
+    return {
+        "supported": True,
+        "label": ref.label,
+        "dims": [{"field": d.field, "label": d.label, "value": _display_dim(d)}
+                 for d in ref.dims],
+        "window_minutes": window,
+        "peers": peers, "profile": profile, "share": share,
+    }
+
+
+@router.get("/events/{evt_no}/entity/timeline")
+def event_entity_timeline(
+    evt_no: str,
+    days: int = Query(entity_history.TIMELINE_DAYS, ge=2, le=90),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """對象自己的長期時序（面板 A）。實測 28 天約 5–7 秒 → 前端延後載入。"""
+    guard(user, "view_events")
+    row, _rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+    try:
+        data = entity_history.timeline(
+            ref, timewin.parse(row["first_seen"]),
+            timewin.parse(row["last_seen"]), days=days)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象時序查詢失敗：{exc}"}
+    return {"supported": True, "label": ref.label, **data}
+
+
+def _display_dim(dim) -> str:
+    return dim.value if dim.mask is None else (
+        masking.DISPLAY_FUNCS[dim.mask](dim.value) or dim.value)
 
 
 def _allowlist_prefill(rule, event: dict) -> dict:
@@ -518,16 +685,28 @@ async def judge_event(
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
+    """提交調查判定。
+
+    **判定本身必填，理由／證據／下一步都是選填**（使用者於 2026-08 決定）。
+    原本三個都必填的論點是「三個月後最想知道的就是當時為什麼這樣判」，但那個
+    要求讓「看過了、確認是誤報」這種一句話就講完的事變成三個輸入框，實際結果是
+    大量事件停在**完全沒有判定**的狀態 —— 一個空白的理由欄位仍然留下了「誰在
+    什麼時候看過、結論是什麼」，比沒有判定多得多。
+
+    代價是可以留下一個沒有任何理由的判定，所以剩下兩件事變成唯一的約束：
+    回應的 note 明說「此判定沒有留下任何理由」，而事件詳細頁會把實際填了什麼
+    原樣顯示出來（見 `_judgement_detail`）。**可以不填，但不能安靜。**
+    """
     guard(user, "judge_event")
-    valid = ("已確認攻擊", "合法整合", "誤報", "證據不足", "保持觀察")
+    validate.reject_unknown_keys(payload, {"judgement", *_JUDGEMENT_FIELDS})
     judgement = payload.get("judgement")
-    if judgement not in valid:
-        raise HTTPException(400, f"判定必須是 {valid} 之一")
-    for field in ("reason", "evidence", "next_step"):
-        if not str(payload.get(field, "")).strip():
-            raise HTTPException(400, "判定理由、主要證據、下一步或處置皆為必填")
-    note = json.dumps({k: payload[k] for k in ("reason", "evidence", "next_step")},
-                      ensure_ascii=False)
+    if judgement not in JUDGEMENTS:
+        raise HTTPException(400, f"判定必須是 {'、'.join(JUDGEMENTS)} 之一"
+                                 f"（收到 {judgement!r}）")
+    # 三個欄位一律寫進 judgement_note，沒填的存成空字串而**不是省略鍵** ——
+    # 讀取端才不用去分辨「這次沒填」與「舊資料還沒有這個欄位」。
+    detail = {k: str(payload.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
+    note = json.dumps(detail, ensure_ascii=False)
     with db.tx() as conn:
         cur = conn.execute(
             "UPDATE events SET judgement = ?, judgement_note = ?, owner = ? WHERE evt_no = ?",
@@ -535,10 +714,114 @@ async def judge_event(
         if cur.rowcount == 0:
             raise HTTPException(404, f"找不到事件 {evt_no}")
     audit.record(who=user.email, role=user.role_label, action="變更事件狀態",
-                 target=f"{evt_no}：判定為 {judgement}", reason=payload["reason"])
-    return {"ok": True, "judgement": judgement,
-            "note": "本系統不會執行任何自動封鎖、停權或 token 撤銷；"
-                    "後續處置請於案件中記錄。"}
+                 target=f"{evt_no}：判定為 {judgement}",
+                 reason=detail["reason"] or None)
+    message = ("本系統不會執行任何自動封鎖、停權或 token 撤銷；"
+               "後續處置請於案件中記錄。")
+    if not any(detail.values()):
+        message += "此判定沒有留下任何理由、證據或處置紀錄。"
+    return {"ok": True, "judgement": judgement, "recorded": detail, "note": message}
+
+
+@router.post("/events/{evt_no}/close")
+async def close_event(
+    evt_no: str,
+    payload: dict = Body(default={}),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """人工標為「已處理完畢」（`status = 'closed'`）。
+
+    **必須先有判定。** 沒有判定的結案沒有內容可言，而且會與資安總覽的
+    「待判定」橫幅直接矛盾 —— 那條橫幅查的是 `judgement IS NULL`、不看 status，
+    所以一筆「已處理完畢但沒有判定」的事件會同時顯示這兩件事。判定現在只要按
+    一顆按鈕（理由選填），所以這個前置條件不構成實際負擔。
+
+    **關閉仍在命中的事件是允許的，但會產生後果**：它從「持續中」與資安總覽的
+    待處理清單消失（兩處都查 `status = 'active'`），而下一個檢查視窗若仍然命中，
+    狀態機找不到 active 列，會建立一個**新的 EVT 編號**（見 store/events.py）。
+    回應的 `warnings` 必須把這件事說出來 —— 前端會原樣顯示。
+    """
+    guard(user, "judge_event")
+    validate.reject_unknown_keys(payload or {}, {"reason"})
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    if row["status"] == CLOSED:
+        # 回 200 + changed:false 的話畫面會顯示「已標記完成」而什麼都沒發生
+        raise HTTPException(409, f"{evt_no} 已經是「已處理完畢」"
+                                 f"（{row['closed_by']} 於 {row['closed_at']}）")
+    if not row["judgement"]:
+        raise HTTPException(
+            400, f"{evt_no} 還沒有判定。「已處理完畢」要能回答「處理的結論是什麼」，"
+                 f"請先在調查判定送出一個結果（理由、證據、下一步都是選填）。")
+    reason = str((payload or {}).get("reason") or "").strip()
+    now = timewin.fmt(timewin.taipei_now())
+    was_active = row["status"] == "active"
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE events SET status = ?, closed_at = ?, closed_by = ?, closed_from = ?"
+            " WHERE id = ?", (CLOSED, now, user.email, row["status"], row["id"]))
+    audit.record(who=user.email, role=user.role_label, action="標為已處理完畢",
+                 target=f"{evt_no}：{row['status']} → {CLOSED}", reason=reason or None)
+    logger.info("%s 由 %s 標為已處理完畢（原狀態 %s）", evt_no, user.email, row["status"])
+    warnings = []
+    if was_active:
+        warnings.append(
+            "這個事件在關閉時仍在持續命中。它會從「持續中」與資安總覽的待處理"
+            "清單消失；若下一個檢查視窗仍然命中，系統會另外建立一個新的事件編號 "
+            "—— 那不是重複告警，而是它又發生了。")
+    return {"ok": True, "status": CLOSED, "closed_at": now, "closed_by": user.email,
+            "closed_from": row["status"], "warnings": warnings,
+            "note": "監測本身沒有停止 —— 這只是把這一筆從待處理清單移出。"
+                    "要讓某個對象不再觸發規則，那是 Allowlist。"}
+
+
+@router.post("/events/{evt_no}/reopen")
+async def reopen_event(
+    evt_no: str,
+    payload: dict = Body(default={}),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """復原人工結案，狀態回到關閉前狀態機的值。
+
+    **一律回 `closed_from`，不可一律回 `active`。** 一筆早就回落的事件被復原成
+    active 之後，狀態機會在三個 tick 內把它標 resolved 並對 P0/P1 發一則
+    「已恢復」—— 那個事件根本沒有恢復過，它從頭到尾都是靜的。假的「已恢復」
+    是這個專案花最多力氣避免的東西（見 store/events._silenced_keys）。
+    `closed_from` 是 NULL 的話（理論上不會有：close 一律寫它）退回 resolved，
+    那是兩者中不會生出通知的那一個。
+    """
+    guard(user, "judge_event")
+    validate.reject_unknown_keys(payload or {}, {"reason"})
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
+    if row["status"] != CLOSED:
+        raise HTTPException(409, f"{evt_no} 目前不是「已處理完畢」"
+                                 f"（狀態為 {row['status']}），沒有可復原的結案")
+    # 結案期間同一對象再犯的話已經有一筆新事件了（狀態機找不到 active 列就開新的）。
+    # 復原會讓同一個去重鍵有兩筆 active，而狀態機的 db.one 只會拿到其中一筆 ——
+    # 另一筆從此不再更新、三個 tick 後被標 resolved。那是靜靜發生的，所以擋在這裡。
+    newer = db.one(
+        "SELECT evt_no FROM events WHERE rule_id = ? AND entity_key = ?"
+        " AND status = 'active' AND id <> ?",
+        (row["rule_id"], row["entity_key"], row["id"]))
+    if newer:
+        raise HTTPException(
+            409, f"{evt_no} 結案之後同一對象又觸發了，目前進行中的是 "
+                 f"{newer['evt_no']}。復原 {evt_no} 會讓同一個對象有兩筆進行中的"
+                 f"事件，而其中一筆會停止更新 —— 請直接處理 {newer['evt_no']}。")
+    back_to = row["closed_from"] if row["closed_from"] in ("active", "resolved") else "resolved"
+    reason = str((payload or {}).get("reason") or "").strip()
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE events SET status = ?, closed_at = NULL, closed_by = NULL,"
+            " closed_from = NULL WHERE id = ?", (back_to, row["id"]))
+    audit.record(who=user.email, role=user.role_label, action="復原事件結案",
+                 target=f"{evt_no}：{CLOSED} → {back_to}", reason=reason or None)
+    logger.info("%s 由 %s 復原結案（回到 %s）", evt_no, user.email, back_to)
+    return {"ok": True, "status": back_to,
+            "note": f"狀態回到 {back_to} —— 那是關閉當下狀態機的值，不是重新開始計時。"}
 
 
 # ─────────────────────────── Log Explorer ───────────────────────────
@@ -592,10 +875,16 @@ async def run_explorer(
     brand = brands.coerce_id(payload.get("brand"))
     if payload.get("brand") not in (None, "") and brand is None:
         raise HTTPException(400, f"品牌編號 {payload.get('brand')!r} 不是整數")
+    # 分店同理（`stores.coerce_id` 就是 `brands.coerce_id`）。事件 context 存的是
+    # float（pandas 把純數值列升成 float64），`27681.0` 直送會流進 `_store = %(store)s`
+    # 而命中 0 筆 —— 畫面上是「這個分店在這段時間沒有活動」，完全看不出是型別問題。
+    store = stores.coerce_id(payload.get("store"))
+    if payload.get("store") not in (None, "") and store is None:
+        raise HTTPException(400, f"分店編號 {payload.get('store')!r} 不是整數")
     f = explorer.ExplorerFilter(
         source=payload.get("source", "api"),
         start=payload.get("start", ""), end=payload.get("end", ""),
-        brand=brand, endpoint=payload.get("endpoint"),
+        brand=brand, store=store, endpoint=payload.get("endpoint"),
         # 依對象反查：把掃描結果或排名裡看到的帳號／IP 貼回來追明細
         source_ip=payload.get("source_ip"), actor=payload.get("actor"),
         only_error=bool(payload.get("only_error")),
@@ -635,6 +924,7 @@ async def run_explorer(
     return {**data, "meta": {
         "elapsed_ms": elapsed, "time_range": rng, "query_hash": qh,
         "brand_filter": brands.label(f.brand) if f.brand is not None else None,
+        "store_filter": stores.label(f.store) if f.store is not None else None,
         "dedup": "以事件 ID（_id）去重", "timezone": "Asia/Taipei",
         "data_latest": health.freshness_summary(health.source_health())["latest"],
     }}

@@ -67,7 +67,16 @@ def replay(start_s: str, end_s: str, step_minutes: int = 5,
                 seen.add(f.entity_key)
                 all_findings.append((cursor, f, first))
                 if not quiet and first:
-                    med = f"median {f.baseline_median:.0f}" if f.baseline_median else "無基線"
+                    # population 規則（R01/R03/R10A/R10B）的 baseline_median 依設計
+                    # 永遠是 None（基線是跨對象的分布，不可拿來算「相對自身」倍數），
+                    # 所以不能把它印成「無基線」—— 那是把「有母體分布、只是沒有
+                    # 自身歷史」說成「完全沒有基線」，回測時會誤判成校準沒跑到。
+                    if f.baseline_median:
+                        med = f"median {f.baseline_median:.0f}"
+                    elif f.rule.threshold is not None and f.rule.threshold.population:
+                        med = "母體分布（見 context.baseline_note）"
+                    else:
+                        med = "無基線"
                     mult = f"（{f.multiple}×）" if f.multiple else ""
                     print(f"[{timewin.fmt(cursor)}] {f.severity} {f.rule.id} "
                           f"{f.rule.name}｜{f.entity_label}｜"

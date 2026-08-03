@@ -143,7 +143,10 @@ def seed_allowlist(who: str = "intel.refresh") -> int:
                 " source_ip, valid_from, valid_to, approved_by, status,"
                 " created_at, updated_at, updated_by)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (r["org"] or "我方辦公室出口", "Ocard 內部",
+                # owner（創立人）與 approved_by 都是 who，同 allowlist.create()。
+                # 舊值是「Ocard 內部」—— 那是一個說明，不是「誰建的」，
+                # 而「誰建的」在這裡的正確答案就是這支排程本身。
+                (r["org"] or "我方辦公室出口", who,
                  r["note"] or "內部人員代操客戶後台的共用出口",
                  "由 console.intel.refresh 自動播種（ip_intel.source_type = office）",
                  "內部代操", r["src"], now, valid_to, who,

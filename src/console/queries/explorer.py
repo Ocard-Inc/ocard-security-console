@@ -31,6 +31,10 @@ GROUP_BY = {
         "auth": ("action", None, "動作"),
     },
     "brand": {k: ("toString(_brand)", None, "品牌") for k in ("api", "backend", "admin", "auth")},
+    # 分店。名稱**刻意不在這裡查**（品牌維度在 `ranking()` 內另外接 `brands.labels`）——
+    # 這個運算式同時是排名的 GROUP BY 與篩選的比對依據，回「忠孝店（27681）」的話
+    # 排名裡看到的值就貼不回篩選器了。名稱由呈現層各自用 `core/stores.label()` 補。
+    "store": {k: ("toString(_store)", None, "分店") for k in ("api", "backend", "admin", "auth")},
     "source": {
         "api": (exprs.API_SRC_IP, "src", "來源"),
         "backend": ("ip", "src", "來源"),
@@ -82,6 +86,43 @@ _ENTITY_FILTER = {
     "actor": {src: expr for src, (expr, _, _) in GROUP_BY["actor"].items()},
 }
 
+# 篩選欄位名 → `GROUP_BY` 的維度名。一對一，只有 source_ip/source 名字不同。
+# 存在的理由：`entity_expr()` 要能回答全部四個欄位，而 `_ENTITY_FILTER`
+# 刻意只有兩個（Explorer 的篩選器只讓人用 IP / 帳號反查）。
+_FIELD_DIMENSION = {"source_ip": "source", "actor": "actor",
+                    "endpoint": "endpoint", "brand": "brand", "store": "store"}
+
+
+def entity_meta(field: str, source: str) -> tuple[str, str | None, str] | None:
+    """`(篩選欄位, 資料來源)` → `GROUP_BY` 的 (SQL 運算式, 遮罩種類, 顯示名稱)。
+
+    遮罩種類與顯示名稱要一起給：呼叫端若只拿到運算式，就得自己再查一次
+    「這個欄位的值該怎麼呈現」，而那份對照表的唯一真相是 `GROUP_BY`
+    （鍵同 `masking.DISPLAY_FUNCS`）。分兩次拿遲早會出現「有遮罩的欄位
+    忘記遮」或「該原樣顯示的欄位被遮掉」。
+    """
+    dim = _FIELD_DIMENSION.get(field)
+    if dim is None:
+        return None
+    return GROUP_BY[dim].get(source)
+
+
+def entity_expr(field: str, source: str) -> str | None:
+    """`(篩選欄位, 資料來源)` → **完全相等**比對用的 SQL 運算式；不支援回 None。
+
+    複用 `GROUP_BY` 的運算式，理由同 `_ENTITY_FILTER`：畫面上看到的值，
+    拿回去比對就一定命中。事件的 entity 值也是這些運算式算出來的
+    （規則 SQL 的 `endpoint` = `exprs.ENDPOINT`、`route2` = `exprs.ROUTE2`，
+    與 `GROUP_BY["endpoint"]` 逐表相同），所以這裡是事件對象反查的正確依據。
+
+    **與 `where_clause()` 的 endpoint 條件不同**：那裡是 `startsWith`（前綴），
+    因為 Explorer 的 endpoint 輸入是給人打前綴用的。這裡一律相等 ——
+    前綴會把 `Api2/GetProfileExtra` 一起算進 `Api2/GetProfile` 的對象裡，
+    那不是同一個對象，數字會比事件大而且沒有任何錯誤訊息。
+    """
+    entry = entity_meta(field, source)
+    return entry[0] if entry else None
+
 # 不支援依對象反查的組合，以及為什麼。
 #
 # auth 的「操作者」是 API token，畫面上是 `token_XXXX` 指紋（HMAC，見 core/masking）。
@@ -106,8 +147,8 @@ def filter_support(field: str, source: str) -> str | None:
     if source not in settings()["data_sources"]:
         return f"未知資料來源 {source!r}"
     label = settings()["data_sources"][source]["label"]
-    if field == "brand":
-        return None                      # 四張表都有 _brand
+    if field in ("brand", "store"):
+        return None                      # 四張表都有 _brand 與 _store
     if field == "endpoint":
         return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
     if field in _ENTITY_FILTER:
@@ -126,6 +167,7 @@ class ExplorerFilter:
     start: str = ""
     end: str = ""
     brand: int | None = None
+    store: int | None = None         # 分店（完全相等；-1 = 品牌層級操作、0 = 未填）
     endpoint: str | None = None      # 前綴比對（api: controller/function；backend: route2）
     source_ip: str | None = None     # 依來源 IP 反查（掃描結果 → 明細）
     actor: str | None = None         # 依帳號反查
@@ -164,6 +206,11 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
     if f.brand is not None:
         clauses.append("_brand = %(brand)s")
         params["brand"] = f.brand
+    # 分店：整數的完全相等。**不可以寫成 toString 後前綴比對** —— 「分店 276」
+    # 會靜靜把 27681 的資料算進來，數字比實際大而且不會報錯。
+    if f.store is not None:
+        clauses.append("_store = %(store)s")
+        params["store"] = f.store
     if f.endpoint:
         reason = filter_support("endpoint", f.source)
         if reason:
@@ -469,7 +516,7 @@ def entity_extent(source: str, field: str, value: str) -> dict | None:
     的話，使用者無法分辨自己是打錯值、還是區間選得不對 —— 實測 192.168.97.1
     最後一次出現在 7/29，而 Explorer 預設區間是最近 1 小時。
     """
-    expr = _ENTITY_FILTER.get(field, {}).get(source)
+    expr = entity_expr(field, source)
     if expr is None or not value:
         return None
     end = timewin.effective_now()

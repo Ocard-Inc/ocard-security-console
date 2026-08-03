@@ -44,7 +44,7 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 
 ## 規則集
 
-16 條規則（`config/rules/`）。門檻 = `max(靜態地板, 28 天同時段基線 × 倍率)`。
+17 條規則（`config/rules/`）。門檻 = `max(靜態地板, 28 天同時段基線 × 倍率)`。
 
 `population: true` 的規則（R01/R03/R10A/R10B）其基線是**跨對象的分布**（例如所有來源
 各自的量），不是該對象自身歷史，因此不計算「相對自身」的倍數 —— 拿大來源除以典型

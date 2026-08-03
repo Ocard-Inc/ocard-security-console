@@ -45,7 +45,8 @@ _FILTER_BY_FP = {"actor": "actor", "src": "source_ip"}
 
 # `fp: null` 的 entity 欄位名 → Explorer 篩選欄位。
 # 不在表內的 col 不產生篩選（R09 的 `scope`、R12 的 `key` 是字面常數而非欄位值）。
-_FILTER_BY_COL = {"endpoint": "endpoint", "route2": "endpoint", "_brand": "brand"}
+_FILTER_BY_COL = {"endpoint": "endpoint", "route2": "endpoint", "_brand": "brand",
+                  "_store": "store"}
 
 # 改版前的指紋格式（見 `core/masking.token_fp`：前綴 + HMAC 取 12 碼大寫）。
 # 用嚴格樣式而不是只看前綴，免得把真的叫 `src_something` 的帳號誤判成指紋。
@@ -163,12 +164,16 @@ def _entity_filters(rule: Rule, ctx: dict, source: str) -> tuple[dict, list[dict
             drop(f.col, reason)
             continue
 
-        if field == "brand":
-            brand_id = brands.coerce_id(ctx[f.col])
-            if brand_id is None:
-                drop(f.col, f"品牌編號 {ctx[f.col]!r} 無法解析為整數")
+        # 品牌與分店都是整數欄位，而事件 context 存的是 float（pandas 把純數值的
+        # 整列升成 float64）。不轉的話 `4748.0` / `27681.0` 會直接進 SQL 而命中
+        # 0 筆，畫面上看起來像「這個對象沒有活動」。
+        if field in ("brand", "store"):
+            value_id = brands.coerce_id(ctx[f.col])
+            if value_id is None:
+                label = "品牌" if field == "brand" else "分店"
+                drop(f.col, f"{label}編號 {ctx[f.col]!r} 無法解析為整數")
                 continue
-            filters["brand"] = brand_id
+            filters[field] = value_id
             continue
 
         value = _clean(ctx[f.col])

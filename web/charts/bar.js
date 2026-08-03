@@ -16,6 +16,11 @@ export function barHeight(rowCount) {
  * @param {Function} spec.tooltipRows  (row) => [{name, value, color, muted?}]
  * @param {Function} spec.tooltipTitle (row) => string   ← 一律回傳「完整未截斷」的名稱
  * @param {Function=} spec.tooltipNote (row) => string|null
+ *
+ * ★ 不要加 `xaxis.logarithmic`。那不是 ApexCharts 的合法選項（值軸的對數設定
+ *   不在 xaxis 上），實測加上去的症狀是**整組長條完全不畫、只留下 y 軸標籤**，
+ *   而 console 沒有任何錯誤。真的需要壓縮量級差時，改成排名前 N 名
+ *   （前 N 名的跨度通常只有一個數量級）或改用其他圖型。
  */
 export function horizontalBarOptions(spec) {
   const { rowsRef, tooltipRows, tooltipTitle, tooltipNote } = spec;

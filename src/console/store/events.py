@@ -5,6 +5,21 @@
 2. cooldown 內再命中 → 只累計 hit_count / peak / last_seen
 3. 超過 cooldown 仍持續 → 回報「持續中」（升級通知）並重置 last_notified
 4. 連續 resolve_after 個 tick 未命中 → 標 resolved，回報「已恢復」
+
+**`status` 有三個值，但這個模組只寫兩個。** `active` / `resolved` 是狀態機的結論
+（「還在命中」／「指標回到門檻以下」），`closed`（已處理完畢）**只由人寫**
+（`api/routes.close_event`）。這裡每一條 SQL 都寫 `status = 'active'`，所以
+closed 自動退出狀態機：不累加 miss_ticks、不會被標 resolved、不會發「已恢復」。
+
+那個「自動」是刻意設計的。人工結案如果做成另一個欄位（例如只加 `closed_at`
+而 status 留著 active），每一個既有的 `status = 'active'` 查詢都得記得加上
+`AND closed_at IS NULL` —— 漏掉任何一處的症狀是「已處理完畢的事件還在發通知」，
+而那是靜靜發生的。用一個狀態機不認識的值，漏掉的方向反過來變成
+「多建一個新事件」，那是看得見的。
+
+**因此關閉一個仍在命中的事件，下一個 tick 會建立一個新的 EVT 編號**
+（上面第 1 條找不到 active 列）。那不是 bug 而是唯一誠實的行為：你說處理完了，
+而它又發生了。UI 必須在關閉前把這件事講出來（見 event-detail.js）。
 """
 from __future__ import annotations
 
@@ -59,6 +74,17 @@ def apply_findings(findings: list[Finding], tick_at: datetime, *,
             event = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
             notifications.append({"kind": NEW, "event": event})
             logger.info("新事件 %s %s %s（%s）", evt_no, f.rule.id, f.entity_label, f.severity)
+            # 同一對象先前被人標成「已處理完畢」→ 它又發生了。留一行 log：
+            # 光看新事件通知沒辦法分辨「第一次出現」與「結案後再犯」，
+            # 而後者是完全不同的結論。
+            prev = db.one(
+                "SELECT evt_no, closed_at, closed_by FROM events"
+                " WHERE rule_id = ? AND entity_key = ? AND status = 'closed'"
+                " ORDER BY closed_at DESC LIMIT 1", (f.rule.id, f.entity_key))
+            if prev:
+                logger.warning(
+                    "%s 是結案後再犯：同一對象曾為 %s，由 %s 於 %s 標為已處理完畢",
+                    evt_no, prev["evt_no"], prev["closed_by"], prev["closed_at"])
             continue
 
         peak = max(float(active["peak_value"]), f.metric)

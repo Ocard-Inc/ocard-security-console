@@ -1,5 +1,6 @@
 // 資安總覽（設計稿 7 節）：狀態摘要 → 即時趨勢 → 需要注意 + 資料來源健康 → 風險排名
-import { api, num, mult, multColor, clockTime, duration, shortTime, SEV_LABEL } from '../lib.js';
+import { api, num, mult, multColor, clockTime, duration, shortTime, SEV_LABEL,
+         STATUS_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import ApexChart from '../charts/ApexChart.js';
 import RangePicker, { presetMinutes } from '../components/range-picker.js';
@@ -62,7 +63,7 @@ export default {
     data: null, reloading: false, error: null, showTable: false, showRankTable: false, rankTab: 0,
     // 區間由本頁自己持有（以前在全域 header，但只有這一頁收得到）。
     range: '6h', customStart: '', customEnd: '',
-    SEV_META, RANK_TABS, PANELS, SEV_LABEL,
+    SEV_META, RANK_TABS, PANELS, SEV_LABEL, STATUS_LABEL,
   }),
   computed: {
     isCustom() { return this.range === 'custom' && !!this.customStart && !!this.customEnd; },
@@ -470,8 +471,10 @@ export default {
               <template v-if="e.brands">
                 <BrandBreakdown :count="e.brands" :rows="e.brand_top" unit="品牌" /> ·
               </template>{{ duration(e.first_seen, e.last_seen) }}<br>
-              <span style="color:var(--warn)">{{ e.status === 'active' ? '持續中' : '已停止' }}
-                · {{ e.judgement || '待確認' }}</span>
+              <!-- 狀態字一律走 STATUS_LABEL（lib.js）；判定的空值字要與異常事件頁
+                   的篩選器一致，三個地方寫三種說法會像三種狀態。 -->
+              <span style="color:var(--warn)">{{ STATUS_LABEL[e.status] || e.status }}
+                · {{ e.judgement || '待判定' }}</span>
             </div>
           </div>
         </div>

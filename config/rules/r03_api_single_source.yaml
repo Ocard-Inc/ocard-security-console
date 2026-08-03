@@ -23,8 +23,12 @@ sql: |
   GROUP BY src, endpoint
   HAVING metric >= 2000
 threshold:
+  # baseline_key 必須與上面 SQL 的 GROUP BY 同單位（src, endpoint）。
+  # 曾誤用 api_src_60m（只 GROUP BY src、跨全部 endpoint），實測 P99 差 26 倍，
+  # 門檻因此系統性偏高、規則長期漏抓，事件頁的「資料限制」也在陳述錯的母體。
+  # 見 checker/calibrate.py 的 6b。
   static_floor: 4000
-  baseline_key: api_src_60m
+  baseline_key: api_src_ep_60m
   population: true
   stat: p99
   factor: 3
