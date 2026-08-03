@@ -16,7 +16,7 @@ from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
 from console.queries import (
     brand_search, endpoint_suggest, entity, entity_history, explorer, health,
-    quick_templates, sparklines, trends,
+    quick_templates, sparklines, store_search, trends,
 )
 from console.rules import effective
 from console.rules.loader import load_rules
@@ -53,7 +53,7 @@ CLOSED = "closed"
 # ─────────────────────────── 會話與導覽 ───────────────────────────
 
 @router.get("/session")
-async def session(user: CurrentUser = Depends(current_user)) -> dict:
+def session(user: CurrentUser = Depends(current_user)) -> dict:
     """目前登入者。沒有角色分級 —— 進得來就有全部功能。"""
     return {
         "email": user.email,
@@ -100,7 +100,7 @@ def _parse_window(start: str | None, end: str | None) -> tuple:
 
 
 @router.get("/overview")
-async def overview(
+def overview(
     minutes: int = Query(60, ge=10, le=10080),
     # 自訂區間（台北牆鐘）。兩個都給時蓋過 minutes。
     start: str | None = None,
@@ -310,7 +310,7 @@ def _judgement_detail(raw: str | None) -> dict:
 
 
 @router.get("/events")
-async def list_events(
+def list_events(
     severity: str | None = None,
     status: str | None = None,
     rule_id: str | None = None,
@@ -380,7 +380,7 @@ async def list_events(
 
 
 @router.get("/events/{evt_no}")
-async def event_detail(
+def event_detail(
     evt_no: str,
     # 趨勢圖往事件視窗前後各再拉多久。只看前後 30 分鐘看不出事件之前的脈絡。
     pad_minutes: int = Query(30, ge=10, le=10080),
@@ -680,7 +680,7 @@ def _event_trend(
 
 
 @router.post("/events/{evt_no}/judge")
-async def judge_event(
+def judge_event(
     evt_no: str,
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user),
@@ -724,7 +724,7 @@ async def judge_event(
 
 
 @router.post("/events/{evt_no}/close")
-async def close_event(
+def close_event(
     evt_no: str,
     payload: dict = Body(default={}),
     user: CurrentUser = Depends(current_user),
@@ -777,7 +777,7 @@ async def close_event(
 
 
 @router.post("/events/{evt_no}/reopen")
-async def reopen_event(
+def reopen_event(
     evt_no: str,
     payload: dict = Body(default={}),
     user: CurrentUser = Depends(current_user),
@@ -836,10 +836,27 @@ def _explain_empty(f: explorer.ExplorerFilter) -> dict | None:
                                 ("actor", f.actor, "帳號")):
         if not value:
             continue
+        lookback = explorer.extent_lookback_days(f.source, field)
         try:
             extent = explorer.entity_extent(f.source, field, value)
         except ChQueryError:
-            return None                      # 解釋失敗不該讓整個查詢失敗
+            # **解釋失敗要說出來，不可以回 None。** 回 None 的話畫面上
+            # 「沒有解釋」與「查過了，這個對象真的不存在」長得一模一樣，
+            # 而這個函式存在的唯一理由就是分辨這兩件事。
+            # 實測觸發路徑：在 API Log 查一個 IP 而結果 0 筆 —— 來源 IP 要對
+            # headers 做 JSONExtract，回看查詢會撞上 ClickHouse 的 55 秒上限。
+            logger.warning("entity_extent 超時 source=%s field=%s", f.source, field)
+            return {
+                "kind": "explain_failed", "field": field, "value": value,
+                "lookback_days": lookback,
+                "message": f"這個區間內沒有資料。**無法進一步確認**這個{label}"
+                           f"（{value}）是否存在於其他時間 —— 回看 {lookback} 天的"
+                           f"查詢超時了。"
+                           + ("API Log 的來源 IP 要逐筆解析 headers，沒有欄位可以剪枝，"
+                              "所以這個確認很貴。請把時間區間縮小後重試。"
+                              if f.source == "api" and field == "source_ip"
+                              else "請把時間區間縮小後重試。"),
+            }
         if extent is None:
             continue
         if not extent["found"]:
@@ -862,7 +879,15 @@ def _explain_empty(f: explorer.ExplorerFilter) -> dict | None:
 
 
 @router.post("/explorer")
-async def run_explorer(
+# 刻意用同步 def，不是 async def（同 /sweep 與 /explorer/payload）。
+#
+# 裡面的 ClickHouse 查詢是**阻塞**的。寫成 async def 時它跑在事件迴圈上，
+# 一個慢查詢會讓**整個主控台**停止回應 —— 實測在 API Log 查一個 IP（來源 IP 要
+# 解析 headers、回看查詢跑滿 55 秒）期間，完全不碰 ClickHouse 的 `/api/session`
+# 被拖到 53.6 秒，五分鐘排程也一起卡住。
+# 使用者看到的症狀不是「這個查詢很慢」，而是「篩選、Controller 建議、全部功能
+# 都壞掉了」—— 因為那段時間所有請求都排在後面。
+def run_explorer(
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
@@ -931,7 +956,7 @@ async def run_explorer(
 
 
 @router.get("/brands")
-async def search_brands(
+def search_brands(
     q: str = "",
     limit: int = Query(brand_search.DEFAULT_LIMIT, ge=1, le=brand_search.MAX_LIMIT),
     user: CurrentUser = Depends(current_user),
@@ -951,8 +976,35 @@ async def search_brands(
         raise HTTPException(502, f"品牌查詢失敗：{exc}") from exc
 
 
+@router.get("/stores")
+def search_stores(
+    q: str = "",
+    brand: str = "",
+    limit: int = Query(store_search.DEFAULT_LIMIT, ge=1, le=store_search.MAX_LIMIT),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """分店選擇器的候選清單（Log Explorer 的分店篩選欄位）。
+
+    `brand` 有值時硬性限定在該品牌之下 —— Explorer 的分店欄位連動上面的品牌
+    選擇器（見 queries/store_search.py 的模組說明）。不記稽查，理由同 /api/brands。
+
+    `brand` 刻意宣告成 `str` 而不是 `int | None`：宣告成 int 的話 FastAPI 對
+    空字串會回 422（前端沒選品牌時送的就是空字串），而那個 422 在選單裡看起來
+    是「查詢失敗」。這裡自己解析：空 = 不限，解不出整數 = 400。
+    """
+    guard(user, "use_explorer")
+    brand_id = stores.coerce_id(brand) if brand.strip() else None
+    if brand.strip() and brand_id is None:
+        raise HTTPException(400, f"品牌編號 {brand!r} 不是整數")
+    try:
+        return {"rows": store_search.search(q, brand=brand_id, limit=limit)}
+    except ChQueryError as exc:
+        # 不吞成空陣列 —— 空陣列在 UI 上等於「查無此分店」，與查詢失敗是兩回事。
+        raise HTTPException(502, f"分店查詢失敗：{exc}") from exc
+
+
 @router.get("/endpoints")
-async def suggest_endpoints(
+def suggest_endpoints(
     source: str = "api",
     start: str = "",
     end: str = "",
@@ -976,13 +1028,13 @@ async def suggest_endpoints(
 # ─────────────────────────── 快速查詢 ───────────────────────────
 
 @router.get("/quick")
-async def quick_catalog(user: CurrentUser = Depends(current_user)) -> dict:
+def quick_catalog(user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "view_quick")
     return {"categories": quick_templates.catalog()}
 
 
 @router.post("/quick/{template_id}")
-async def quick_run(
+def quick_run(
     template_id: str,
     payload: dict = Body(default={}),
     user: CurrentUser = Depends(current_user),
@@ -1010,7 +1062,7 @@ async def quick_run(
 # ─────────────────────────── 資料健康 ───────────────────────────
 
 @router.get("/health")
-async def data_health(user: CurrentUser = Depends(current_user)) -> dict:
+def data_health(user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "view_health")
     cards = health.source_health()
     hb = db.one("SELECT * FROM heartbeat WHERE key = 'five_min'")
@@ -1024,7 +1076,7 @@ async def data_health(user: CurrentUser = Depends(current_user)) -> dict:
 
 
 @router.get("/sparklines")
-async def data_sparklines(user: CurrentUser = Depends(current_user)) -> dict:
+def data_sparklines(user: CurrentUser = Depends(current_user)) -> dict:
     """統計卡的迷你趨勢線。刻意獨立於 /health —— source_health() 有三個呼叫端，
     只有一個要這份資料（詳見 queries/sparklines.py 的模組說明）。"""
     guard(user, "view_health")

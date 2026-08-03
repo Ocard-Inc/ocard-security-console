@@ -119,7 +119,7 @@ def _public(rule, *, override: dict | None, last_triggered: str | None,
 
 
 @router.get("/rules")
-async def list_rules(user: CurrentUser = Depends(current_user)) -> dict:
+def list_rules(user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "view_rules")
     # 一趟 GROUP BY，不是每條規則一次查詢
     last = {r["rule_id"]: r["t"] for r in db.rows(
@@ -145,7 +145,7 @@ async def list_rules(user: CurrentUser = Depends(current_user)) -> dict:
 
 
 @router.get("/rules/{rule_id}")
-async def rule_detail(rule_id: str,
+def rule_detail(rule_id: str,
                       user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "view_rules")
     return _detail(rule_id)
@@ -203,7 +203,7 @@ def _next_tick_text() -> str:
 
 
 @router.patch("/rules/{rule_id}")
-async def patch_rule(rule_id: str, payload: dict = Body(...),
+def patch_rule(rule_id: str, payload: dict = Body(...),
                      user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "edit_rules")
     rule = _find(rule_id)
@@ -266,7 +266,7 @@ def _reject_below_sql_floor(rule, values: dict) -> None:
 
 
 @router.delete("/rules/{rule_id}/override")
-async def delete_override(rule_id: str, payload: dict = Body(default={}),
+def delete_override(rule_id: str, payload: dict = Body(default={}),
                           user: CurrentUser = Depends(current_user)) -> dict:
     guard(user, "edit_rules")
     _find(rule_id)
@@ -286,7 +286,7 @@ async def delete_override(rule_id: str, payload: dict = Body(default={}),
 
 
 @router.get("/rules/{rule_id}/whatif")
-async def whatif(rule_id: str, static_floor: float | None = None,
+def whatif(rule_id: str, static_floor: float | None = None,
                  user: CurrentUser = Depends(current_user)) -> dict:
     """把門檻改成這樣的話，近 28 天有幾筆事件會偵測不到。
 
