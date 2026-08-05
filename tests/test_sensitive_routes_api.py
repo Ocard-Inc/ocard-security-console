@@ -74,6 +74,34 @@ def test_post_warns_when_the_route_does_not_exist_in_the_log(client,
         _cleanup()
 
 
+def test_route_warnings_are_empty_when_the_existence_check_fails(client, monkeypatch):
+    """ClickHouse 查詢失敗時 warnings 必須是空清單，且寫入仍然成功。
+
+    `_route_warnings()` 判斷「這條路由在 log 裡不存在」需要查一次 ClickHouse。
+    查詢失敗（逾時、連線中斷）是「無法確認」，不是「不存在」—— 吞掉例外之後
+    若回一個「不存在」的警告，會讓使用者以為自己打錯字，而其實只是那趟查詢
+    本身失敗。同 CLAUDE.md 對 `entity_extent()` 的要求：超時的 ChQueryError
+    絕不可以被吞成跟「查過了，真的不存在」一樣的畫面。
+    """
+    from console.api import rules_routes
+    from console.core.ch import ChQueryError
+
+    def _boom(*a, **kw):
+        raise ChQueryError("模擬查詢逾時（測試）")
+
+    monkeypatch.setattr(rules_routes.ch, "query", _boom)
+    _cleanup()
+    try:
+        r = client.post("/api/sensitive-routes",
+                        json={"route": NEW, "reason": "驗收測試"})
+        assert r.status_code == 200, r.text
+        assert r.json()["warnings"] == [], (
+            "查詢失敗不該產生任何 warning —— 那是「無法確認」，不是「不存在」")
+        assert NEW in sr.active(), "查詢失敗不該擋住寫入本身"
+    finally:
+        _cleanup()
+
+
 def test_write_records_audit_with_before_after(client):
     _cleanup()
     try:
