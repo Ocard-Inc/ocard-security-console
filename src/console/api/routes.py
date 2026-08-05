@@ -41,6 +41,33 @@ JUDGEMENTS = ("已確認攻擊", "合法整合", "誤報", "證據不足", "保�
 # judge_event 只接受 JUDGEMENTS。
 UNJUDGED = "待判定"
 
+# 清單頁的判定頁籤。key 是穩定的機器識別（進網址）、label 是畫面文字。
+#
+# **成員清單只存在這裡，前端從回應讀、不自己列一份。** 前端若有第二份，日後新增
+# 第六個判定值時，那個判定的事件會從所有頁籤一起消失，而畫面完全正常
+# （test_judgement_tabs_cover_every_judgement 擋這件事）。
+#
+# `judgements` 非空 = 限定為那些值；**空 = 不加判定條件**（只有「全部」那格）。
+# UNJUDGED 本來就是 list_events 接受的篩選值（語意是 judgement IS NULL），
+# 所以「待判定」那格不需要額外的欄位或分支。
+#
+# 「已排除」這個名字是挑過的：「已確認」會被讀成「已確認攻擊」的上層分類，
+# 於是使用者以為攻擊事件也在裡面 —— 兩個頁籤名字互相吃掉；而「證據不足」其實
+# 什麼都沒確認。「已結案」也不能用 —— status='closed' 的顯示字就是「已處理完畢」，
+# 同一個詞指兩件事（resolved 曾經在清單叫「已停止」、在篩選器叫「已恢復」）。
+#
+# 「全部」放最後一格：進站預設落在待判定（分流優先）。它存在的理由是既有入口
+# 沒有誠實的落點 —— 總覽的 P0–P3 卡片顯示的是**不分判定**的筆數，那些事件散在
+# 各格裡，少了這格就會出現「卡片上寫 3，點進去只有 1」。
+JUDGEMENT_TABS = (
+    {"key": "unjudged", "label": UNJUDGED, "judgements": [UNJUDGED]},
+    {"key": "attack", "label": "已確認攻擊", "judgements": ["已確認攻擊"]},
+    {"key": "watch", "label": "保持觀察", "judgements": ["保持觀察"]},
+    {"key": "excluded", "label": "已排除",
+     "judgements": ["合法整合", "誤報", "證據不足"]},
+    {"key": "all", "label": "全部", "judgements": []},
+)
+
 # judgement_note 的三個欄位。自 2026-08 起全部選填，所以空字串是正常值。
 _JUDGEMENT_FIELDS = ("reason", "evidence", "next_step")
 
@@ -315,6 +342,97 @@ def _judgement_detail(raw: str | None) -> dict:
     return {k: str(parsed.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
 
 
+_EVENT_LIMIT = 300
+
+
+def _judgement_filter(values: list[str] | None, unjudged: bool,
+                      tab: str | None) -> list[str]:
+    """正規化 judgement / tab 參數 → 一組判定值（空清單 = 不篩判定）。
+
+    **可重複**：`?judgement=合法整合&judgement=誤報&judgement=證據不足`
+    ——「已排除」那個頁籤要三個值。
+
+    `tab` 是頁籤 key 的簡寫，展開成該格的成員。它存在的理由是**前端不該知道
+    成員清單**：清單頁的網址是 `#/events?tab=excluded`，第一次查詢在拿到
+    `judgement_tabs` 之前就要送出，若要前端自己展開，那份成員就得寫死在前端 ——
+    正是 JUDGEMENT_TABS 的註解在擋的那件事。兩個一起給是 400（不定義誰蓋誰，
+    免得出現「網址寫 A、結果是 B」而畫面完全正常）。
+
+    值是封閉集合，**打錯一律 400**：靜靜接受的話 `judgement=誤報x` 回 0 筆，
+    而畫面上的已套用條件寫著「判定 = 誤報x」，讀起來像「這段時間沒有誤報」。
+    """
+    picked = list(dict.fromkeys(v for v in (values or []) if v))   # 去重、保序
+    if tab is not None:
+        found = next((t for t in JUDGEMENT_TABS if t["key"] == tab), None)
+        if found is None:
+            raise HTTPException(
+                400, f"tab 必須是 {'／'.join(t['key'] for t in JUDGEMENT_TABS)} 之一"
+                     f"（收到 {tab!r}）")
+        if picked or unjudged:
+            raise HTTPException(400, "tab 與 judgement／unjudged 不可同時給"
+                                     "（tab 本身就是一組判定）")
+        return list(found["judgements"])
+    unknown = [v for v in picked if v not in JUDGEMENTS and v != UNJUDGED]
+    if unknown:
+        raise HTTPException(
+            400, f"judgement 必須是 {'、'.join((*JUDGEMENTS, UNJUDGED))} 之一"
+                 f"（收到 {'、'.join(repr(v) for v in unknown)}）")
+    # 條件之間是 OR，但「還沒有人判定」與「判定是誤報」不可能同時成立於同一筆，
+    # 而混著送的人要的多半是別的東西。靜靜回傳兩者聯集會讓「待判定」那格突然
+    # 多出已判定的事件 —— 大聲擋掉。
+    if UNJUDGED in picked and len(picked) > 1:
+        raise HTTPException(
+            400, f"{UNJUDGED} 不可與其他判定混用"
+                 f"（收到 {'、'.join(picked)}）")
+    if unjudged:
+        # unjudged=true 是 UNJUDGED 的別名（總覽的「前往判定」連結在用）。
+        # 與具體判定同時給永遠是 0 筆，靜靜回 0 的話使用者的結論會是
+        # 「這段時間沒有這種判定」，而其實是自己把兩個入口都打開了。
+        if picked and picked != [UNJUDGED]:
+            raise HTTPException(
+                400, f"unjudged=true 與 judgement={'、'.join(picked)} 互相矛盾"
+                     f"（{UNJUDGED} 與已判定不可能同時成立）")
+        return [UNJUDGED]
+    return picked
+
+
+def _facets(where: str, params: tuple) -> dict:
+    """嚴重度 × 狀態的真實計數（**不受 LIMIT 影響**）。
+
+    刻意不從清單那份 rows 數：rows 有 LIMIT 300，撞到上限時「共 N 筆事件」
+    與四個嚴重度數字會**靜靜少算**，而畫面上沒有任何跡象。
+    """
+    rows = db.rows(f"SELECT severity, status, COUNT(*) AS n FROM events"
+                   f" WHERE {where} GROUP BY severity, status", params)
+    return {
+        "total": sum(r["n"] for r in rows),
+        "by_severity": {s: sum(r["n"] for r in rows if r["severity"] == s)
+                        for s in _SEV_ORDER},
+        "by_status": {k: sum(r["n"] for r in rows if r["status"] == k)
+                      for k in STATUSES},
+    }
+
+
+def _judgement_tabs(where: str, params: tuple) -> list[dict]:
+    """頁籤與其筆數 —— **套用其他篩選、不套用判定條件**。
+
+    這是頁籤上的數字，範圍與下方清單刻意不同：清單是「這一格有什麼」，頁籤是
+    「同樣的條件下，別格還有幾筆」。所以呼叫端傳進來的 where **不含判定條件**。
+
+    舊的 `by_judgement` 是「套用**全部**篩選之後」算的，於是套用判定篩選時其餘
+    每一格必然是 0。同一個鍵兩種範圍是這個專案一再出事的形狀，所以那個鍵直接
+    刪掉，跨判定的計數只活在這裡 —— 在這裡它的意思只可能是「頁籤上的數字」。
+    """
+    rows = db.rows(f"SELECT COALESCE(judgement, ?) AS j, COUNT(*) AS n"
+                   f" FROM events WHERE {where} GROUP BY j", (UNJUDGED, *params))
+    counts = {r["j"]: r["n"] for r in rows}
+    return [{"key": t["key"], "label": t["label"],
+             "judgements": list(t["judgements"]),
+             "count": (sum(counts.values()) if not t["judgements"]
+                       else sum(counts.get(j, 0) for j in t["judgements"]))}
+            for t in JUDGEMENT_TABS]
+
+
 @router.get("/events")
 def list_events(
     severity: str | None = None,
@@ -322,10 +440,11 @@ def list_events(
     rule_id: str | None = None,
     source: str | None = None,
     keyword: str | None = None,
-    # 調查判定。JUDGEMENTS 之一 = 只看該判定；UNJUDGED = 還沒有人判定。
-    # 值是封閉集合，**打錯一律 400**：靜靜接受的話 `judgement=誤報x` 會回 0 筆，
-    # 而畫面上的已套用條件寫著「判定 = 誤報x」，讀起來像「這段時間沒有誤報」。
-    judgement: str | None = None,
+    # 調查判定，**可重複**（見 _judgement_filter）。JUDGEMENTS 之一 = 只看該判定；
+    # UNJUDGED = 還沒有人判定；完全不給 = 不篩（「全部」那個頁籤）。
+    judgement: list[str] | None = Query(None),
+    # 頁籤 key（judgement 的簡寫，見 _judgement_filter）。清單頁的網址帶的是這個。
+    tab: str | None = None,
     # UNJUDGED 的別名。資安總覽的「前往判定」連結與 test_api_smoke 在用，
     # 保留是為了不破那個契約；新的呼叫端一律用 judgement。
     unjudged: bool = False,
@@ -333,20 +452,16 @@ def list_events(
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     guard(user, "view_events")
-    if status and status not in STATUSES:
-        raise HTTPException(400, f"status 必須是 {'、'.join(STATUSES)} 之一"
-                                 f"（收到 {status!r}）")
-    if judgement:
-        if judgement not in JUDGEMENTS and judgement != UNJUDGED:
-            raise HTTPException(
-                400, f"judgement 必須是 {'、'.join((*JUDGEMENTS, UNJUDGED))} 之一"
-                     f"（收到 {judgement!r}）")
-        if unjudged and judgement != UNJUDGED:
-            # 兩個條件是 AND，同時給永遠是 0 筆。靜靜回 0 的話使用者的結論會是
-            # 「這段時間沒有這種判定」，而其實是自己把兩個入口都打開了。
-            raise HTTPException(
-                400, f"unjudged=true 與 judgement={judgement} 互相矛盾"
-                     f"（{UNJUDGED} 與已判定不可能同時成立）")
+    # 四個封閉集合一律驗證。清單頁的條件現在寫在網址裡、使用者改得到，而靜靜
+    # 接受一個不存在的值會回 0 筆，配上畫面「嚴重度 = P9」讀起來像
+    # 「這段時間沒有 P9」——「值不存在」與「沒有事件」必須分得開。
+    for name, val, allowed in (("severity", severity, tuple(_SEV_ORDER)),
+                               ("status", status, STATUSES),
+                               ("source", source, tuple(settings()["data_sources"]))):
+        if val and val not in allowed:
+            raise HTTPException(400, f"{name} 必須是 {'、'.join(allowed)} 之一"
+                                     f"（收到 {val!r}）")
+    wanted = _judgement_filter(judgement, unjudged, tab)
     clauses = ["first_seen >= ?"]
     params: list = [timewin.fmt(timewin.taipei_now() - timedelta(hours=hours))]
     for col, val in (("severity", severity), ("status", status),
@@ -357,31 +472,36 @@ def list_events(
     if keyword:
         clauses.append("(entity_label LIKE ? OR rule_name LIKE ? OR evt_no LIKE ?)")
         params.extend([f"%{keyword}%"] * 3)
-    # 「待判定」是 judgement IS NULL 而不是某個字串，兩個入口（總覽橫幅的
-    # unjudged 連結、清單的判定篩選器）都落在這一條。
-    if unjudged or judgement == UNJUDGED:
+    # 頁籤的數字用的是**這一份**（不含判定條件）—— 它要回答「別格還有幾筆」。
+    tabs = _judgement_tabs(" AND ".join(clauses), tuple(params))
+    # 「待判定」是 judgement IS NULL 而不是某個字串，三個入口（總覽橫幅的
+    # unjudged 連結、網址的 tab=unjudged、判定下拉）都落在這一條。
+    if wanted == [UNJUDGED]:
         clauses.append("judgement IS NULL")
-    elif judgement:
-        clauses.append("judgement = ?")
-        params.append(judgement)
+    elif wanted:
+        clauses.append(f"judgement IN ({','.join('?' * len(wanted))})")
+        params.extend(wanted)
+    where = " AND ".join(clauses)
+    facets = _facets(where, tuple(params))
     rows = db.rows(
-        f"SELECT * FROM events WHERE {' AND '.join(clauses)}"
+        f"SELECT * FROM events WHERE {where}"
         " ORDER BY CASE severity WHEN 'P0' THEN 0 WHEN 'P1' THEN 1"
-        " WHEN 'P2' THEN 2 ELSE 3 END, first_seen DESC LIMIT 300", tuple(params))
-    stats = {s: sum(1 for r in rows if r["severity"] == s) for s in _SEV_ORDER}
-    # by_judgement 與 by_severity 一樣是**已套用篩選之後**的統計。前端因此只在
-    # 沒有套用判定篩選時才顯示它 —— 混用兩種範圍（「這段時間全部的待判定數」
-    # 配上「篩選後的清單」）正是這個專案一再警告的誤導。
-    labels = [r["judgement"] or UNJUDGED for r in rows]
+        f" WHEN 'P2' THEN 2 ELSE 3 END, first_seen DESC LIMIT {_EVENT_LIMIT}",
+        tuple(params))
     return {
         "events": [_event_public(r) for r in rows],
-        "total": len(rows),
-        "by_severity": stats,
-        "by_judgement": {k: labels.count(k) for k in (UNJUDGED, *JUDGEMENTS)},
-        "by_status": {k: sum(1 for r in rows if r["status"] == k) for k in STATUSES},
+        # total 是**真實筆數**，不是 len(events)：頁籤數字也是真實計數，
+        # 兩者放在同一個畫面上而其中一個被 LIMIT 截斷的話會直接打架
+        # （「待判定 512」配「共 300 筆事件」）。截斷要說出來，不是靜靜少算。
+        "total": facets["total"],
+        "shown": len(rows),
+        "truncated": len(rows) < facets["total"],
+        "by_severity": facets["by_severity"],
+        "by_status": facets["by_status"],
+        "judgement_tabs": tabs,
         "judgements": list(JUDGEMENTS),
         "unjudged_label": UNJUDGED,
-        "ongoing": sum(1 for r in rows if r["status"] == "active"),
+        "ongoing": facets["by_status"]["active"],
     }
 
 
@@ -959,7 +1079,11 @@ def run_explorer(
     # 「0 筆」要自己解釋原因。使用者從掃描結果貼一個對象進來，Explorer 的預設區間
     # 比掃描短得多（實測 192.168.97.1 最後出現在 7/29，而預設是最近 1 小時），
     # 只顯示空表格會讓人以為「這個對象不存在」。
-    empty = not data.get("rows") and not data.get("total")
+    # 有 `total` 的分析（趨勢、排名、明細、unique）一律以它為準，不看 rows ——
+    # 趨勢的 rows 是**零填**的（見 explorer.trend），永遠非空，用 rows 判斷等於
+    # 讓「0 筆」的解釋從趨勢圖上永遠消失，而畫面上是一整排 0：那正是
+    # 「把沒有資料渲染成沒有發生」。沒有 total 的（error_analysis）才退回看 rows。
+    empty = data["total"] == 0 if "total" in data else not data.get("rows")
     if empty:
         data["empty_reason"] = _explain_empty(f)
     rng = f"{f.start} ~ {f.end}"

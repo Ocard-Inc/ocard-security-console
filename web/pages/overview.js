@@ -235,6 +235,20 @@ export default {
   },
   methods: {
     num, mult, multColor, clockTime, duration, shortTime,
+    /** P0–P3 卡片 → 異常事件清單的 query 字串（見 pages/events-view.js）。
+     *
+     *  兩個參數都是為了讓**卡片上的數字等於點進去看到的數字**：
+     *  - `tab=all`：卡片是**不分判定**的筆數，落在任何單一判定的頁籤都會出現
+     *    「卡片寫 3、點進去只有 1」。
+     *  - `hours=24`：這一區的標題就寫著「固定近 24 小時」，而清單自己的預設是
+     *    7 天。不帶的話實測卡片 25 對上清單 47。
+     *
+     *  在模板裡串字串會踩到 `&` 的 HTML 實體解碼，所以放在這裡。 */
+    severityLink(severity) { return `tab=all&severity=${severity}&hours=24`; },
+    /** 「待判定」區塊 → 清單。那一區的語意是**不限時間**（見 routes 的
+     *  pending_judgement，SQL 沒有時間條件），而清單最多只查得了 90 天 ——
+     *  帶最大值是唯一能讓兩邊數字對得上的做法，預設的 7 天會少一大截。 */
+    pendingLink() { return 'tab=unjudged&hours=2160'; },
     // 安靜重載：只有「還沒有任何資料」才顯示骨架，之後一律沿用上一版畫面並降低不透明度。
     // 30 秒自動更新若換骨架會整頁閃、版面跳動，圖表也會失去 hover 狀態。
     async load() {
@@ -319,7 +333,9 @@ export default {
     <div v-if="pending.total" class="banner banner-warn">
       <strong>有 {{ pending.total }} 件事件已結束但從未判定</strong>
       <template v-if="pending.oldest">（最早自 {{ shortTime(pending.oldest) }}）</template>
-      <a @click="$emit('goto','events',{unjudged:true})" style="float:right">前往判定 →</a>
+      <!-- 帶的是異常事件清單的 query 字串（見 pages/events-view.js）：
+           落在「待判定」那個頁籤，而且複製得到的網址就是同一個畫面。 -->
+      <a @click="$emit('goto','events', pendingLink())" style="float:right">前往判定 →</a>
       <div style="font-size:12.5px;line-height:1.7;margin-top:4px">
         事件會在數值回到門檻以下時自動結束 —— 那只代表「現在沒在發生」，
         不代表「已經查清楚」。{{ pendingBreakdown }}
@@ -377,7 +393,7 @@ export default {
     <div class="grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
       <div v-for="c in data.severity_cards" :key="c.severity" class="card"
            :style="{borderTop:'3px solid '+SEV_META[c.severity].bar, padding:'14px 16px', cursor:'pointer'}"
-           @click="$emit('goto','events',{severity:c.severity})">
+           @click="$emit('goto','events', severityLink(c.severity))">
         <div style="font-size:12px;font-weight:500" class="muted">{{ SEV_META[c.severity].label }}</div>
         <div style="font-size:30px;font-weight:700;line-height:1.2;font-family:Montserrat,sans-serif"
              :style="{color: c.count>0 && (c.severity==='P0'||c.severity==='P1') ? SEV_META[c.severity].bar : 'var(--text-1)'}">
@@ -507,7 +523,7 @@ export default {
         <div v-if="pending.events.length" style="margin-top:14px">
           <div style="display:flex;align-items:center;margin-bottom:8px">
             <div style="font-weight:700;font-size:13px">待判定（已結束，尚未有人確認）</div>
-            <a @click="$emit('goto','events',{unjudged:true})"
+            <a @click="$emit('goto','events', pendingLink())"
                style="margin-left:auto;font-size:12px">全部 {{ pending.total }} 件 →</a>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px">
