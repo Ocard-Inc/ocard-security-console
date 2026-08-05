@@ -230,7 +230,7 @@ def _post_login_api(p: dict) -> dict:
         {"start": s, "end": e})
     adf = query(
         f"SELECT toStartOfTenMinutes(create_time) AS b, count() AS api_calls,"
-        f" countIf(has_error = 1) AS errors FROM ods_api_log"
+        f" countIf({exprs.API_HAS_ERROR}) AS errors FROM ods_api_log"
         f" WHERE {exprs.time_filter()} GROUP BY b ORDER BY b", {"start": s, "end": e})
     api_map = {r["b"]: (int(r["api_calls"]), int(r["errors"])) for _, r in adf.iterrows()}
     rows = []
@@ -312,7 +312,8 @@ def _orderlist_traversal(p: dict) -> dict:
 def _api_error(p: dict) -> dict:
     s, e, _ = _win(p)
     df = query(
-        f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS total, countIf(has_error = 1) AS errors"
+        f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS total,"
+        f" countIf({exprs.API_HAS_ERROR}) AS errors"
         f" FROM ods_api_log WHERE {exprs.time_filter()} GROUP BY endpoint"
         f" HAVING errors > 0 ORDER BY errors DESC LIMIT 15", {"start": s, "end": e})
     rows = [{"endpoint": r["endpoint"], "total": int(r["total"]), "errors": int(r["errors"]),
@@ -376,7 +377,7 @@ def _compare_dates(p: dict) -> dict:
         s, e = timewin.fmt(timewin.parse(start)), timewin.fmt(timewin.parse(end))
         params = {"start": s, "end": e, "ep": endpoint}
         df = query(
-            f"SELECT count() AS total, countIf(has_error = 1) AS errors,"
+            f"SELECT count() AS total, countIf({exprs.API_HAS_ERROR}) AS errors,"
             f" uniqExact(order_number) AS uniq_res,"
             f" countIf(order_number IS NOT NULL AND order_number != '') AS with_res"
             f" FROM ods_api_log WHERE {exprs.time_filter()} AND {exprs.ENDPOINT} = %(ep)s",

@@ -39,6 +39,24 @@ LEGACY_LOGIN_FAILED = "(function = 'login' AND action = 'failed')"
 ANY_LOGIN_SUCCESS = f"({BOSS_LOGIN_SUCCESS} OR {LEGACY_LOGIN_SUCCESS})"
 ANY_LOGIN_FAILED = f"({BOSS_LOGIN_FAILED} OR {LEGACY_LOGIN_FAILED})"
 
+# api_log 的「這一筆是錯誤回應」。**唯一真相，不要在各處自己寫比對。**
+#
+# 原本各處寫死 `has_error = 1`。2026-08-05 `ods_api_log` 重建後該欄位變成
+# `Nullable(String)`（實測值只有 NULL、`'1'`、`'verify failed'` 三種），
+# 於是 ClickHouse 對 String 與 UInt8 的比較直接拋 code 386 NO_COMMON_TYPE ——
+# R09 每個 tick 失敗，而且 **calibrate 整段中止、四張表的基線全部停止更新**。
+#
+# 改用 `isNotNull` 而不是 `has_error = '1'` 有兩個理由：
+#   ① 型別無關 —— 欄位再變回數值也不會壞，而這正是這次的教訓；
+#   ② 語意更貼近欄位本身。`queries/health.py` 早就寫下實測結論：
+#      「api_log 的 has_error 僅在出錯時設值，NULL 屬正常」。
+#      所以「非 NULL = 有錯誤」才是這個欄位真正的定義，
+#      `= 1` 只是當時剛好只有一種錯誤代碼。
+#
+# 代價（實測，全表 3.43 億列）：`'verify failed'` 的 182 列現在會被算成錯誤，
+# 而 `'1'` 是 236,745 列 —— 佔比 0.08%，對門檻沒有實質影響。
+API_HAS_ERROR = "isNotNull(has_error)"
+
 # R11 手機條件查詢類 endpoint
 CELL_LOOKUP_FUNCTIONS = ("GetUserByCell", "GetUserByCell_v2", "VerifyCell")
 

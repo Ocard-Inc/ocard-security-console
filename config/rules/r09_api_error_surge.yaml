@@ -6,7 +6,7 @@ kind: sql_threshold
 window_minutes: 5
 cooldown_minutes: 60
 sql: |
-  SELECT 'api_error' AS scope, countIf(has_error = 1) AS metric, count() AS total
+  SELECT 'api_error' AS scope, countIf(isNotNull(has_error)) AS metric, count() AS total
   FROM ods_api_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
   HAVING metric >= 15
