@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from console.core.config import settings
 from console.store import db, migrate, sensitive_routes as sr
 
@@ -189,20 +191,26 @@ def test_exprs_reads_the_store_not_the_yaml():
     assert exprs.sensitive_routes() == sr.active()
 
 
-def test_p03_sql_has_no_hardcoded_route_literals():
-    """P03 的 SQL 不可以把清單內插進字串。
+@pytest.mark.parametrize("probe_id", ["P02", "P03"])
+def test_probe_sql_has_no_hardcoded_route_literals(probe_id):
+    """P02／P03 的 SQL 都不可以把清單內插進字串。
 
     probes() 有 lru_cache(maxsize=1)，內插的話探針表會凍結在 server 啟動時的
     清單 —— 於是 R05 立即生效而掃描要重啟，而畫面上兩邊都正常。
     這正是「一份清單兩邊一起生效」要避免的事。
+
+    **兩支探針都吃這份清單，不是只有 P03。** P02「集中存取資料導出路由」是
+    concentration 訊號組唯一成員，凍結它比凍結 P03（volume 組還有 P01）
+    後果更嚴重 —— 之前這裡只 parametrize 過 P03，把清單內插回 P02 的 SQL
+    或拿掉它的 needs_sensitive_routes 不會有任何測試失敗。
     """
     from console.sweep.probes import probes
-    p03 = next(p for p in probes() if p.id == "P03")
-    assert "%(sensitive_routes)s" in p03.sql, (
-        "P03 的 SQL 沒有用 %(sensitive_routes)s 參數")
+    probe = next(p for p in probes() if p.id == probe_id)
+    assert "%(sensitive_routes)s" in probe.sql, (
+        f"{probe_id} 的 SQL 沒有用 %(sensitive_routes)s 參數")
     for route in sr.active():
-        assert f"'{route}'" not in p03.sql, (
-            f"P03 的 SQL 裡有寫死的路由字面值 {route!r} —— "
+        assert f"'{route}'" not in probe.sql, (
+            f"{probe_id} 的 SQL 裡有寫死的路由字面值 {route!r} —— "
             "lru_cache 會讓它凍結在啟動時的清單")
 
 
@@ -213,11 +221,18 @@ def test_sweep_build_params_supplies_the_live_list():
     assert params["sensitive_routes"] == sr.active()
 
 
-def test_p03_declares_that_it_needs_the_route_list():
-    """P03 要標記 needs_sensitive_routes，否則 run_probes 不知道要跳過它。"""
+@pytest.mark.parametrize("probe_id", ["P02", "P03"])
+def test_probe_declares_that_it_needs_the_route_list(probe_id):
+    """P02／P03 都要標記 needs_sensitive_routes，否則 run_probes 不知道要跳過它。
+
+    漏了 P02 的話，清單清空時 run_probes 仍然會執行它 —— 而它的 SQL 裡有
+    %(sensitive_routes)s，會直接因為缺參數而失敗（同 engine._sql_params()
+    對空清單拋例外的理由），不是「靜靜給錯答案」而是「靜靜整支探針失敗」，
+    但一樣不該發生：run_probes 應該主動跳過並讓 limits 標 blocking。
+    """
     from console.sweep.probes import probes
-    p03 = next(p for p in probes() if p.id == "P03")
-    assert p03.needs_sensitive_routes is True
+    probe = next(p for p in probes() if p.id == probe_id)
+    assert probe.needs_sensitive_routes is True
 
 
 def test_limits_reports_blocking_when_the_list_is_empty(monkeypatch):
