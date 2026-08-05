@@ -413,10 +413,36 @@ def test_allowlist_response_is_clean(client):
 
 def test_sensitive_routes_response_is_clean(client):
     """清單會回操作者 Email（added_by / removed_by，走結構性豁免）；
-    reason 是人工自由文字，必須已遮罩。"""
-    r = client.get("/api/sensitive-routes")
-    assert r.status_code == 200, r.text
-    _scan_json(r.json(), "GET /api/sensitive-routes")
+    reason 是人工自由文字，必須已遮罩。
+
+    **這個測試必須靠豁免才能過，不能靠巧合。** 種子列的 `added_by='seed'`
+    根本不是 email；而 `client` 預設的 `X-Dev-User` 是 `dev@olis.com.tw`，
+    剛好已經在 `EMAIL_ALLOW` 裡 —— 兩者都會讓拿掉 `OPERATOR_KEYS` 裡的
+    `added_by`/`removed_by` 之後這個測試仍然通過，等於守著一個不會失敗的
+    斷言。這裡改用 `X-Dev-User` 覆寫成一個 `@olis.com.tw`（`INTERNAL_DOMAIN`
+    要求的網域）、但**不在** `EMAIL_ALLOW` 裡的位址新增一條路由：拿掉豁免
+    的話 `_scan()` 會在這個位址上失敗，加回去才會過。
+    """
+    from console.store import db as _db
+
+    route = "zzz_masking_audit_test/route"
+    # @olis.com.tw：INTERNAL_DOMAIN 要求的網域，但刻意不在 EMAIL_ALLOW 裡。
+    operator = "masking-test-operator@olis.com.tw"
+    try:
+        r = client.post("/api/sensitive-routes",
+                        json={"route": route, "reason": "masking 驗收測試"},
+                        headers={"X-Dev-User": operator})
+        assert r.status_code == 200, r.text
+
+        r = client.get("/api/sensitive-routes")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert any(row["added_by"] == operator for row in body["routes"]), (
+            "新增的那一列沒有出現在清單裡，這個測試會變成空跑")
+        _scan_json(body, "GET /api/sensitive-routes")
+    finally:
+        with _db.tx() as conn:
+            conn.execute("DELETE FROM sensitive_routes WHERE route = ?", (route,))
 
 
 def test_audit_response_is_clean(client):

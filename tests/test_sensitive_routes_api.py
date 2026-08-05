@@ -185,3 +185,25 @@ def test_audit_mode_page_lists_the_new_write_endpoints():
     from pathlib import Path
     text = Path("web/pages/audit-mode.js").read_text(encoding="utf-8")
     assert "敏感路由" in text, "audit-mode.js 沒有提到敏感路由的可寫端點"
+
+
+def test_overview_banner_counts_survive_rule_yaml_failure(client, monkeypatch):
+    """`_suppression_summary()` 的降級分支（規則 YAML 讀取失敗）一樣要帶
+
+    這兩個數字。那個分支跑的情境是「規則一條都沒在跑」—— 正是最需要看見
+    「我們自己關掉了什麼」的時候，而它是這個 task 裡最容易被漏掉的分支
+    （brief 明說理由同既有的 `slack` 鍵，這裡連同 `slack` 一起斷言，
+    讓這個測試守住整個降級分支的契約，不只是這個 task 加的那一半）。
+    """
+    from console.api import routes as routes_module
+
+    def _boom():
+        raise RuntimeError("規則 YAML 壞掉（測試模擬）")
+
+    monkeypatch.setattr(routes_module.effective, "effective_rules", _boom)
+    body = client.get("/api/overview?minutes=60").json()
+    s = body["suppression"]
+    assert s["available"] is False
+    assert "slack" in s
+    assert s["active_sensitive_routes"] == sr.active_count()
+    assert s["disabled_sensitive_routes"] == sr.disabled_count()
