@@ -37,9 +37,17 @@ FALLBACK_WINDOWS = [
 ]
 
 # 額外述詞完全可以用 Explorer 的篩選表達的規則 —— 計數必須**相等**。
-# 其餘規則的 SQL 還帶了 drilldown 表達不了的條件（R02 敏感路由白名單、
-# R05 非上班時間、R06 `action='login_success'`、R07A/B `login_failed`、
-# R09 `has_error`、R11 cell 類函式），只能要求 `>=`。
+# 其餘規則只能要求 `>=`，兩種原因：
+#
+# ① SQL 帶了 drilldown 表達不了的條件：R05 非上班時間、R06
+#    `action='login_success'`、R07A/B `login_failed`、R09 `has_error`、
+#    R11 cell 類函式。
+# ② **對象維度的比對方式不同**：R14 的 entity 是 `route2`（route 的前 2 段、
+#    完全相等），而 Explorer 對 backend 的 endpoint 篩選是
+#    `startsWith(route, ...)`（見 explorer.FILTER_COLUMN）。前綴比對會多命中
+#    同前綴的其他 route（`orderlist/detailed/...` 會被算進 `orderlist/detail`），
+#    所以 Explorer 的計數是規則的**上界**而非等值。api 的 endpoint 沒有這個
+#    問題（GROUP_BY 與 FILTER_COLUMN 是同一個運算式），所以 R03/R04 仍是 EXACT。
 EXACT = {"R01", "R03", "R04", "R08A", "R08B", "R08C", "R10A", "R10B"}
 
 # 已知無法轉成篩選條件的 entity 欄位，以及為什麼。這份清單刻意是白名單：
@@ -300,7 +308,7 @@ def test_long_window_with_api_source_ip_is_clamped_and_reported():
 
 def test_window_is_not_clamped_when_no_json_ip_filter():
     """同樣一個月，backend 不必解析 headers，不該被截到 24 小時。"""
-    rule = _rule("R02")
+    rule = _rule("R14")
     d = drilldown.build(rule, _fake_event(
         rule, {"route2": "orderlist/detail", "metric": 500},
         start="2026-06-01 00:00:00", end="2026-07-01 00:00:00"))
