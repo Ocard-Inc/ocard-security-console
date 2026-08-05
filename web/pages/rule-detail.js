@@ -29,7 +29,7 @@ export default {
   emits: ['back', 'new-allowlist'],
   data() {
     return { d: null, loading: true, error: null, saved: null,
-             showSql: false, SOURCE_LABEL, SEV_LABEL, FP_LABEL };
+             showSql: false, SOURCE_LABEL, SEV_LABEL, FP_LABEL, srRoutes: null };
   },
   watch: {
     ruleId() { this.saved = null; this.load(); },
@@ -46,12 +46,25 @@ export default {
       this.loading = !this.d;
       try {
         this.d = await api(`/rules/${this.ruleId}`);
+        this.loadSensitiveRoutes();
         this.error = null;
       } catch (e) {
         this.error = e.detail || e.message;
         this.d = null;
       }
       this.loading = false;
+    },
+    async loadSensitiveRoutes() {
+      // 判斷條件用「SQL 裡有沒有那個佔位符」，**不要寫死 r.id === 'R05'** ——
+      // 日後別的規則也吃同一份清單時，寫死的判斷會漏掉它而畫面完全正常。
+      const sql = this.d && this.d.rule && this.d.rule.sql;
+      if (!sql || !sql.includes('%(sensitive_routes)s')) return;
+      try {
+        this.srRoutes = await api('/sensitive-routes');
+      } catch (e) {
+        // 端點不存在（後端還沒重啟）→ 整塊不顯示，不是顯示一個空清單。
+        this.srRoutes = null;
+      }
     },
     onSaved(r) {
       this.saved = r;
@@ -153,6 +166,23 @@ export default {
           <div class="field-hint">
             SQL 只能改 <span class="mono">config/rules/*.yaml</span> 並重啟 server。
             這裡刻意不開放編輯：它是 injection 面，而 loader 的驗證只在啟動時跑。
+          </div>
+        </div>
+
+        <div v-if="srRoutes" class="card" style="margin-top:12px">
+          <strong>這條規則吃的敏感路由清單</strong>
+          <span class="muted" style="font-size:12px;margin-left:8px">
+            生效中 {{ srRoutes.summary.active }} 條 ——
+            <a href="#/rules">在規則清單頁編輯 →</a></span>
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <span v-for="r in srRoutes.routes.filter(x => x.status === '生效中')"
+                  :key="r.route" class="pill mono"
+                  style="background:var(--warn-bg);color:var(--warn)">{{ r.route }}</span>
+          </div>
+          <div class="note-quote" style="margin-top:8px">
+            · 這份清單同時餵期間異常掃描的「敏感路由大量存取」探針，所以它不是這條
+              規則的私有參數 —— 編輯入口刻意放在規則清單頁。<br>
+            · 清單存在 SQLite、每個 tick 重讀，改完下一個五分鐘檢查就生效。
           </div>
         </div>
 

@@ -17,6 +17,11 @@ export default {
       data: null, loading: true, error: null,
       f: { enabled: '', source: '', overridden: false },
       SOURCE_LABEL, SEV_LABEL,
+      // 敏感路由：欄位不存在（後端還沒重啟）時整張卡片不顯示，
+      // **不是顯示一個空清單** —— 「前端新、後端舊」是每次改動的必經中間狀態。
+      sr: null, srBusy: false, srError: null, srWarnings: [],
+      srDraft: { route: '', reason: '' }, srAdding: false,
+      srCandidates: null,
     };
   },
   computed: {
@@ -32,8 +37,14 @@ export default {
     },
     disabledCount() { return this.data ? this.data.disabled.length : 0; },
     overriddenCount() { return this.data ? this.data.overridden.length : 0; },
+    srActive() {
+      return this.sr ? this.sr.routes.filter(r => r.status === '生效中') : [];
+    },
+    srDisabled() {
+      return this.sr ? this.sr.routes.filter(r => r.status !== '生效中') : [];
+    },
   },
-  watch: { reloadToken() { this.load(); } },
+  watch: { reloadToken() { this.load(); this.loadSensitiveRoutes(); } },
   methods: {
     num,
     async load() {
@@ -47,8 +58,80 @@ export default {
       }
       this.loading = false;
     },
+    async loadSensitiveRoutes() {
+      try {
+        this.sr = await api('/sensitive-routes');
+      } catch (e) {
+        // 404 = 後端還沒有這個端點 → 卡片不顯示（不是錯誤畫面）
+        this.sr = null;
+      }
+    },
+    async loadRouteCandidates() {
+      if (this.srCandidates) return;
+      // 打錯的路由不會報錯，只會永遠不生效 —— 所以給真值清單（同 EndpointPicker）。
+      // start/end 是必填（空字串會被 explorer.validate() 擋成 400）；
+      // 用近 30 天，格式是台北牆鐘、無時區，與資料庫存的值天生對應。
+      const pad = n => String(n).padStart(2, '0');
+      const wall = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-`
+        + `${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+      const end = new Date();
+      const start = new Date(end.getTime() - 30 * 86400000);
+      try {
+        const r = await api('/endpoints?source=backend'
+          + `&start=${encodeURIComponent(wall(start))}`
+          + `&end=${encodeURIComponent(wall(end))}`);
+        this.srCandidates = r.rows.map(e => e.value);
+      } catch (e) {
+        // 候選清單只是輔助。拿不到就讓人自己打字，並靠後端的 warnings 提醒。
+        this.srCandidates = [];
+      }
+    },
+    async addRoute() {
+      this.srBusy = true; this.srError = null; this.srWarnings = [];
+      try {
+        const r = await api('/sensitive-routes', {
+          method: 'POST',
+          body: JSON.stringify({ route: this.srDraft.route.trim(),
+                                 reason: this.srDraft.reason.trim() }),
+        });
+        this.sr = { routes: r.routes, readers: r.readers, summary: r.summary };
+        this.srWarnings = r.warnings || [];
+        this.srDraft = { route: '', reason: '' };
+        this.srAdding = false;
+        this.load();
+      } catch (e) {
+        this.srError = e.detail || e.message;
+      }
+      this.srBusy = false;
+    },
+    // 恢復一條已停用的路由。走同一個 POST 端點（它會 reactivate），
+    // 但理由是必填的 —— 恢復監測也是一次設定變更，要留痕。
+    async addRoute2(route) {
+      const reason = window.prompt(`恢復 ${route} 的理由（必填）`);
+      if (!reason || !reason.trim()) return;
+      this.srDraft = { route, reason: reason.trim() };
+      await this.addRoute();
+    },
+    async removeRoute(route) {
+      const reason = window.prompt(
+        `移除 ${route} 的理由（必填）\n\n` +
+        '這會同時讓 R05（非上班時間敏感操作）與期間掃描停止看這條路由。');
+      if (!reason || !reason.trim()) return;
+      this.srBusy = true; this.srError = null; this.srWarnings = [];
+      try {
+        const r = await api(`/sensitive-routes/${route}`, {
+          method: 'DELETE',
+          body: JSON.stringify({ reason: reason.trim() }),
+        });
+        this.sr = { routes: r.routes, readers: r.readers, summary: r.summary };
+        this.load();
+      } catch (e) {
+        this.srError = e.detail || e.message;
+      }
+      this.srBusy = false;
+    },
   },
-  mounted() { this.load(); },
+  mounted() { this.load(); this.loadSensitiveRoutes(); },
   // 規則名稱與 note 來自 YAML（進版控），仍一律 {{ }} 插值。
   template: `
 <div>
@@ -82,6 +165,74 @@ export default {
     <div v-if="overriddenCount" class="banner banner-warn">
       <strong>{{ overriddenCount }} 條規則的參數被覆寫</strong>（{{ data.overridden.join('、') }}）——
       實際生效的值與 config/rules 的 YAML 不同，逐條的原值與理由見詳細頁。
+    </div>
+
+    <!-- 敏感路由清單。它同時餵 R05 與期間掃描，不屬於任何單一規則 ——
+         所以放在這一頁的共用區塊，不是 R05 的一個參數。 -->
+    <div v-if="sr" class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <strong>敏感路由清單</strong>
+        <span class="muted" style="font-size:12px">
+          生效中 {{ sr.summary.active }} 條<template v-if="sr.summary.disabled">
+          ／已停用 {{ sr.summary.disabled }} 條</template></span>
+        <span style="flex:1"></span>
+        <a v-if="!srAdding" @click="srAdding = true; loadRouteCandidates()">＋ 新增路由</a>
+      </div>
+
+      <!-- 影響範圍由後端給（sr.readers），前端不自己列一份 -->
+      <div class="muted" style="font-size:12px;margin-top:4px">
+        這份清單有 {{ sr.readers.length }} 個讀取端：{{ sr.readers.join('；') }}。
+        改動同時影響它們。
+      </div>
+
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+        <span v-for="r in srActive" :key="r.route" class="pill"
+              style="background:var(--warn-bg);color:var(--warn);display:inline-flex;
+                     align-items:center;gap:6px">
+          <span class="mono">{{ r.route }}</span>
+          <a @click="removeRoute(r.route)" :title="'由 ' + r.added_by + ' 於 '
+             + r.added_at + ' 加入：' + r.reason" style="font-weight:600">×</a>
+        </span>
+      </div>
+
+      <div v-if="srDisabled.length" class="muted"
+           style="font-size:12px;margin-top:8px">
+        已停用（R05 與期間掃描都不再看它們）：
+        <span v-for="r in srDisabled" :key="r.route" style="margin-right:8px">
+          <span class="mono">{{ r.route }}</span>
+          （{{ r.removed_by }} 於 {{ r.removed_at }}）
+          <a @click="addRoute2(r.route)">恢復</a>
+        </span>
+      </div>
+
+      <div v-if="srAdding" style="margin-top:10px;display:flex;gap:8px;
+                                  flex-wrap:wrap;align-items:center">
+        <!-- 真值清單：打錯的路由不會報錯，只會永遠不生效（同 EndpointPicker） -->
+        <input v-model="srDraft.route" list="sr-candidates" placeholder="customer/index"
+               class="mono" style="min-width:220px">
+        <datalist id="sr-candidates">
+          <option v-for="c in (srCandidates || [])" :key="c" :value="c"></option>
+        </datalist>
+        <input v-model="srDraft.reason" placeholder="新增理由（必填）"
+               style="min-width:260px;flex:1">
+        <button @click="addRoute" :disabled="srBusy">加入</button>
+        <a @click="srAdding = false; srError = null">取消</a>
+      </div>
+
+      <div v-if="srError" class="banner banner-danger" style="margin-top:8px">
+        {{ srError }}</div>
+      <div v-for="w in srWarnings" :key="w" class="banner banner-warn"
+           style="margin-top:8px">{{ w }}</div>
+
+      <div class="note-quote" style="margin-top:10px">
+        · 比對是**字串完全相等**，不是前綴 —— <span class="mono">customer/index</span>
+          不會涵蓋 <span class="mono">customer/indexExtra</span>。<br>
+        · 移除一條路由就是製造盲區：R05 與期間掃描同時停止看它。每次改動都必填
+          理由、寫入操作稽核、發 Slack ops 訊息，已停用的條數也會顯示在資安總覽的
+          橫幅上。<br>
+        · 不能清空。空清單不會報錯，只會讓 R05 靜靜不再命中任何東西 ——
+          要停止那條規則請到它的詳細頁停用規則本身。
+      </div>
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
