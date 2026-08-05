@@ -242,7 +242,7 @@ note: |
 - [ ] **Step 6: 跑相關的既有測試**
 
 ```bash
-uv run pytest tests/test_rules_loader.py tests/test_event_drilldown.py tests/test_masking_audit.py -q
+uv run pytest tests/test_api_smoke.py tests/test_event_drilldown.py tests/test_masking_audit.py -q
 ```
 
 Expected：全部 PASS（`entity` 沒變，所以 drilldown 與遮罩都不受影響）。
@@ -510,7 +510,7 @@ Expected：四個測試全部 PASS。
 - [ ] **Step 8: 跑全部規則相關測試**
 
 ```bash
-uv run pytest tests/test_api_smoke.py tests/test_rule_overrides.py tests/test_rules_loader.py tests/test_event_drilldown.py tests/test_trend_buckets.py -q
+uv run pytest tests/test_api_smoke.py tests/test_rule_overrides.py tests/test_event_drilldown.py tests/test_trend_buckets.py -q
 ```
 
 Expected：全部 PASS。`test_event_drilldown.py` 會驗證 R15 的 `src` 對得到 `source_ip` 篩選（`_FILTER_BY_FP` 已支援，不用改）。
@@ -797,9 +797,13 @@ _SELECT = ", ".join(_COLUMNS)
 
 
 def active() -> list[str]:
-    """生效中的路由，已排序。這是兩支 SQL 實際吃到的清單。"""
+    """生效中的路由，已排序。這是兩支 SQL 實際吃到的清單。
+
+    只選 `route`：這裡不需要其他欄位，而 `_SELECT` 是給 `all_rows()` / `get()`
+    那種要回整列的呼叫端用的。排序讓清單顯示與 SQL 參數都穩定。
+    """
     return [r["route"] for r in db.rows(
-        f"SELECT {_SELECT} FROM sensitive_routes WHERE status = ? ORDER BY route",
+        "SELECT route FROM sensitive_routes WHERE status = ? ORDER BY route",
         (STATUS_ACTIVE,))]
 
 
@@ -948,19 +952,35 @@ def test_sweep_build_params_supplies_the_live_list():
     assert params["sensitive_routes"] == sr.active()
 
 
-def test_p03_is_skipped_when_the_list_is_empty(monkeypatch):
-    """空清單要跳過 P03 並標 blocking，不是靜靜跑一個永不命中的查詢。
+def test_p03_declares_that_it_needs_the_route_list():
+    """P03 要標記 needs_sensitive_routes，否則 run_probes 不知道要跳過它。"""
+    from console.sweep.probes import probes
+    p03 = next(p for p in probes() if p.id == "P03")
+    assert p03.needs_sensitive_routes is True
+
+
+def test_limits_reports_blocking_when_the_list_is_empty(monkeypatch):
+    """空清單要在「資料限制」以 blocking 明說沒有檢查。
 
     實測 ClickHouse 的 `IN []` **不報錯、回 0 筆** —— 那與「這段期間沒有敏感
     路由存取」在畫面上一模一樣，而後者是結論、前者是「我們沒在看」。
+    把「沒有資料」說成「沒有發生」是這個專案一再警告的錯誤。
+
+    直接驗 `limits.collect()` 而不是跑一整趟 `run_probes()`：後者會執行全部
+    探針（實測單次含 API 探針約 30 秒），而要驗的是降級文案本身。
     """
-    from console.sweep import probes as probes_mod
-    monkeypatch.setattr(probes_mod.exprs, "sensitive_routes", lambda: [])
-    from console.sweep import run as run_mod
-    monkeypatch.setattr(run_mod.exprs, "sensitive_routes", lambda: [])
-    p03 = next(p for p in probes_mod.probes() if p.id == "P03")
-    assert p03.needs_sensitive_routes is True, (
-        "P03 要標記 needs_sensitive_routes，否則 run_probes 不知道要跳過它")
+    from console.core import timewin
+    from console.sweep import limits, run
+    monkeypatch.setattr(limits.exprs, "sensitive_routes", lambda: [])
+    empty_run = run.ProbeRun(hits=(), timings_ms={}, failures={},
+                             skipped=("P03",), params={})
+    items = limits.collect(timewin.parse("2026-08-04 00:00:00"),
+                           timewin.parse("2026-08-05 00:00:00"), empty_run)
+    hit = [i for i in items if i.key == "sensitive_routes_empty"]
+    assert hit, "空清單沒有產生限制項目 —— 那等於靜靜回報「沒有異常」"
+    assert hit[0].level == "blocking", (
+        f"空清單的限制等級是 {hit[0].level!r}，必須是 blocking")
+    assert "沒有執行" in hit[0].detail
 ```
 
 - [ ] **Step 2: 跑測試，確認它失敗**
@@ -1398,7 +1418,7 @@ Expected：印出 7 條路由，含 `customer/index`。
 - [ ] **Step 9: 跑測試，確認它通過**
 
 ```bash
-uv run pytest tests/test_sensitive_routes_consistency.py tests/test_sensitive_routes_store.py tests/test_rules_loader.py -v
+uv run pytest tests/test_sensitive_routes_consistency.py tests/test_sensitive_routes_store.py tests/test_api_smoke.py -v
 ```
 
 Expected：全部 PASS。
@@ -1586,7 +1606,9 @@ def test_cannot_disable_the_last_active_route(client):
 
 
 def test_delete_a_missing_route_is_404(client):
-    r = client.request("DELETE", "/api/sensitive-routes/nope_test%2Fnope",
+    # 路由參數是 `{route:path}`，所以斜線直接寫、不要用 %2F ——
+    # 編碼的斜線在不同的 ASGI 層有不同的解碼時機，那會變成一個脆弱的測試。
+    r = client.request("DELETE", "/api/sensitive-routes/nope_test/nope",
                        json={"reason": "測試"})
     assert r.status_code == 404
 ```
@@ -2039,6 +2061,14 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
       }
       this.srBusy = false;
     },
+    // 恢復一條已停用的路由。走同一個 POST 端點（它會 reactivate），
+    // 但理由是必填的 —— 恢復監測也是一次設定變更，要留痕。
+    async addRoute2(route) {
+      const reason = window.prompt(`恢復 ${route} 的理由（必填）`);
+      if (!reason || !reason.trim()) return;
+      this.srDraft = { route, reason: reason.trim() };
+      await this.addRoute();
+    },
     async removeRoute(route) {
       const reason = window.prompt(
         `移除 ${route} 的理由（必填）\n\n` +
@@ -2121,7 +2151,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
         <span v-for="r in srDisabled" :key="r.route" style="margin-right:8px">
           <span class="mono">{{ r.route }}</span>
           （{{ r.removed_by }} 於 {{ r.removed_at }}）
-          <a @click="removeRoute(r.route)" v-if="false"></a>
+          <a @click="addRoute2(r.route)">恢復</a>
         </span>
       </div>
 
