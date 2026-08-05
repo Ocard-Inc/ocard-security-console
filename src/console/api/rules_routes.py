@@ -421,14 +421,17 @@ def remove_sensitive_route(route: str, payload: dict = Body(default={}),
                                    {"reason": "移除理由"})["reason"]
     route = validate.route2(route)
 
-    existing = sensitive_routes.get(route)
-    if existing is None:
-        raise HTTPException(404, f"清單裡沒有 {route}")
-    if existing["status"] != sensitive_routes.STATUS_ACTIVE:
-        raise HTTPException(409, f"{route} 已經是停用狀態")
-
+    # `before` 只給稽核訊息顯示用（可能因併發而稍微過期），實際的「不能清空」
+    # 不變量由 `sensitive_routes.disable()` 內的單顆 UPDATE 原子性地保證 ——
+    # 這裡**不可以**先讀 `active_count()` 再另外判斷要不要呼叫 disable()，
+    # 那正是這個檢查曾經有過的 race（見 disable() 的 docstring）。
     before = sensitive_routes.active_count()
-    if before <= 1:
+    outcome = sensitive_routes.disable(route, who=user.email)
+    if outcome == sensitive_routes.DISABLE_NOT_FOUND:
+        raise HTTPException(404, f"清單裡沒有 {route}")
+    if outcome == sensitive_routes.DISABLE_ALREADY_DISABLED:
+        raise HTTPException(409, f"{route} 已經是停用狀態")
+    if outcome == sensitive_routes.DISABLE_LAST_ACTIVE:
         # 空清單在 ClickHouse 是 `IN ()` —— 實測不報錯、靜靜回 0 筆，
         # 也就是 R05 沒有命中與 R05 沒有在看長得一模一樣。
         raise HTTPException(
@@ -437,8 +440,7 @@ def remove_sensitive_route(route: str, payload: dict = Body(default={}),
                  "而畫面上規則仍顯示啟用中。要停止這條規則請**停用規則本身** —— "
                  "那會出現在資安總覽的「目前有多少監測被關閉」橫幅上，"
                  "一份空清單不會。")
-    if not sensitive_routes.disable(route, who=user.email):
-        raise HTTPException(409, f"{route} 目前不是生效中")
+    assert outcome == sensitive_routes.DISABLE_OK, f"未知的 disable() 結果：{outcome!r}"
     after = sensitive_routes.active_count()
 
     target = f"{route}（生效中 {before} → {after} 條）"

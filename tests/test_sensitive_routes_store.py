@@ -91,7 +91,7 @@ def test_add_then_disable_then_reactivate():
     try:
         assert sr.add(route, who="a@olis.com.tw", reason="測試") == "created"
         assert route in sr.active()
-        assert sr.disable(route, who="b@olis.com.tw") is True
+        assert sr.disable(route, who="b@olis.com.tw") == sr.DISABLE_OK
         assert route not in sr.active()
         assert sr.add(route, who="c@olis.com.tw",
                       reason="測試重啟") == "reactivated"
@@ -104,8 +104,41 @@ def test_add_then_disable_then_reactivate():
             conn.execute("DELETE FROM sensitive_routes WHERE route = ?", (route,))
 
 
-def test_disable_a_route_that_is_not_there_returns_false():
-    assert sr.disable("nope_test/nope", who="a@olis.com.tw") is False
+def test_disable_a_route_that_is_not_there_returns_not_found():
+    assert sr.disable("nope_test/nope", who="a@olis.com.tw") == sr.DISABLE_NOT_FOUND
+
+
+def test_disable_refuses_the_last_active_route_and_leaves_it_untouched():
+    """`disable()` 的「還有沒有別的生效中路由」與「真的執行停用」必須是同一顆
+    UPDATE，不是「呼叫端先讀 active_count() 再判斷」。
+
+    後者在兩個併發呼叫打**不同**路由時會被繞過（兩者都在檢查時讀到同一個
+    「還有 2 條」，都通過、都真的停用，清單被清空）——這是 2026-08 review
+    抓到的 race。這裡不試著用真的執行緒重現那個時序（不確定性太高，monkeypatch
+    也騙不出真正的 SQLite 寫入鎖行為），而是直接驗證這個函式本身要守住的
+    不變量：只剩一條生效中的路由時，直接呼叫 store 層的 `disable()` 也必須
+    拒絕，而且完全不動那一列（不只 status 不變，`removed_by`/`removed_at`
+    也不能被寫入——半途寫壞比什麼都沒做更難察覺）。
+    """
+    active = sr.active()
+    assert len(active) > 1, "前提：至少兩條，否則這個測試會真的清空清單"
+    originals = {route: sr.get(route) for route in active}
+    disabled: list[str] = []
+    try:
+        for route in active[:-1]:
+            outcome = sr.disable(route, who="test@olis.com.tw")
+            assert outcome == sr.DISABLE_OK, outcome
+            disabled.append(route)
+        last = active[-1]
+        before_row = sr.get(last)
+        outcome = sr.disable(last, who="test@olis.com.tw")
+        assert outcome == sr.DISABLE_LAST_ACTIVE
+        after_row = sr.get(last)
+        assert after_row == before_row, "拒絕時那一列必須完全沒被動到"
+        assert sr.active() == [last]
+    finally:
+        for route in disabled:
+            _restore_row(originals[route])
 
 
 def test_active_is_sorted_and_only_active():

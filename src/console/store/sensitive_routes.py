@@ -98,16 +98,56 @@ def add(route: str, *, who: str, reason: str) -> str:
     return "reactivated"
 
 
-def disable(route: str, *, who: str) -> bool:
-    """停用（不刪列）。回傳是否真的改到一列。
+# disable() 的判定結果。刻意是字串常數（同 add() 的 "created"/"reactivated"
+# 慣例），不是 bool ——「拒絕」有兩種完全不同的原因（本來就沒生效 vs 是最後一條），
+# 呼叫端要能分別顯示 404 / 409(已停用) / 409(最後一條) 三種不同訊息，
+# 一個 bool 只能分兩類。
+DISABLE_OK = "disabled"
+DISABLE_NOT_FOUND = "not_found"
+DISABLE_ALREADY_DISABLED = "already_disabled"
+DISABLE_LAST_ACTIVE = "last_active"
 
-    **呼叫端必須先擋「這是最後一條」** —— 空清單在 ClickHouse 是
-    `IN ()` → 實測不報錯、靜靜回 0 筆，也就是 R05 靜靜失效。
-    擋在 API 層（`active_count()`），因為那裡才回得了 409。
+
+def disable(route: str, *, who: str) -> str:
+    """停用（不刪列）。回傳上面四個常數之一。
+
+    **「還有沒有別的生效中路由」與「真的執行停用」是同一顆 UPDATE 的 WHERE
+    子句，不是「呼叫端先讀 active_count() 判斷、再呼叫這裡執行」。**
+    2026-08 review 抓到的 race：早期版本把這兩件事拆成兩次獨立的 DB 往返，
+    中間沒有任何鎖 —— 兩個併發的 DELETE 打**不同**路由，可能都在各自的
+    `active_count()` 讀到同一個「還有 2 條」、都通過「>1」檢查、都真的停用，
+    清單被清空。而這正是這個檢查存在的理由：空清單在 ClickHouse 是 `IN ()`，
+    不報錯、靜靜回 0 筆 —— R05 靜靜不再命中任何東西（畫面上仍顯示啟用中），
+    掃描的 P02/P03 也靜靜被跳過。
+
+    現在用一顆 UPDATE 同時做兩件事：
+
+    ```sql
+    UPDATE sensitive_routes SET status = ?, removed_by = ?, removed_at = ?
+     WHERE route = ? AND status = ?
+       AND (SELECT COUNT(*) FROM sensitive_routes WHERE status = ?) > 1
+    ```
+
+    這顆語句本身就會啟動寫入交易並取得 SQLite 的寫入鎖，所以兩個併發呼叫在
+    這裡必然序列化 —— 後執行的那個看到的 `(SELECT COUNT(*) ...)` 一定是前一個
+    已經 commit 之後的真實計數，不會有「兩者都看到還有 2 條」的情況。
+    `rowcount == 0` 時**不代表發生了併發衝突**，可能只是路由不存在或早就停用，
+    所以另外用一次 `SELECT` 判斷原因給呼叫端顯示正確的訊息 —— 那次 `SELECT`
+    純粹是診斷用（決定 404 還是哪一種 409），不影響上面 UPDATE 已經保證好的
+    不變量本身。
     """
     now = timewin.fmt(timewin.taipei_now())
     with db.tx() as conn:
-        return conn.execute(
+        cur = conn.execute(
             "UPDATE sensitive_routes SET status = ?, removed_by = ?, removed_at = ?"
-            " WHERE route = ? AND status = ?",
-            (STATUS_DISABLED, who, now, route, STATUS_ACTIVE)).rowcount > 0
+            " WHERE route = ? AND status = ?"
+            " AND (SELECT COUNT(*) FROM sensitive_routes WHERE status = ?) > 1",
+            (STATUS_DISABLED, who, now, route, STATUS_ACTIVE, STATUS_ACTIVE))
+        if cur.rowcount > 0:
+            return DISABLE_OK
+        row = conn.execute(
+            "SELECT status FROM sensitive_routes WHERE route = ?", (route,)
+        ).fetchone()
+    if row is None:
+        return DISABLE_NOT_FOUND
+    return DISABLE_ALREADY_DISABLED if row["status"] != STATUS_ACTIVE else DISABLE_LAST_ACTIVE
