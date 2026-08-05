@@ -120,3 +120,49 @@ def _try(conn: sqlite3.Connection, sql: str) -> bool:
             logger.debug("遷移已由其他連線完成：%s（%s）", sql, exc)
             return False
         raise
+
+
+# 播種用的常數。`add()` 的呼叫端要能分辨「這是種子」與「這是人加的」。
+SEED_BY = "seed"
+SEED_REASON = "settings.yaml 初始清單"
+
+
+def seed_after_schema(conn: sqlite3.Connection) -> list[str]:
+    """把 settings.yaml 的敏感路由補進 `sensitive_routes`。
+
+    **必須在 `db.executescript(_SCHEMA)` 之後呼叫，不可以放進 `apply()`。**
+    表是由 `_SCHEMA` 建立的，而 `apply()` 依規定跑在 `_SCHEMA` **之前**
+    （`_SCHEMA` 的 CREATE INDEX 引用遷移後的欄位名，反過來會在舊 DB 上
+    `no such column`，而那個例外發生在 `get_conn()` 裡 → 走到 DB 的請求全部
+    500、排程器拿不到連線，而 /healthz 不碰 DB 照樣回 200，部署看起來成功）。
+    放進 `apply()` 的話它會對一張還不存在的表下 INSERT。
+
+    **`INSERT OR IGNORE` 刻意不看 `status`。** 人工停用的路由不可以被下一次
+    啟動悄悄復活 —— 同 `intel/refresh.seed_allowlist()` 的去重檢查。復活一條
+    路由會讓 R05 與期間掃描重新看它，而使用者以為自己已經關掉了。
+
+    與 `apply()` 一樣全程 idempotent：連線是 thread-local，每條 thread 與每個
+    CLI process 都會各跑一次。
+    """
+    # 這裡才 import：migrate 由 db.get_conn() 呼叫，而 config/timewin 不 import
+    # store，所以沒有循環。放在模組頂端也可以，放在函式內是為了讓「migrate 只
+    # 依賴 sqlite3」這個既有性質在讀檔時仍然明顯。
+    from console.core import timewin
+    from console.core.config import settings
+
+    routes = list(settings().get("sensitive_routes") or [])
+    if not routes:
+        return []
+    now = timewin.fmt(timewin.taipei_now())
+    before = conn.execute("SELECT count(*) FROM sensitive_routes").fetchone()[0]
+    conn.executemany(
+        "INSERT OR IGNORE INTO sensitive_routes"
+        " (route, status, added_by, added_at, reason)"
+        " VALUES (?, '生效中', ?, ?, ?)",
+        [(r, SEED_BY, now, SEED_REASON) for r in routes])
+    after = conn.execute("SELECT count(*) FROM sensitive_routes").fetchone()[0]
+    if after > before:
+        done = [f"sensitive_routes 播種 {after - before} 條"]
+        logger.info("SQLite 播種：%s", "；".join(done))
+        return done
+    return []
