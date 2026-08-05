@@ -707,6 +707,10 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 關掉通知**一定要看得見**，兩個痕跡不可以拿掉（決定是「只警告、不擋啟動」——
 設定問題不該讓整個監測停掉）：`notify.log_startup_status()` 在啟動時記 WARNING、
 `notify.summary()` 讓資安總覽的「目前有部分監測被我們自己關閉」橫幅固定顯示。
+**其中只有橫幅在正式環境看得見** —— `logging_setup` 只掛 `RotatingFileHandler`，
+應用 log 全部進 `/app/state/logs/console.log`，不進 stdout 也就不進 Cloud Logging
+（要 SSH + `docker exec` 讀檔案，指令在 `docs/deploy-gcp.md`）。所以驗收條件是
+橫幅，不是 log；新增「只記 log」的痕跡時要記得它在雲端等於沒有人會看到。
 兩者都說出**是哪一個原因**（`SlackSetting.reason`：明確關閉／值無法辨識／
 本機推導）—— 只說「未啟用」的話，使用者不知道要去改哪裡。
 `_suppression_summary()` 的 `slack` 鍵**連規則檔載入失敗的降級分支也要帶**：
