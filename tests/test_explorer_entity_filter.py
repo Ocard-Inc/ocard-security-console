@@ -70,7 +70,9 @@ def test_filter_applies_to_every_analysis(client, analysis):
     r = _post(client, analysis=analysis, actor=ACCOUNT)
     assert r.status_code == 200, r.text
     rows = r.json()["rows"]
-    assert rows, f"{analysis} 在篩選後不該是空的"
+    # 趨勢的 rows 是**零填**的（見 explorer.trend），一筆都沒命中時也是一整排 0 ——
+    # 對它斷言 `rows` 非空等於什麼都沒驗。有沒有命中一律問 total。
+    assert r.json()["total"] > 0, f"{analysis} 在篩選後不該是空的"
     if analysis == "actor":
         assert [x["name"] for x in rows] == [ACCOUNT], "actor 排名應只剩這個帳號"
 
@@ -213,7 +215,9 @@ def test_api_source_ip_empty_result_still_explains_itself(client):
         "source": "api", "analysis": "trend", "source_ip": _DEV_IP, **_RECENT_HOUR})
     assert r.status_code == 200, r.text
     reason = r.json().get("empty_reason")
-    if r.json().get("rows"):
+    # 判斷「這次有沒有命中」一律看 total —— 趨勢的 rows 是零填的，永遠非空，
+    # 用 rows 判斷的話這條測試會每次都在這裡提早 return（靜靜地什麼都沒驗）。
+    if r.json()["total"]:
         return                                  # 這個 IP 剛好有流量，換測不了
     assert reason, "API Log 的 0 筆沒有任何說明（原本的故障）"
     # 三種都可以接受，唯一不可接受的是 None ——

@@ -110,8 +110,19 @@ export default {
     clampedHours() {
       return Math.round((this.origin?.window?.max_minutes ?? 0) / 60);
     },
+    // 判斷依據是 total 而不是 rows.length：rows 是**零填**的（見 explorer.trend），
+    // 一筆都沒命中時也是一整排 0。那時畫一條貼在 0 上的線沒有任何資訊，還會被讀成
+    // 「有資料，只是量很低」—— 該顯示的是「沒有資料」與旁邊那條 empty_reason 說明。
+    //
+    // **`total` 不存在時退回看 rows，不可以當成 0。** 這一頁是 `no-store`、改了
+    // 重新整理就生效，而 Python 要重啟（`scripts/restart_server.ps1`，沒有 --reload）
+    // —— 所以「前端新、後端舊」是每次改動的必經中間狀態。寫成 `total ?? 0` 的實測
+    // 結果是**每一個查詢都顯示「此時間範圍沒有資料」**，看起來像資料庫掛了或篩選壞了，
+    // 完全看不出是少一個欄位。少一個新欄位只該讓新功能降級，不該讓舊功能消失。
     hasTrend() {
-      return this.f.analysis === 'trend' && !!this.result?.rows?.length;
+      if (this.f.analysis !== 'trend') return false;
+      const total = this.result?.total;
+      return total == null ? !!this.result?.rows?.length : total > 0;
     },
     trendSeries() {
       if (!this.hasTrend) return [];
@@ -501,6 +512,10 @@ export default {
           <ApexChart :series="trendSeries" :options="trendOptions"
                      :signature="trendSignature" :height="240" :reloading="reloading"
                      aria-label="Request 趨勢折線圖，詳細數值見下方表格" />
+          <!-- 右界被資料落地時間截短時要說出來，否則使用者以為自己選的區間畫完了 -->
+          <div v-if="result.window_note" class="muted" style="font-size:12px;margin-top:8px">
+            {{ result.window_note }}
+          </div>
           <table style="font-size:12.5px;margin-top:12px">
             <thead><tr><th>時間桶</th><th class="right">請求量</th></tr></thead>
             <tbody><tr v-for="r in result.rows" :key="r.bucket">
