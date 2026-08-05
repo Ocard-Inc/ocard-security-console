@@ -20,7 +20,13 @@ from console.queries import exprs, trends
 
 # "auto" 依查詢視窗長度走 trends.BUCKET_LADDER；其餘為手動指定。
 # Explorer 是臨時調查工具，手動選項全部保留 —— 分析師要能自己決定顆粒度。
+# 每個值都必須整除 1440，否則與 ClickHouse 的 toStartOfInterval 格線錯位
+# （見 timewin.align_bucket；trend() 的零填靠桶起點當 key 查表，錯一格全部落空）。
 BUCKETS = {"1m": 1, "5m": 5, "10m": 10, "1h": 60, "1d": 1440}
+
+# `trend()` 零填後的桶數上限。手動選 1 分鐘分桶配上區間上限（180 天）是 259,200
+# 個點，而零填讓這件事不再取決於資料多寡 —— 稀疏對象原本回 3 列，之後會回 25 萬列。
+MAX_TREND_BUCKETS = 20_000
 
 # 分組維度 → (SQL 運算式, 遮罩種類, 顯示名稱)
 GROUP_BY = {
@@ -233,25 +239,93 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
 
 
 def trend(f: ExplorerFilter, bucket: str = "auto") -> dict:
+    """指定區間的逐桶請求量，**沒有命中的桶一律補 0**（同 `trends.request_trend`）。
+
+    零填不是美化。原本直接把 ClickHouse 的 `GROUP BY b` 丟出來，沒命中的桶根本
+    不存在，於是圖只畫在「有資料的範圍」上：實測指定 08-01 00:00 ~ 08-05 08:00
+    查一個只在 08-04 活動的來源，104 小時只回 9 個點 ——
+
+    - 左端 83 小時的 0 消失，圖從 08-04 11:00 開始，看不出那段時間是 0；
+    - **中間的 0 也被抽掉並接起來**：13:00 的下一點直接是 17:00，而 x 軸是
+      category（等距，見 CLAUDE.md「圖表」一節），14–16 點的空白因此變成一條
+      往上爬的線 —— 不是缺一格，是時間軸被壓縮成假的形狀。
+
+    查詢的邊界仍是使用者給的原值（**不像 `trends.resolve_window` 那樣把區間放寬到
+    格線**）：Explorer 的趨勢、排名、明細讀同一個篩選，數字必須對得起來，
+    放寬右界會讓趨勢的總和大於明細的 total。代價是首尾桶可能只被覆蓋一部分
+    （start 落在格線之間時），那是誠實的：那個桶裡就只有這些資料。
+    """
     validate(f)
+    start, end = timewin.parse(f.start), timewin.parse(f.end)
     if bucket == "auto":
         # 依實際視窗長度挑，跟總覽用同一個階梯
-        span = int((timewin.parse(f.end) - timewin.parse(f.start)).total_seconds() // 60)
+        span = int((end - start).total_seconds() // 60)
         minutes = trends.bucket_for(max(span, 1))
     else:
         minutes = BUCKETS.get(bucket)
         if minutes is None:
             raise FilterError(f"未知分桶 {bucket!r}，允許 {['auto', *BUCKETS]}")
+
+    # 左界：對齊到 ClickHouse `toStartOfInterval` 的同一條格線。**必須是
+    # align_bucket 而不是 align_tick** —— 後者只對齊「分鐘」欄位，1d 分桶會停在
+    # 當前小時，於是 cursor 產生的每個 key 都與 ClickHouse 回傳的桶起點差一格，
+    # 查表全部落空、整張圖靜靜變成一條 0（見 timewin.align_bucket 的說明）。
+    first = timewin.align_bucket(start, minutes)
+    # 右界：時間過濾是 [start, end)，所以最後一個桶是 end 前一秒所屬的那個。
+    # 而且不可超過資料實際落地的時間 —— 查「今天」時 end 是 23:59:59，
+    # 一路填到 23:00 會畫出一段「還沒發生」的假 0，而它與「這段時間沒有活動」
+    # 在畫面上長得一模一樣（同 trends.resolve_window）。截短了就要說出來。
+    landed = timewin.effective_now()
+    wanted_last = timewin.align_bucket(end - timedelta(seconds=1), minutes)
+    last = timewin.align_bucket(max(min(end - timedelta(seconds=1), landed), start),
+                                minutes)
+
+    # 零填之後桶數只由 (區間 ÷ 分桶) 決定，不再由資料多寡決定：180 天（區間上限）
+    # 配 1 分鐘分桶是 259,200 個點 —— 一份沒人畫得出來的 JSON。明確拒絕並說怎麼改。
+    # 上限用**使用者要求的**右界算，不是截短後的：會不會被拒絕不該取決於現在幾點，
+    # 否則同一個查詢今天過、明天不過。
+    count = int((wanted_last - first).total_seconds() // 60) // minutes + 1
+    if count > MAX_TREND_BUCKETS:
+        raise FilterError(
+            f"這個區間用 {minutes} 分鐘分桶會產生 {count:,} 個點（上限 "
+            f"{MAX_TREND_BUCKETS:,}）。請改用較大的分桶或縮短時間範圍。")
+
     where, params = where_clause(f)
     df = query(
         f"SELECT toStartOfInterval(create_time, INTERVAL {minutes} MINUTE) AS b,"
         f" count() AS cnt {where} GROUP BY b ORDER BY b", params)
+    hits = {timewin.fmt(r["b"].to_pydatetime()): int(r["cnt"]) for _, r in df.iterrows()}
+
+    # 資料比 lag_buffer 早落地時（時鐘偏差、補資料）會回到 `last` 之後的桶。
+    # 那些命中會算進 total 卻畫不出來 —— 圖的總和與 total 不一致，而且不會報錯。
+    # 所以以實際回來的最後一個桶為準往後延（永遠不會超過 wanted_last：
+    # 桶起點來自 < end 的記錄）。
+    if hits:
+        last = max(last, timewin.parse(max(hits)))
+    note = None
+    if last < wanted_last:
+        note = (f"區間右界超過資料落地時間（{timewin.fmt(landed)}），"
+                f"圖只畫到 {timewin.fmt(last)} —— 尚未落地的區段不補 0，"
+                f"否則看起來會像「那段時間沒有活動」。")
+
+    rows, cursor = [], first
+    step = timedelta(minutes=minutes)
+    while cursor <= last:
+        label = timewin.fmt(cursor)
+        rows.append({"bucket": label, "count": hits.get(label, 0)})
+        cursor += step
     return {
         "bucket": bucket,
         # 前端要顯示「實際用了幾分鐘的桶」，auto 時 bucket 本身看不出來
         "bucket_minutes": minutes,
-        "rows": [{"bucket": timewin.fmt(r["b"].to_pydatetime()), "count": int(r["cnt"])}
-                 for _, r in df.iterrows()],
+        # 實際畫出來的區間（可能因為資料落地而比 f.end 短），與 window_note 成對
+        "start": timewin.fmt(first),
+        "end": timewin.fmt(last + step),
+        "window_note": note,
+        # `rows` 零填之後永遠非空，所以「有沒有命中」只能問 total ——
+        # `api/routes.py` 的 empty_reason 判斷讀的就是這個欄位。
+        "total": sum(hits.values()),
+        "rows": rows,
     }
 
 

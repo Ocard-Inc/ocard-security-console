@@ -155,6 +155,48 @@ def from_filters(source: str, filters: dict) -> EntityRef | None:
     return EntityRef(source=source, table=src_cfg["table"], dims=tuple(dims)) if dims else None
 
 
+def unresolved_reason(ref: EntityRef, start: datetime, end: datetime,
+                      expected: float | None) -> str | None:
+    """對象條件比對不到事件所宣稱的記錄時回一段說明；正常回 None。
+
+    ## 為什麼需要這個執行期檢查
+
+    本模組的模組說明假設「事件的 entity 值就是 `explorer.entity_expr()` 算出來的，
+    所以拿它回來比對**一定命中**」。那個假設對規則 SQL 裡的**字面常數**不成立：
+    R06 輸出 `'Boss_initial/auth_v2' AS endpoint`，而 admin 的 endpoint 母體鍵是
+    `concat(function, '/', action)`（值有三段），完全相等比對永遠 0 筆。
+    2026-08-05 由 EVT-0052 暴露，而它已經存在於三塊面板裡。
+
+    **`own < expected` 是矛盾**：`own` 數的是該對象在母體單位下的**全部**記錄，
+    而規則指標最多是它的子集（`peers()` 的 `comparable` 處理的正是
+    `own > expected` 那一半 —— R07A 只算登入失敗、R09 只算錯誤回應）。
+    所以這個檢查不必知道任何規則的細節，也不需要為 R06 寫特例。
+
+    ## 為什麼擋在這裡，而不是改規則的 entity 值
+
+    entity 值同時是**事件去重鍵**（`rules/engine` 的 `entity_key`）與 drilldown
+    的篩選值。把 R06 的常數改成 `Boss_initial/auth_v2/login_success` 會讓進行中的
+    事件換一個去重鍵、下一個 tick 開一筆新的 EVT；而 Explorer 的 `function` 篩選
+    是前綴比對，`Boss_initial/auth_v2` 在那裡**查得到**，drilldown 本身沒有壞。
+    真正壞掉的只有「用母體分組鍵做完全相等比對」這件事，所以擋在這裡。
+    """
+    if expected is None:
+        return None
+    params = {"start": timewin.fmt(start), "end": timewin.fmt(end)}
+    own = int(query(f"SELECT count() AS c FROM {ref.table}"
+                    f" WHERE {exprs.time_filter()} AND {ref.where}",
+                    {**params, **ref.params}).iloc[0]["c"] or 0)
+    if own >= float(expected) - 1:
+        return None
+    return (
+        f"這個事件的對象（{ref.label}）在 {ref.table} 上只比對到 {own:,} 筆，"
+        f"而事件指標是 {float(expected):,.0f} —— 總數不可能小於它的子集，"
+        f"所以是這條規則的對象值與母體的分組運算式不成對"
+        f"（規則的 entity 是 SQL 裡的字面常數時會這樣）。"
+        f"母體排名、24 小時作息與端點集中度都會是錯的，因此整塊不顯示 —— "
+        f"這一頁寧可少一塊，也不要給三個看起來合理的錯答案。")
+
+
 def _grouped(ref: EntityRef) -> tuple[str, str]:
     """(分組運算式的 SELECT 片段, GROUP BY 片段)，維度與對象完全相同。
 
@@ -228,11 +270,24 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
         })
 
     comparable = expected is None or abs(own - float(expected)) < 1
-    note = None if comparable else (
-        f"這個排名數的是該對象在此區間的全部記錄（{own:,} 筆），"
-        f"與事件指標（{float(expected):,.0f}）不同 —— 這條規則的指標另外帶了條件"
-        f"（例如只算登入失敗、只算錯誤回應）。請把下面的排名讀成"
-        f"「這個對象的總活動量在同儕中的位置」，不是「規則指標的排名」。")
+    if comparable:
+        note = None
+    elif own < float(expected):
+        # **方向很重要。** own 少於事件指標是矛盾（總數不可能小於子集），原因是
+        # 對象值與母體分組運算式不成對，不是「規則指標另外帶了條件」——
+        # 用下面那段話解釋這一半，等於給出一個看起來合理的錯誤診斷。
+        # 正常路徑上 `unresolved_reason()` 已在端點層把整塊面板擋掉；
+        # 這裡是給直接呼叫 `peers()` 的人的安全網。
+        note = (
+            f"對象條件只比對到 {own:,} 筆，而事件指標是 {float(expected):,.0f} —— "
+            f"總數不可能小於它的子集，所以是對象值與母體的分組運算式不成對"
+            f"（見 `unresolved_reason()`）。下面的排名與分位數都不可信。")
+    else:
+        note = (
+            f"這個排名數的是該對象在此區間的全部記錄（{own:,} 筆），"
+            f"與事件指標（{float(expected):,.0f}）不同 —— 這條規則的指標另外帶了條件"
+            f"（例如只算登入失敗、只算錯誤回應）。請把下面的排名讀成"
+            f"「這個對象的總活動量在同儕中的位置」，不是「規則指標的排名」。")
 
     return {
         "window_start": params["start"], "window_end": params["end"],

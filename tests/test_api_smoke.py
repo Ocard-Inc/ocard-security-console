@@ -181,29 +181,73 @@ def test_events_unjudged_default_off(client):
 
 # ── 判定篩選 ──────────────────────────────────────────────────────────────
 
-def test_events_judgement_filter_matches_breakdown(client):
-    """篩出來的筆數必須等於分布裡的數字。
+def test_judgement_tabs_cover_every_judgement(client):
+    """每一個判定值都必須屬於某一格頁籤。
 
-    兩者對不上就是「畫面說有 4 筆誤報，點進去只有 1 筆」，而那個症狀會被讀成
-    資料在跳動。前端的下拉選項也只能來自這裡的 judgements / unjudged_label ——
-    自己列一份的話，差一個字就是一個永遠篩不到東西的選項。
+    清單頁只剩頁籤這一個入口，所以沒被指派到頁籤的判定值，它的事件會從畫面上
+    **完全消失** —— 而畫面看起來完全正常（其他格都有資料）。新增第六個判定值
+    卻忘了改 JUDGEMENT_TABS 時，這一條是唯一會出聲的地方。
+    """
+    d = client.get("/api/events", params={"hours": 24}).json()
+    tabs = d["judgement_tabs"]
+    keys = [t["key"] for t in tabs]
+    assert len(keys) == len(set(keys)), f"頁籤 key 重複：{keys}"
+    covered = {j for t in tabs for j in t["judgements"]}
+    assert covered == {d["unjudged_label"], *d["judgements"]}, (
+        f"有判定值沒有任何頁籤裝得下：{covered ^ {d['unjudged_label'], *d['judgements']}}")
+    # 恰好一格是「全部」（空清單 = 不加判定條件）。兩格空的話會有兩個一模一樣
+    # 的頁籤，零格則是既有的不分判定入口（總覽 P0 卡片、關鍵字搜尋）沒有落點。
+    assert sum(1 for t in tabs if not t["judgements"]) == 1
+
+
+def test_judgement_tab_count_matches_filter(client):
+    """頁籤上的數字必須等於點進去之後的筆數。
+
+    對不上就是「頁籤寫 4，點進去只有 1」，而那個症狀會被讀成資料在跳動。
+    total 現在是真實計數（不是 len(events)），所以撞到 LIMIT 300 也照樣可比。
     """
     everything = client.get("/api/events", params={"hours": 2160}).json()
-    labels = [everything["unjudged_label"], *everything["judgements"]]
-    assert set(everything["by_judgement"]) == set(labels)
-    assert sum(everything["by_judgement"].values()) == everything["total"]
-    if everything["total"] >= 300:
-        # SELECT 有 LIMIT 300：撞到上限時篩選後的查詢會看到未篩選那 300 列
-        # 之外的資料，兩邊本來就不該相等。
-        pytest.skip("事件數撞到 LIMIT 300，分布與篩選不可比")
-    for label, n in everything["by_judgement"].items():
+    for tab in everything["judgement_tabs"]:
         got = client.get("/api/events",
-                         params={"hours": 2160, "judgement": label}).json()
-        assert got["total"] == n, f"{label}：分布說 {n} 筆，篩選回 {got['total']} 筆"
-        if label == everything["unjudged_label"]:
+                         params={"hours": 2160, "judgement": tab["judgements"]}).json()
+        assert got["total"] == tab["count"], (
+            f"{tab['label']}：頁籤說 {tab['count']} 筆，點進去 {got['total']} 筆")
+        if tab["judgements"] == [everything["unjudged_label"]]:
             assert all(e["judgement"] is None for e in got["events"])
-        else:
-            assert all(e["judgement"] == label for e in got["events"])
+        elif tab["judgements"]:
+            assert all(e["judgement"] in tab["judgements"] for e in got["events"])
+
+
+def test_judgement_tab_counts_ignore_judgement_filter(client):
+    """套不套用判定篩選，五格的數字必須一模一樣。
+
+    頁籤的數字回答的是「同樣的條件下，**別格**還有幾筆」—— 它是使用者在一格
+    看到 0 筆時唯一的線索。若它跟著判定篩選一起縮，每次點進某一格就會看到
+    其餘四格全變 0，等於告訴使用者「別的地方也沒有東西」。
+    """
+    base = client.get("/api/events", params={"hours": 2160}).json()
+    expect = {t["key"]: t["count"] for t in base["judgement_tabs"]}
+    for tab in base["judgement_tabs"]:
+        got = client.get("/api/events",
+                         params={"hours": 2160, "judgement": tab["judgements"]}).json()
+        assert {t["key"]: t["count"] for t in got["judgement_tabs"]} == expect, (
+            f"在「{tab['label']}」這一格，頁籤數字被判定篩選改掉了")
+
+
+def test_events_judgement_accepts_multiple(client):
+    """judgement 可重複 ——「已排除」那格要一次帶三個值。
+
+    只吃單值的話那一格只能靠前端自己合併三次查詢，而筆數與頁籤數字就會來自
+    不同的查詢、不同的時刻。
+    """
+    picked = ["合法整合", "誤報", "證據不足"]
+    got = client.get("/api/events",
+                     params={"hours": 2160, "judgement": picked}).json()
+    assert all(e["judgement"] in picked for e in got["events"])
+    singles = sum(
+        client.get("/api/events", params={"hours": 2160, "judgement": j}).json()["total"]
+        for j in picked)
+    assert got["total"] == singles
 
 
 def test_events_judgement_rejects_unknown(client):
@@ -214,6 +258,77 @@ def test_events_judgement_rejects_unknown(client):
     """
     r = client.get("/api/events", params={"judgement": "誤報x"})
     assert r.status_code == 400
+    # 混在合法值裡送也要炸 —— 靜靜忽略的話回來的筆數會少一塊而沒有人知道
+    r = client.get("/api/events", params={"judgement": ["誤報", "誤報x"]})
+    assert r.status_code == 400
+
+
+def test_events_judgement_rejects_unjudged_mixed_with_others(client):
+    """「待判定」不可與具體判定混用。
+
+    一筆事件不可能同時「還沒有人判定」和「判定是誤報」，混著送的人要的多半是
+    別的東西。靜靜回傳兩者聯集的話，「待判定」那格會突然多出已判定的事件。
+    """
+    r = client.get("/api/events", params={"judgement": ["待判定", "誤報"]})
+    assert r.status_code == 400
+
+
+def test_events_tab_is_shorthand_for_its_judgements(client):
+    """tab=<key> 必須等同於把該格成員一個一個列出來。
+
+    這個簡寫存在的理由是**前端不該知道成員清單**：網址是 `#/events?tab=excluded`，
+    第一次查詢在拿到 judgement_tabs 之前就要送出。兩者不等價的話，貼網址進來
+    與點頁籤進去會是兩個不同的畫面。
+    """
+    for tab in client.get("/api/events", params={"hours": 24}).json()["judgement_tabs"]:
+        by_key = client.get("/api/events",
+                            params={"hours": 2160, "tab": tab["key"]}).json()
+        by_values = client.get(
+            "/api/events",
+            params={"hours": 2160, "judgement": tab["judgements"]}).json()
+        assert by_key["total"] == by_values["total"], tab["key"]
+        assert ([e["evt_no"] for e in by_key["events"]]
+                == [e["evt_no"] for e in by_values["events"]]), tab["key"]
+
+
+def test_events_tab_rejects_unknown_and_mixing(client):
+    """tab 也是封閉集合；與 judgement 同時給不定義誰蓋誰，一律 400。
+
+    靜靜退回預設頁籤的話，使用者拿到的是一個**看起來正常、條件卻不是他以為的
+    那個**的畫面 —— 網址寫 attck，畫面是待判定，而兩者都沒有出聲。
+    """
+    assert client.get("/api/events", params={"tab": "attck"}).status_code == 400
+    assert client.get("/api/events",
+                      params={"tab": "attack", "judgement": "誤報"}).status_code == 400
+    assert client.get("/api/events",
+                      params={"tab": "attack", "unjudged": "true"}).status_code == 400
+
+
+def test_events_rejects_unknown_severity_and_source(client):
+    """嚴重度與資料來源同樣是封閉集合。
+
+    清單頁的條件現在寫在網址裡、使用者改得到。靜靜回 0 筆配上畫面「嚴重度 = P9」
+    讀起來像「這段時間沒有 P9」——「值不存在」與「沒有事件」必須分得開。
+    """
+    assert client.get("/api/events", params={"severity": "P9"}).status_code == 400
+    assert client.get("/api/events", params={"source": "apii"}).status_code == 400
+    # 合法值仍要通過（別把驗證寫成什麼都擋）
+    assert client.get("/api/events", params={"severity": "P0"}).status_code == 200
+    assert client.get("/api/events", params={"source": "api"}).status_code == 200
+
+
+def test_events_total_is_not_capped_by_limit(client):
+    """total 是真實筆數，events 才是被 LIMIT 截斷的那一份。
+
+    兩者混為一談的話，撞到上限時「共 N 筆事件」與四個嚴重度數字會**靜靜少算**，
+    而頁籤數字是真實計數 —— 同一個畫面上兩個數字互相打架。
+    """
+    d = client.get("/api/events", params={"hours": 2160}).json()
+    assert d["shown"] == len(d["events"])
+    assert d["total"] >= d["shown"]
+    assert d["truncated"] is (d["shown"] < d["total"])
+    assert sum(d["by_severity"].values()) == d["total"]
+    assert sum(d["by_status"].values()) == d["total"]
 
 
 # ── 人工結案（已處理完畢）────────────────────────────────────────────────

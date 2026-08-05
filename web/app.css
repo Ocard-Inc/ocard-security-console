@@ -322,6 +322,24 @@ label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; 
 .eppick-hint { padding: 7px 8px; font-size: 11.5px; color: var(--text-2); }
 .eppick-hint.bad { color: var(--danger); }
 
+/* 異常事件的判定頁籤。分流用，不是裝飾 —— 所以每一格都帶筆數，而且筆數要
+   隨其他篩選連動（見 routes._judgement_tabs 的說明）。底線式而非按鈕式：
+   這是「我在哪一堆」的導覽，與旁邊那排篩選下拉是不同層級的東西，長得像按鈕
+   會被當成又一個篩選器。 */
+.jtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.jtab {
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+  padding: 9px 14px; font-size: 13px; color: var(--text-2);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+}
+.jtab:hover { color: var(--text-1); background: var(--line-soft); }
+.jtab.active { color: var(--link); border-bottom-color: var(--link); font-weight: 700; }
+/* 數字對齊比省空間重要：這一排就是拿來比大小的 */
+.jtab-n { font-size: 11.5px; font-variant-numeric: tabular-nums; font-weight: 700; }
+.jtab .jtab-n { color: var(--text-1); }
+/* 0 筆刻意壓灰而不是隱藏 ——「這一格是空的」本身就是要傳達的資訊 */
+.jtab-n.zero { color: var(--text-2); font-weight: 400; }
+
 .skel { background: #EAECF0; border-radius: 10px; animation: skpulse 1.4s infinite; }
 .empty-box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 60px; text-align: center; }
 

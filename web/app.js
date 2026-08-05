@@ -49,14 +49,24 @@ const App = {
   components: { Overview, Events, EventDetail, Explorer, Sweep, Quick, Health,
                 AuditMode, Rules, RuleDetail, Allowlist, AuditLog },
   data: () => ({
-    session: null, page: 'overview', evtNo: null, eventsFilter: null,
+    session: null, page: 'overview', evtNo: null,
+    // 異常事件清單的條件，序列化後的 query 字串（見 pages/events-view.js）。
+    // App **刻意不認識裡面的參數名**，只當它是不透明值：認識了就會有第二份
+    // 字彙，而兩份字彙遲早漂移。
+    //
+    // 它取代了原本的 eventsFilter slot，順帶消滅一個既有 bug：goto() 只在
+    // 「有帶 filter」時寫 eventsFilter、**從來不清空**（explorerFilter 與
+    // allowlistDraft 都清，只有它沒清），所以從總覽點過一次「前往判定」之後，
+    // 那個 {unjudged:true} 會留在 App 裡，之後每一次重新掛載 <Events> 都被
+    // 重新套用一次 —— 使用者看到的是「判定篩選自己跑回來了」。
+    eventsQuery: '',
     ruleId: null,
-    // 「加入 Allowlist」帶過去的預填值。與 eventsFilter / explorerFilter 一樣是
+    // 「加入 Allowlist」帶過去的預填值。與 eventsQuery / explorerFilter 一樣是
     // 專用 slot：goto() 是側邊選單的 handler，共用的話點「規則與 Allowlist」
     // 會靜靜復活上一次的預填表單。
     allowlistDraft: null,
     // 事件詳細頁「在 Log Explorer 查此對象」帶過去的篩選條件（後端推導，
-    // 見 api/drilldown.py）。與 eventsFilter 分開的 slot：goto() 也是側邊選單的
+    // 見 api/drilldown.py）。與 eventsQuery 分開的 slot：goto() 也是側邊選單的
     // handler，共用一個 slot 的話點「Log Explorer」會靜靜復活上一個事件的條件。
     explorerFilter: null,
     autoRefresh: true, fresh: null, timer: null,
@@ -68,6 +78,10 @@ const App = {
     // 跳轉過來之後又更糟：條件與提示條會留在畫面上，點選單也清不掉。
     // 只有非跳轉的路徑會 +1，跳轉本身不動它。
     explorerKey: 0,
+    // 異常事件清單的重建計數。同 explorerKey：狀態活在網址裡，網址真的變了
+    // （手動改、上一頁退到更早的一組條件、從選單重新進來）才重建。
+    // 從詳細頁返回時 query 相同 → 不重建。
+    eventsKey: 0,
     authError: null,   // {code, message, email, hint} — 無權限或 ROS 不可用
   }),
   computed: {
@@ -122,9 +136,16 @@ const App = {
         }
       }
     },
-    goto(page, filter) {
+    /** 換頁。`eventsQuery` 是異常事件清單的條件（query 字串）——
+     *  總覽的三個連結帶它進來，側邊選單不帶（= 乾淨的預設）。 */
+    goto(page, eventsQuery) {
       this.page = page; this.evtNo = null;
-      if (filter) this.eventsFilter = filter;
+      // 一律指派（含清空）。只在「有值」時寫的話，上一次帶進來的條件會留下來，
+      // 之後點側邊選單會靜靜復活它 —— 同 explorerFilter / allowlistDraft。
+      if (page === 'events') {
+        this.eventsQuery = eventsQuery || '';
+        this.eventsKey++;   // 這兩個入口都要乾淨重建；「返回清單」走 backToEvents
+      }
       // 從選單（或任何非 drilldown 的路徑）進 Explorer 一律是乾淨的預設區間。
       // 只清掉 prop 不夠：已經停在 explorer 時 v-else-if 不會換元件，
       // 元件內的 f 還留著上一個事件的條件 —— 所以連 :key 一起換掉強制重建。
@@ -142,6 +163,20 @@ const App = {
       this.evtNo = evtNo; this.page = 'eventDetail';
       this.syncHash();
     },
+    /** 詳細頁的「返回清單」。條件從 eventsQuery 還原，**不重建元件**。
+     *
+     *  刻意不用 history.back()：從 Slack 連結直接進詳細頁的人，back 會離開
+     *  整個主控台。 */
+    backToEvents() {
+      this.page = 'events'; this.evtNo = null;
+      this.syncHash();
+    },
+    /** 清單改了條件。只換網址、不進 history —— 每動一個下拉都寫一筆的話，
+     *  上一頁按鈕會變成逐格倒退篩選歷史，退不回原本那一頁。 */
+    onEventsView(query) {
+      this.eventsQuery = query;
+      if (this.page === 'events') this.syncHash({ replace: true });
+    },
     /** 事件 → Log Explorer 帶篩選跳轉（payload 來自 /events/{no} 的 drilldown）。 */
     openExplorer(payload) {
       this.explorerFilter = payload;
@@ -152,18 +187,33 @@ const App = {
 
     // Hash 路由：讓 Slack 告警能直接連到單一事件（#/events/EVT-0001）。
     // 不用 History API，因為前端由 FastAPI 以單一入口提供，沒有 server-side 路由。
-    syncHash() {
+    syncHash({ replace = false } = {}) {
       let hash = `#/${this.page}`;
       if (this.page === 'eventDetail' && this.evtNo) hash = `#/events/${this.evtNo}`;
       else if (this.page === 'ruleDetail' && this.ruleId) hash = `#/rules/${this.ruleId}`;
-      if (location.hash !== hash) {
+      // 清單的條件寫在 query 裡，不是路徑段：`#/events/attack` 會撞
+      // `#/events/EVT-0001`（Slack 告警的深連結）。
+      else if (this.page === 'events' && this.eventsQuery) hash += `?${this.eventsQuery}`;
+      if (location.hash === hash) return;
+      if (replace) {
+        // 只傳 '#/...'（相對解析）—— 傳路徑的話要自己處理掛載前綴
+        // （CONSOLE_BASE_URL 與尾斜線），那正是 index.html 那個坑。
+        // replaceState 不觸發 hashchange，所以這條路徑不需要 _ignoreHash。
+        history.replaceState(null, '', hash);
+      } else {
         this._ignoreHash = true;
         location.hash = hash;
       }
     },
     applyHash() {
       if (this._ignoreHash) { this._ignoreHash = false; return; }
-      const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+      // **先切掉 query 再 split 路徑。** 不切的話 `events?tab=attack` 整段會被
+      // 當成 head，TITLES[head] 查不到就靜靜留在原本那一頁。
+      const raw = location.hash.replace(/^#\/?/, '');
+      const qIndex = raw.indexOf('?');
+      const path = qIndex < 0 ? raw : raw.slice(0, qIndex);
+      const query = qIndex < 0 ? '' : raw.slice(qIndex + 1);
+      const parts = path.split('/').filter(Boolean);
       if (!parts.length) return;
       const [head, arg] = parts;
       if (head === 'events' && arg) {
@@ -172,6 +222,12 @@ const App = {
       // 順序顛倒的話 #/rules/R06 會靜靜落進清單頁而把 R06 丟掉。
       } else if (head === 'rules' && arg) {
         this.ruleId = arg; this.page = 'ruleDetail'; this.evtNo = null;
+      } else if (head === 'events') {
+        // 網址真的變了才重建。從詳細頁返回時 query 相同 → 沿用同一個元件；
+        // 手動改網址或上一頁退到更早的一組條件 → 重建，否則畫面會與網址
+        // 靜靜不一致（page 沒變，v-if 不會重新掛載）。
+        if (query !== this.eventsQuery) { this.eventsQuery = query; this.eventsKey++; }
+        this.page = 'events'; this.evtNo = null;
       } else if (TITLES[head]) {
         this.page = head; this.evtNo = null;
       }
@@ -276,10 +332,13 @@ const App = {
            不能進 :key —— 否則圖表實例每 30 秒被銷毀重建，畫面會閃、動畫會重播。 -->
       <Overview v-else-if="page==='overview'" :key="'ov'+sessionKey"
                 :reload-token="reloadToken" @open-event="openEvent" @goto="goto" />
-      <Events v-else-if="page==='events'" :key="'ev'+sessionKey" :initial-filter="eventsFilter"
-              @open-event="openEvent" />
+      <!-- :key 帶 eventsKey：條件活在網址裡，網址真的變了才重建（見 applyHash）。
+           query 刻意不進 :key —— 每動一個下拉都重建的話，元件自己 emit 出去的
+           那次變更會把自己卸載掉。 -->
+      <Events v-else-if="page==='events'" :key="'ev'+sessionKey+'-'+eventsKey"
+              :query="eventsQuery" @open-event="openEvent" @view-change="onEventsView" />
       <EventDetail v-else-if="page==='eventDetail'" :evt-no="evtNo" :can-judge="canJudge"
-                   @back="goto('events')" @drilldown="openExplorer" />
+                   @back="backToEvents" @drilldown="openExplorer" />
       <!-- initial-filter 刻意不進 :key —— 進了會多一次卸載重建（圖表實例跟著被銷毀），
            而且沒必要：v-else-if 沒有 keep-alive，離開頁面本來就會 unmount，
            所以每次進來 mounted() 都讀得到最新的 prop。 -->
