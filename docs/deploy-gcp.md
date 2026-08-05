@@ -172,14 +172,25 @@ CONSOLE_BASE_URL=https://ros.ocard.co/security
 才需要明確寫 `SLACK_ENABLED=false`，而停掉是看得見的（見下）。
 
 部署後的驗收：資安總覽**不應該**出現「目前有部分監測被我們自己關閉…Slack 通知已停用」
-的橫幅；容器 log 應該有 `Slack 通知已啟用（未設定 SLACK_ENABLED，而 CONSOLE_BASE_URL
-是對外網址）`。
+的橫幅。這是唯一在畫面上看得到的痕跡，所以它就是驗收條件。
+
+**啟動那一行 log 不在 Cloud Logging 裡，別用 `gcloud logging read` 找。**
+`core/logging_setup.py` 只掛 `RotatingFileHandler` —— 應用 log 全部寫進
+`/app/state/logs/console.log`（持久磁碟上），stdout 只有 `docker/entrypoint.py`
+印的那幾行（所以 `cloudbuild.yaml` 的 Verify 步驟查的是「啟動 uvicorn」而不是
+應用層訊息）。要看就得進容器讀檔案：
 
 ```bash
-gcloud logging read \
-  'resource.type=gce_instance AND logName:cos_containers AND jsonPayload.message:"Slack 通知"' \
-  --project=ocard-ai --freshness=30m --limit=5 --format='value(jsonPayload.message)'
+gcloud compute ssh security-console --zone=asia-east1-b --tunnel-through-iap \
+  --project=ocard-ai --command='sudo docker exec \
+  $(sudo docker ps --format "{{.Names}}" | head -1) \
+  sh -c "grep -a Slack /app/state/logs/console.log | tail -3"'
 ```
+
+實測（2026-08-05 部署 `4f8974f` 後）：`Slack 通知已啟用（未設定 SLACK_ENABLED，
+而 CONSOLE_BASE_URL 是對外網址）`，`slack_queue` 0 筆、無「Slack 送出失敗」，
+並以一則 ops 訊息確認實際送達。**送出失敗會 INSERT 進 `slack_queue`**，
+所以「佇列是空的」本身就是送達的證據，不必每次都發測試訊息。
 
 `FP_SECRET` 必須**固定不變** —— 它是 token 指紋的 HMAC 金鑰，改了以後同一個
 API token 會算出不同指紋，Explorer 的 auth 維度與歷史事件對不起來。
