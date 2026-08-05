@@ -49,7 +49,7 @@ GROUP_BY = {
     },
     "actor": {
         "backend": ("acc", "actor", "操作者"),
-        "admin": ("coalesce(acc, toString(_admin))", "actor", "操作者"),
+        "admin": ("coalesce(nullIf(acc, ''), nullIf(JSONExtractString(params, 'acc'), ''), toString(_admin))", "actor", "操作者"),
         "api": ("toString(_admin)", "actor", "操作者"),
         "auth": ("token", "token", "憑證"),
     },

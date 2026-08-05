@@ -6,16 +6,37 @@ kind: sql_threshold
 window_minutes: 15
 cooldown_minutes: 60
 sql: |
-  SELECT acc, count() AS metric, uniq(ip) AS ips
+  SELECT if(acc IS NOT NULL AND acc != '', acc,
+            JSONExtractString(params, 'acc')) AS acc,
+         count() AS metric, uniq(ip) AS ips
   FROM ods_admin_log
   WHERE create_time >= %(start)s AND create_time < %(end)s
     AND ((function = 'Boss_initial/auth_v2' AND action = 'login_failed')
       OR (function = 'login' AND action = 'failed'))
-    AND acc IS NOT NULL AND acc != ''
+    AND if(acc IS NOT NULL AND acc != '', acc,
+           JSONExtractString(params, 'acc')) != ''
   GROUP BY acc
   HAVING metric >= 10
 threshold:
   static_floor: 10
 entity:
   - {col: acc, fp: actor}
-note: 常態單帳號 7 天最多失敗 46 次，15 分鐘內 10 次即異常
+note: |
+  常態單帳號 7 天最多失敗 46 次，15 分鐘內 10 次即異常。
+
+  **兩個登入家族各缺一個關鍵欄位，這條規則吃的是 acc 那一半。**
+  `Boss_initial/auth_v2`（2026-08 的新版端點，實測佔登入成功的 77%）
+  **永不寫 `acc` 欄位** —— 2026-08-05 實測當天 5,430 筆成功 + 197 筆失敗
+  全部 NULL，帳號在 `params` 的 `acc` 鍵裡。原本的 `AND acc IS NOT NULL`
+  把整個新版端點濾掉了，症狀是這條規則對新端點永遠不告警而畫面完全正常。
+
+  **只 JSONExtract `acc` 這一個鍵，絕不把 `params` 整段選進輸出。**
+  實測樣本裡有 `pwd`（MD5 hash）與 `push_token`，而 `masking.scrub_text()`
+  的清洗清單只有 authorization / cookie / secret / api_key —— 沒有 `pwd`。
+  規則的 context 會進 Slack 與磁碟上的 state/logs/*.log。
+  `tests/test_rule_login_failed.py` 反向守著這件事。
+
+  回測（28 天、排除 7/16-17）：0.46 → 1.27 桶/日，相異帳號 12 → 29。
+  2026-08-05 當天由只抓到 gonnarenai 變成抓到 12sukiyak007(18)、
+  gonnarenai(17)、oneone(10)、palipali06(10) —— oneone 正是當天 07:57
+  那批機房 IP 匯出客戶名單的帳號之一。
