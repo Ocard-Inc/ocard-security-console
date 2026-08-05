@@ -18,6 +18,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from console.alerting import notify
 from console.api.app import app
 from console.auth import ros
 from console.store import db
@@ -77,3 +78,33 @@ def _offline_auth(monkeypatch):
     ros.clear_cache()
     yield
     ros.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def slack_outbox(monkeypatch) -> list[str]:
+    """攔掉真正的 Slack 送出，回傳這次測試「本來會發出去」的訊息。
+
+    `.env` 的 `SLACK_WEBHOOK_URL` 是**正式頻道**，而 `config.slack_webhook_url()`
+    有 `lru_cache` 又自己 `load_dotenv` —— 光靠 `monkeypatch.setenv` 清不掉它
+    （同 `ch_config()` 那個坑）。少了這個 fixture，Allowlist 的寫入測試
+    （`test_allowlist_write.py` 27 次 POST/PATCH，加上 `test_masking_audit.py`）
+    每跑一次 pytest 就對正式頻道發一輪「新增／修改／停用 Allowlist 例外」，
+    內容是 `203.0.113.55`、理由「驗收」、操作者 `dev@olis.com.tw（開發模式）`。
+    後果不是吵而已：那個 ops 訊息是 allowlist **唯一一個當事人改不掉的偵測型
+    控制**（見 `allowlist_routes._notify_change`），把值班的人訓練成忽略它，
+    等於把那個控制拆掉，而畫面上一切正常。
+
+    測試發出的訊息**沒有尾端連結**（`_offline_auth` 清掉 `CONSOLE_BASE_URL`
+    → `notify.page_url()` 回空），正式環境發的一定有 —— 那是分辨「這則來自誰」
+    最快的指紋。
+
+    攔在 `_send`（傳輸層）而不是 `send_ops_message` / `dispatch`：訊息格式化仍然
+    要跑，那裡的 KeyError 與欄位名錯誤必須照樣被測試抓到。順帶也不會在失敗時
+    寫進 `slack_queue`（那張表是待送佇列，不該被測試灌資料）。
+
+    `.env` 的 `SLACK_ENABLED` 總開關（預設關閉）是第二道，但**不能取代這一道**：
+    在本機把開關打開來驗收是正常操作，那時 pytest 不可以跟著開始發訊息。
+    """
+    sent: list[str] = []
+    monkeypatch.setattr(notify, "_send", sent.append)
+    return sent

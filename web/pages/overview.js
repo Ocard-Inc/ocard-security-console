@@ -208,9 +208,24 @@ export default {
     },
     // 「我們自己關掉了什麼」。available:false 表示規則檔載入失敗（降級，
     // 不顯示這一段而不是顯示 0）。
+    // 預設值用展開合併而不是 `||` fallback：規則檔載入失敗時後端只回
+    // {available:false, slack:…}，少了那幾個陣列鍵，而模板裡的
+    // `sup.disabled_rules.length` 會在 render 期間拋 TypeError ——
+    // 症狀是整個總覽變成白畫面，比原本要降級的那件事嚴重得多。
     sup() {
-      return this.data?.suppression
-        || { available: false, disabled_rules: [], overridden_rules: [], active_allowlist: 0 };
+      return {
+        available: false, disabled_rules: [], overridden_rules: [], active_allowlist: 0,
+        ...(this.data?.suppression || {}),
+      };
+    },
+    // 「監測還在跑，但結論到不了人身上」也算被我們自己關掉的一種，所以
+    // Slack 送不出去與停用規則走同一個橫幅、同一個條件。三處判斷共用這裡，
+    // 不各寫一份 —— 漏掉綠色橫幅那一處的話，畫面會同時說「一切正常」與
+    // 「通知已停用」。slack 缺鍵時視為正常（舊版後端），不憑空生出警告。
+    selfDisabled() {
+      const s = this.sup;
+      return Boolean(s.disabled_rules?.length || s.active_allowlist
+        || (s.slack && !s.slack.enabled));
     },
     pendingBreakdown() {
       const by = this.pending.by_severity || {};
@@ -313,11 +328,15 @@ export default {
     <!-- 「我們自己關掉了什麼」。必須壓在綠色的「沒有達到門檻」**之前** ——
          有規則被停用或來源被抑制時，那句綠色的話就不是完整的事實。
          語意是「現況，不限時間」（見 CLAUDE.md 對總覽各區塊標明自己視窗的要求）。 -->
-    <div v-if="sup.available && (sup.disabled_rules.length || sup.active_allowlist)"
-         :class="'banner ' + (sup.disabled_rules.length ? 'banner-danger' : 'banner-info')">
+    <div v-if="selfDisabled"
+         :class="'banner ' + (sup.disabled_rules.length || (sup.slack && !sup.slack.enabled)
+           ? 'banner-danger' : 'banner-info')">
       <strong>目前有部分監測被我們自己關閉</strong>（不限時間的現況）
       <a @click="$emit('goto','rules')" style="float:right">規則與 Allowlist →</a>
       <div style="font-size:12.5px;line-height:1.7;margin-top:4px">
+        <template v-if="sup.slack && !sup.slack.enabled">
+          <strong>{{ sup.slack.note }}</strong><br>
+        </template>
         <template v-if="sup.disabled_rules.length">
           <strong>{{ sup.disabled_rules.length }} 條規則已停用</strong>（{{
             sup.disabled_rules.join('、') }}）—— 這些檢查不會執行。<br>
@@ -339,7 +358,7 @@ export default {
          class="banner banner-ok">
       目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
       {{ clockTime(data.last_five_min_check) }}，四個 ClickHouse 資料來源均正常更新。
-      <template v-if="sup.available && (sup.disabled_rules.length || sup.active_allowlist)">
+      <template v-if="selfDisabled">
         <br><span style="font-weight:500">但請一併看上方：有部分監測目前被關閉或抑制。</span>
       </template>
     </div>

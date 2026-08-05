@@ -165,6 +165,22 @@ ROS_BASE_URL=https://ros.ocard.co
 CONSOLE_BASE_URL=https://ros.ocard.co/security
 ```
 
+**`SLACK_ENABLED` 刻意不在這份清單裡。** 它留空時由 `CONSOLE_BASE_URL` 推導 ——
+這裡是對外網址，所以正式環境**什麼都不用設就會發 Slack**。反過來設計（固定預設
+關閉、要求 `prod.env` 明確寫 `true`）會讓漏掉一行變成「靜靜不發任何告警，而主控台
+其餘部分完全正常」，而且那取決於有沒有人記得改這個檔案。要在正式環境**停掉** Slack
+才需要明確寫 `SLACK_ENABLED=false`，而停掉是看得見的（見下）。
+
+部署後的驗收：資安總覽**不應該**出現「目前有部分監測被我們自己關閉…Slack 通知已停用」
+的橫幅；容器 log 應該有 `Slack 通知已啟用（未設定 SLACK_ENABLED，而 CONSOLE_BASE_URL
+是對外網址）`。
+
+```bash
+gcloud logging read \
+  'resource.type=gce_instance AND logName:cos_containers AND jsonPayload.message:"Slack 通知"' \
+  --project=ocard-ai --freshness=30m --limit=5 --format='value(jsonPayload.message)'
+```
+
 `FP_SECRET` 必須**固定不變** —— 它是 token 指紋的 HMAC 金鑰，改了以後同一個
 API token 會算出不同指紋，Explorer 的 auth 維度與歷史事件對不起來。
 

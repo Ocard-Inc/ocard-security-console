@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from console.alerting import notify
 from console.api import drilldown, validate
 from console.auth import ros
 from console.auth.roles import CurrentUser, current_user, guard
@@ -194,13 +195,18 @@ def _suppression_summary() -> dict:
     except Exception:                                    # noqa: BLE001
         # YAML 壞掉不該讓整個總覽 500 —— 那會讓一個設定錯誤變成全站不可用
         logger.exception("讀取生效規則失敗（總覽的抑制摘要降級）")
-        return {"available": False}
+        # slack 仍要帶：它不依賴規則檔，而「通知送不出去」在 YAML 壞掉的時候
+        # 更需要被看見（那時規則一條都沒在跑）。
+        return {"available": False, "slack": notify.summary()}
     entries = allowlist.active_entries()
     soon = settings()["allowlist"]["expiring_soon_days"]
     expiring = [e for e in entries if e.valid_to and 0 <= (
         timewin.parse(e.valid_to) - timewin.taipei_now()).days <= soon]
     return {
         "available": True,
+        # 「通知送不出去」與停用規則、Allowlist 屬於同一類事實：監測還在跑，
+        # 但結論到不了人身上。放在同一個橫幅裡才不會需要第二個地方去看。
+        "slack": notify.summary(),
         "disabled_rules": [r.id for r in rules if not r.enabled],
         "overridden_rules": sorted(rule_overrides.all_overrides()),
         "active_allowlist": len(entries),
