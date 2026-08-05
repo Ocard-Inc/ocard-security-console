@@ -70,16 +70,26 @@ def add(route: str, *, who: str, reason: str) -> str:
 
     重新啟用要**清掉** `removed_by` / `removed_at`：留著的話畫面上會同時顯示
     「生效中」與「由某人於某時停用」，讀起來像兩件矛盾的事。
+
+    **existence 檢查與寫入是同一顆 `INSERT OR IGNORE`，不是「先 SELECT 再依結果
+    分支」。** 早期版本先呼叫 `get()` 判斷存不存在、再各自 INSERT / UPDATE ——
+    SELECT 不會取寫入鎖，兩個併發呼叫可以同時看到「不存在」，都跑進 INSERT
+    分支，其中一個會撞 `route` 的 PRIMARY KEY 而拋 `sqlite3.IntegrityError`
+    （呼叫端沒接、直接 500）。這裡的 API 端點是唯一真的會併發寫入的地方
+    （boot-time 播種只用一次性的 `INSERT OR IGNORE`，不受影響）。
+    現在 `INSERT OR IGNORE` 本身就會啟動寫入交易並拿到 SQLite 的寫入鎖 ——
+    兩個併發呼叫必然序列化，後執行的那個看到的一定是「已存在」（前一個已
+    commit），走 UPDATE 分支，不會有第二次 INSERT 嘗試，也就不會有
+    IntegrityError。
     """
     now = timewin.fmt(timewin.taipei_now())
-    existing = get(route)
     with db.tx() as conn:
-        if existing is None:
-            conn.execute(
-                "INSERT INTO sensitive_routes"
-                " (route, status, added_by, added_at, reason)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (route, STATUS_ACTIVE, who, now, reason))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO sensitive_routes"
+            " (route, status, added_by, added_at, reason)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (route, STATUS_ACTIVE, who, now, reason))
+        if cur.rowcount > 0:
             return "created"
         conn.execute(
             "UPDATE sensitive_routes SET status = ?, added_by = ?, added_at = ?,"

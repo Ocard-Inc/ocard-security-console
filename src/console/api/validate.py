@@ -105,6 +105,27 @@ def source_ip(value: object) -> str:
         raise HTTPException(400, f"{text!r} 不是有效的 IP 位址") from exc
 
 
+def route2(value: object) -> str:
+    """backend 的 route 前兩段（`a/b`），正規化後回傳。
+
+    比對是**字串完全相等**（見 `queries/exprs.ROUTE2` 與 R05 的 SQL），所以：
+    - 前綴會連 `customer/indexExtra` 一起放行，因此不接受前綴語意的輸入；
+    - 打錯的路由同樣不報錯，只會永遠不生效 —— 那是這裡擋形狀的理由。
+    形狀之外還會不會命中，由呼叫端用真實候選清單給 warnings（不擋）。
+    """
+    text = str(value or "").strip().strip("/")
+    if not text:
+        raise HTTPException(400, "路由為必填")
+    parts = text.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise HTTPException(
+            400, f"{text!r} 不是有效的 route 前兩段：格式必須是 `第一段/第二段`"
+                 f"（例如 `customer/index`）。比對是完全相等，不是前綴。")
+    if any(c in text for c in "'\"%\\"):
+        raise HTTPException(400, f"{text!r} 含不允許的字元")
+    return text
+
+
 def bound(value: object, label: str, *, end_of_day: bool) -> str:
     """時間邊界 → 正規化的台北牆鐘字串。
 
