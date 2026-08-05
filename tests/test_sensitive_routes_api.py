@@ -113,6 +113,30 @@ def test_every_write_sends_an_ops_message(client, slack_outbox):
         _cleanup()
 
 
+def test_duplicate_post_on_an_active_route_is_409_and_leaves_provenance_untouched(
+        client, slack_outbox):
+    """對一條已經生效中的路由重複 POST 必須是 409，且完全不改動它的 provenance。
+
+    這裡選一條種子路由（`added_by='seed'`）而不是先自己新增一條再重複 POST：
+    種子列正是實際會中獎的那種資料 —— 使用者從規則頁的自由輸入表單重新填一次
+    既有路由，若「恢復敏感路由」的訊息與稽核紀錄照樣寫出去，畫面上看不出
+    任何異狀，但那條路由的來源紀錄已經被靜靜改寫成這次呼叫的值。
+    """
+    target = sr.active()[0]
+    before = sr.get(target)
+    audit_before = db.one("SELECT count(*) AS n FROM audit_log")["n"]
+    slack_outbox.clear()
+    r = client.post("/api/sensitive-routes",
+                    json={"route": target, "reason": "重複新增測試"})
+    assert r.status_code == 409, r.text
+    assert "已經在清單裡" in r.json()["detail"]
+    after = sr.get(target)
+    assert after == before, "409 之後那一列的 added_by/added_at/reason 不可被改動"
+    assert not slack_outbox, "被拒絕的重複新增不該發 ops 訊息"
+    audit_after = db.one("SELECT count(*) AS n FROM audit_log")["n"]
+    assert audit_after == audit_before, "被拒絕的重複新增不該寫進 audit_log"
+
+
 def test_cannot_disable_the_last_active_route(client):
     """清空清單一律 409。
 

@@ -104,6 +104,27 @@ def test_add_then_disable_then_reactivate():
             conn.execute("DELETE FROM sensitive_routes WHERE route = ?", (route,))
 
 
+def test_add_on_an_already_active_route_does_not_touch_provenance():
+    """POST 一條已經生效中的路由必須回 ADD_ALREADY_ACTIVE，且完全不動那一列。
+
+    早期版本的 `add()` 只看 INSERT OR IGNORE 有沒有失敗，失敗就無條件 UPDATE
+    成生效中並改寫 added_by/added_at/reason —— 對一條**本來就生效中**的路由
+    （典型是 added_by='seed'、reason='settings.yaml 初始清單' 的種子列）重複
+    呼叫，會把它的來源紀錄靜靜改寫成這次呼叫的值，而 API 端點還會照樣宣稱
+    「恢復敏感路由」，那件事根本沒有發生 —— 它從來沒被停用過。
+    """
+    target = settings()["sensitive_routes"][0]
+    before = sr.get(target)
+    assert before is not None and before["status"] == sr.STATUS_ACTIVE, (
+        f"前提：{target} 應該是播種進來的生效中路由")
+    outcome = sr.add(target, who="intruder@olis.com.tw", reason="不該生效的重複新增")
+    assert outcome == sr.ADD_ALREADY_ACTIVE
+    after = sr.get(target)
+    assert after == before, (
+        "add() 對一條生效中的路由回 ADD_ALREADY_ACTIVE 時，那一列必須完全"
+        "沒被動到 —— added_by/added_at/reason 的 provenance 不可被覆寫")
+
+
 def test_disable_a_route_that_is_not_there_returns_not_found():
     assert sr.disable("nope_test/nope", who="a@olis.com.tw") == sr.DISABLE_NOT_FOUND
 

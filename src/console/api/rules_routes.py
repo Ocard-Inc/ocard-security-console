@@ -414,6 +414,13 @@ def add_sensitive_route(payload: dict = Body(...),
 
     before = sensitive_routes.active_count()
     action = sensitive_routes.add(route, who=user.email, reason=reason)
+    if action == sensitive_routes.ADD_ALREADY_ACTIVE:
+        # 什麼都沒改：add() 已經確認這條路由目前就是生效中，沒有寫任何欄位。
+        # 這裡也不可以寫 audit_log / ops 訊息 —— 那會宣稱一件沒有發生過的事
+        # （新增或恢復），而 provenance（誰加的、為什麼）其實原封不動。
+        raise HTTPException(
+            409, f"{route} 已經在清單裡且生效中，不需要重新新增。"
+                 "若要修改新增理由，請先移除再重新加入。")
     after = sensitive_routes.active_count()
 
     label = "新增敏感路由" if action == "created" else "恢復敏感路由"

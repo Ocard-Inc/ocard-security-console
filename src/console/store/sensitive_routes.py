@@ -65,11 +65,36 @@ def get(route: str) -> dict | None:
                   (route,))
 
 
+# add() 的判定結果第三種：這條路由已經生效中，什麼都沒改。刻意是字串常數
+# （同 disable() 下面那組），不是拿 "reactivated" 硬套 —— 呼叫端要能分辨
+# 「真的把一條停用的路由改回生效」與「本來就生效中，這次呼叫什麼都沒動」，
+# 才能決定回 200 還是 409。
+ADD_ALREADY_ACTIVE = "already_active"
+
+
 def add(route: str, *, who: str, reason: str) -> str:
-    """新增或重新啟用一條路由。回 "created" 或 "reactivated"。
+    """新增、重新啟用一條已停用的路由，或偵測到它已經生效中。
+
+    回 "created" / "reactivated" / `ADD_ALREADY_ACTIVE` 三者之一。
+    **這三個字串的既有意義不可以變**——`"created"` 與 `"reactivated"` 已經被
+    呼叫端與測試依賴，這裡只是多加第三種結果，不是重新定義前兩種。
 
     重新啟用要**清掉** `removed_by` / `removed_at`：留著的話畫面上會同時顯示
     「生效中」與「由某人於某時停用」，讀起來像兩件矛盾的事。
+
+    **重新啟用的 UPDATE 只能套用在目前是「已停用」的列
+    （`WHERE route = ? AND status = ?`，比對 `STATUS_DISABLED`），不是
+    「INSERT OR IGNORE 失敗就代表可以重新啟用」。** 早期版本反過來：INSERT
+    失敗（代表路由已存在，不論現在是生效中還是已停用）就無條件 UPDATE 成
+    生效中並改寫 `added_by`/`added_at`/`reason`。對一條**本來就生效中**的
+    路由重新 POST 一次（規則頁的新增表單是自由輸入 + datalist，沒有東西
+    擋得住這件事）—— 那次 UPDATE 一樣會成功執行，把種子列的
+    `added_by='seed'` / `reason='settings.yaml 初始清單'`，或前一個人的核准
+    紀錄，靜靜改寫成這次呼叫的值；而 API 端點還會照樣寫一筆「恢復敏感路由」
+    的 audit_log 與 ops 訊息，宣稱一件沒有發生過的事 —— 這條路由根本沒被
+    停用過，沒有東西被恢復。現在 UPDATE 帶上 `status = 已停用` 的條件之後，
+    對生效中的路由重複 POST 會讓這顆 UPDATE 的 `rowcount == 0`，呼叫端據此
+    回 `ADD_ALREADY_ACTIVE`，provenance 三個欄位完全不會被寫入。
 
     **existence 檢查與寫入是同一顆 `INSERT OR IGNORE`，不是「先 SELECT 再依結果
     分支」。** 早期版本先呼叫 `get()` 判斷存不存在、再各自 INSERT / UPDATE ——
@@ -80,7 +105,11 @@ def add(route: str, *, who: str, reason: str) -> str:
     現在 `INSERT OR IGNORE` 本身就會啟動寫入交易並拿到 SQLite 的寫入鎖 ——
     兩個併發呼叫必然序列化，後執行的那個看到的一定是「已存在」（前一個已
     commit），走 UPDATE 分支，不會有第二次 INSERT 嘗試，也就不會有
-    IntegrityError。
+    IntegrityError。這個既有的鎖定順序沒有變 —— 新加的只是 UPDATE 的 WHERE
+    子句多一個條件，不影響序列化本身：兩個併發呼叫在同一條已停用的路由上
+    重新啟用，仍然只有先執行的那個會讓 `rowcount > 0`，後執行的看到的是
+    「已經生效中」（前一個已 commit），回 `ADD_ALREADY_ACTIVE`，不會有兩次
+    「reactivated」。
     """
     now = timewin.fmt(timewin.taipei_now())
     with db.tx() as conn:
@@ -91,11 +120,14 @@ def add(route: str, *, who: str, reason: str) -> str:
             (route, STATUS_ACTIVE, who, now, reason))
         if cur.rowcount > 0:
             return "created"
-        conn.execute(
+        cur = conn.execute(
             "UPDATE sensitive_routes SET status = ?, added_by = ?, added_at = ?,"
-            " reason = ?, removed_by = NULL, removed_at = NULL WHERE route = ?",
-            (STATUS_ACTIVE, who, now, reason, route))
-    return "reactivated"
+            " reason = ?, removed_by = NULL, removed_at = NULL"
+            " WHERE route = ? AND status = ?",
+            (STATUS_ACTIVE, who, now, reason, route, STATUS_DISABLED))
+        if cur.rowcount > 0:
+            return "reactivated"
+    return ADD_ALREADY_ACTIVE
 
 
 # disable() 的判定結果。刻意是字串常數（同 add() 的 "created"/"reactivated"
