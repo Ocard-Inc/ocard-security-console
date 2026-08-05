@@ -611,7 +611,18 @@ EXTENT_LOOKBACK_DAYS_JSON_IP = 30
 
 
 def extent_lookback_days(source: str, field: str) -> int:
-    """這個 (來源, 欄位) 組合的回看天數。貴的組合問得窄一點。"""
+    """這個 (來源, 欄位) 組合的回看天數。貴的組合問得窄一點。
+
+    **付 JSONExtract 成本的不只 `api` 的來源 IP。** R07A 從 `params` 取回新版
+    登入端點不寫的 `acc` 之後（見 `config/rules/r07a_login_failed_acc.yaml`），
+    `entity_expr()` 給 admin/actor 的運算式也變成
+    `coalesce(nullIf(acc,''), nullIf(JSONExtractString(params,'acc'),''), ...)`
+    —— 同樣沒有欄位可以剪枝。實測 365 天等值查詢從 1.86s 上升到 7.38s，
+    **仍然遠在 55 秒上限與這裡的成本分級之內，所以刻意不改變回看天數**
+    （沒有必要為一個仍然快的查詢多切一個常數）。留這段註解只是為了讓下一個人
+    在替 admin/actor 加別的 fallback、或者上游哪天真的變慢時，不會誤以為
+    「這個組合一定跟 JSONExtract 無關，只有 api 的 IP 才要小心」。
+    """
     if source == "api" and field == "source_ip":
         return EXTENT_LOOKBACK_DAYS_JSON_IP
     return EXTENT_LOOKBACK_DAYS
