@@ -17,9 +17,12 @@ export default {
       data: null, loading: true, error: null,
       f: { enabled: '', source: '', overridden: false },
       SOURCE_LABEL, SEV_LABEL,
-      // 敏感路由：欄位不存在（後端還沒重啟）時整張卡片不顯示，
+      // 敏感路由：404（端點不存在，代表後端還沒重啟）時整張卡片不顯示，
       // **不是顯示一個空清單** —— 「前端新、後端舊」是每次改動的必經中間狀態。
-      sr: null, srBusy: false, srError: null, srWarnings: [],
+      // 但 500/502 這種真正的查詢失敗不可以套用同一個「安靜消失」的降級：
+      // 那會讓使用者以為敏感路由這塊功能整個不存在，而其實是查詢壞了。
+      // srLoadError 專門裝後者，跟 srError（寫入時的錯誤）分開。
+      sr: null, srLoadError: null, srBusy: false, srError: null, srWarnings: [],
       srDraft: { route: '', reason: '' }, srAdding: false,
       srCandidates: null,
       // 移除／恢復的理由詢問。不用 window.confirm／window.prompt（全專案零個，
@@ -67,9 +70,14 @@ export default {
     async loadSensitiveRoutes() {
       try {
         this.sr = await api('/sensitive-routes');
+        this.srLoadError = null;
       } catch (e) {
-        // 404 = 後端還沒有這個端點 → 卡片不顯示（不是錯誤畫面）
         this.sr = null;
+        // 404 = 後端還沒有這個端點（前端新、後端舊）→ 降級成舊行為，卡片不顯示，
+        // 不是錯誤畫面。**只有這一種狀態碼可以安靜消失** —— 其他錯誤（500/502
+        // 之類真正的查詢失敗）原本被同一個 catch 整塊吞掉，症狀是使用者完全
+        // 看不到任何線索，只覺得「敏感路由清單」這塊功能不見了，而其實是查詢壞了。
+        this.srLoadError = e.status === 404 ? null : (e.detail || e.message);
       }
     },
     async loadRouteCandidates() {
@@ -179,6 +187,13 @@ export default {
     <div v-if="overriddenCount" class="banner banner-warn">
       <strong>{{ overriddenCount }} 條規則的參數被覆寫</strong>（{{ data.overridden.join('、') }}）——
       實際生效的值與 config/rules 的 YAML 不同，逐條的原值與理由見詳細頁。
+    </div>
+
+    <!-- srLoadError 只在非 404 的查詢失敗時有值（見 loadSensitiveRoutes）——
+         404 降級成舊行為（整塊不顯示），其他失敗必須讓使用者看得到。 -->
+    <div v-if="srLoadError" class="banner banner-danger" style="margin-bottom:12px">
+      <strong>敏感路由清單載入失敗</strong>　{{ srLoadError }}
+      <a @click="loadSensitiveRoutes">重新查詢 →</a>
     </div>
 
     <!-- 敏感路由清單。它同時餵 R05 與期間掃描，不屬於任何單一規則 ——
