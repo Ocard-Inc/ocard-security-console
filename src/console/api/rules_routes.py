@@ -338,10 +338,24 @@ def whatif(rule_id: str, static_floor: float | None = None,
 # 字串只是多一個字串。
 
 # 影響範圍由後端說出來，前端不自己列一份。使用者從規則頁面點進來，預設只會
-# 想到 R05 —— 而移掉一條路由會同時讓期間掃描的報告不再涵蓋它。
+# 想到 R05 —— 而移掉一條路由其實同時影響期間掃描的**兩支**探針，不是一支：
+#
+# - P03「敏感路由大量存取」與 P01 同屬 volume 訊號組，量級突變仍由 P01 頂著，
+#   所以少了 P03 不會讓 volume 這組訊號整組消失。
+# - P02「集中存取資料導出路由」是 concentration 這組**唯一**的訊號來源，而
+#   `correlate.MIN_SIGNAL_GROUPS = 2`。少了它，一個上班時間、來源看起來正常、
+#   但高度集中打資料導出路由的帳號永遠湊不到第二組訊號 —— 不是「排名變低」，
+#   是**完全不會出現在報告裡**。這正是比毫無掩飾的攻擊者更謹慎的那種行為模式。
+#
+# 兩支探針的說明見 sweep/limits.py 的 sensitive_routes_empty／sensitive_routes
+# 限制項目（同一套說法，這裡是給規則頁面卡片與 ops 訊息用的精簡版）。
 _SENSITIVE_ROUTE_READERS = (
     "R05 非上班時間敏感操作（即時規則，改完下一個 tick 生效）",
-    "期間異常掃描的「敏感路由大量存取」探針（下一次執行生效）",
+    "期間異常掃描 P03「敏感路由大量存取」（下一次執行生效；與 P01 同屬 volume"
+    " 訊號組，量級突變仍由 P01 頂著）",
+    "期間異常掃描 P02「集中存取資料導出路由」（下一次執行生效；concentration"
+    " 訊號組**唯一**成員 —— 少了它，上班時間、來源正常但集中存取資料導出路由"
+    "的帳號會完全湊不到第二組訊號，不會出現在報告裡）",
 )
 
 # 判斷「這條路由在 log 裡存在嗎」的回看天數。只用來產生 warnings，不擋寫入。
@@ -434,19 +448,22 @@ def remove_sensitive_route(route: str, payload: dict = Body(default={}),
     if outcome == sensitive_routes.DISABLE_LAST_ACTIVE:
         # 空清單在 ClickHouse 是 `IN ()` —— 實測不報錯、靜靜回 0 筆，
         # 也就是 R05 沒有命中與 R05 沒有在看長得一模一樣。
+        # detail 是純文字（HTTPException 不會被當 Markdown 渲染），
+        # 星號只會原樣顯示在畫面上，不要用。
         raise HTTPException(
             409, f"{route} 是最後一條生效中的敏感路由，不能移除。"
                  "空清單不會報錯，只會讓 R05 靜靜不再命中任何東西，"
-                 "而畫面上規則仍顯示啟用中。要停止這條規則請**停用規則本身** —— "
+                 "而畫面上規則仍顯示啟用中。要停止這條規則請停用規則本身 —— "
                  "那會出現在資安總覽的「目前有多少監測被關閉」橫幅上，"
                  "一份空清單不會。")
     assert outcome == sensitive_routes.DISABLE_OK, f"未知的 disable() 結果：{outcome!r}"
     after = sensitive_routes.active_count()
 
+    label = "移除敏感路由"
     target = f"{route}（生效中 {before} → {after} 條）"
-    audit.record(who=user.email, role=user.role_label, action="移除敏感路由",
+    audit.record(who=user.email, role=user.role_label, action=label,
                  target=target, reason=reason)
-    _ops("移除敏感路由", target, user, reason,
+    _ops(label, target, user, reason,
          extra=f"影響：{'；'.join(_SENSITIVE_ROUTE_READERS)}\n"
                "這是刻意製造的監測盲區，已計入資安總覽的橫幅。")
     return {"ok": True, **_sensitive_routes_payload()}

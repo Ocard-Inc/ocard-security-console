@@ -366,8 +366,10 @@ export default {
         </template>
         <template v-if="sup.disabled_sensitive_routes">
           <strong>{{ sup.disabled_sensitive_routes }} 條敏感路由已停用</strong>
-          —— R05（非上班時間敏感操作）與期間掃描的「敏感路由大量存取」
-          都不再看它們。<br>
+          —— R05（非上班時間敏感操作）、期間掃描的「敏感路由大量存取」（P03）
+          與「集中存取資料導出路由」（P02）都不再看它們。P02 是 concentration
+          訊號組唯一成員，少了它，上班時間、來源正常但集中存取這些路由的帳號
+          會完全湊不到第二組訊號，不會出現在掃描報告裡。<br>
         </template>
         <template v-if="sup.overridden_rules.length">
           {{ sup.overridden_rules.length }} 條規則的門檻被覆寫（{{

@@ -182,8 +182,12 @@ export default {
                   style="background:var(--warn-bg);color:var(--warn)">{{ r.route }}</span>
           </div>
           <div class="note-quote" style="margin-top:8px">
-            · 這份清單同時餵期間異常掃描的「敏感路由大量存取」探針，所以它不是這條
-              規則的私有參數 —— 編輯入口刻意放在規則清單頁。<br>
+            · 這份清單同時餵期間異常掃描的兩支探針 ——「敏感路由大量存取」（P03）
+              與「集中存取資料導出路由」（P02），所以它不是這條規則的私有參數
+              —— 編輯入口刻意放在規則清單頁。<br>
+            · P02 是 concentration 訊號組唯一成員：清單變空時，上班時間、來源
+              正常但集中存取這些路由的帳號會完全湊不到第二組訊號，不會出現在
+              掃描報告裡。<br>
             · 清單存在 SQLite、每個 tick 重讀，改完下一個五分鐘檢查就生效。
           </div>
         </div>
