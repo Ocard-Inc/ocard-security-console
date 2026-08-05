@@ -233,10 +233,26 @@ def test_audit_mode_page_lists_the_new_write_endpoints():
 
     CLAUDE.md：新增可寫端點必須同步。宣稱一個不存在的控制比什麼都不說更糟，
     反過來漏掉一個真實的可寫端點也一樣。
+
+    只斷言「敏感路由」這個子字串出現在檔案某處，就算那一整段寫的內容是錯的
+    （例如漏了兩支可寫端點中的一支、或只提到 P03 沒提到 P02）這個測試依然會
+    通過 —— 這是 2026-08 review 抓到的最後一個「不會失敗的測試」，另外三個
+    已在同一波修好。這裡改成分別驗證兩個可寫端點各自的承諾（新增／恢復 與
+    移除／停用）、以及兩支探針的名字都出現，才真的鎖住這一段的內容。
     """
     from pathlib import Path
     text = Path("web/pages/audit-mode.js").read_text(encoding="utf-8")
     assert "敏感路由" in text, "audit-mode.js 沒有提到敏感路由的可寫端點"
+    # POST /sensitive-routes 的承諾：新增或重新啟用
+    assert "新增" in text and "恢復" in text, (
+        "audit-mode.js 沒有提到 POST /sensitive-routes（新增／恢復）的承諾")
+    # DELETE /sensitive-routes/{route} 的承諾：移除即停用，不是刪除
+    assert "移除" in text and "停用" in text, (
+        "audit-mode.js 沒有提到 DELETE /sensitive-routes/{route}"
+        "（移除／停用）的承諾")
+    # 兩支探針都要點名，不能只寫 P03 —— P02 是 concentration 訊號組唯一成員
+    assert "P02" in text, "audit-mode.js 漏了 P02（集中存取資料導出路由）"
+    assert "P03" in text, "audit-mode.js 漏了 P03（敏感路由大量存取）"
 
 
 def test_overview_banner_counts_survive_rule_yaml_failure(client, monkeypatch):
