@@ -22,6 +22,12 @@ export default {
       sr: null, srBusy: false, srError: null, srWarnings: [],
       srDraft: { route: '', reason: '' }, srAdding: false,
       srCandidates: null,
+      // 移除／恢復的理由詢問。不用 window.confirm／window.prompt（全專案零個，
+      // 見 allowlist.js 的同一句註解）—— 這裡跟 allowlist.js 的
+      // .modal-mask/.modal 是同一個模式，理由是同一個：這是全站唯一一種
+      // 「按下去會讓監測看不見東西」的互動，警告必須在按鈕可以按之前就看到，
+      // 而不是原生對話框那種一行字、按下去就送出的形狀。
+      srAsk: null, srAskReason: '',
     };
   },
   computed: {
@@ -104,28 +110,36 @@ export default {
       }
       this.srBusy = false;
     },
-    // 恢復一條已停用的路由。走同一個 POST 端點（它會 reactivate），
-    // 但理由是必填的 —— 恢復監測也是一次設定變更，要留痕。
-    async addRoute2(route) {
-      const reason = window.prompt(`恢復 ${route} 的理由（必填）`);
-      if (!reason || !reason.trim()) return;
-      this.srDraft = { route, reason: reason.trim() };
-      await this.addRoute();
+    // 開啟移除／恢復的理由詢問（modal）。取消是真的無動作 —— 只清 srAsk，
+    // 不送任何請求、不動 sr/srWarnings/srError。
+    askRoute(kind, route) {
+      this.srAsk = { kind, route };
+      this.srAskReason = '';
     },
-    async removeRoute(route) {
-      const reason = window.prompt(
-        `移除 ${route} 的理由（必填）\n\n` +
-        '這會同時讓 R05（非上班時間敏感操作）與期間掃描停止看這條路由。');
-      if (!reason || !reason.trim()) return;
+    async confirmRouteAction() {
+      if (!this.srAskReason.trim()) return;
+      const { kind, route } = this.srAsk;
       this.srBusy = true; this.srError = null; this.srWarnings = [];
       try {
-        const r = await api(`/sensitive-routes/${route}`, {
-          method: 'DELETE',
-          body: JSON.stringify({ reason: reason.trim() }),
-        });
+        // 恢復走同一個 POST 端點（後端判定已停用時會 reactivate）；
+        // 移除走 DELETE。理由都必填，同一顆 modal、同一組錯誤處理。
+        const r = kind === 'remove'
+          ? await api(`/sensitive-routes/${route}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ reason: this.srAskReason.trim() }),
+            })
+          : await api('/sensitive-routes', {
+              method: 'POST',
+              body: JSON.stringify({ route, reason: this.srAskReason.trim() }),
+            });
         this.sr = { routes: r.routes, readers: r.readers, summary: r.summary };
+        this.srWarnings = r.warnings || [];
+        this.srAsk = null;
         this.load();
       } catch (e) {
+        // 409/404 就是這裡冒出來 —— e.detail 是後端的字串，例如「是最後一條
+        // 生效中的敏感路由，不能移除」，e.message 是 fallback。維持原樣，
+        // 不重新包裝：那正是後端實際會丟出來的訊息。
         this.srError = e.detail || e.message;
       }
       this.srBusy = false;
@@ -190,7 +204,7 @@ export default {
               style="background:var(--warn-bg);color:var(--warn);display:inline-flex;
                      align-items:center;gap:6px">
           <span class="mono">{{ r.route }}</span>
-          <a @click="removeRoute(r.route)" :title="'由 ' + r.added_by + ' 於 '
+          <a @click="askRoute('remove', r.route)" :title="'由 ' + r.added_by + ' 於 '
              + r.added_at + ' 加入：' + r.reason" style="font-weight:600">×</a>
         </span>
       </div>
@@ -201,7 +215,7 @@ export default {
         <span v-for="r in srDisabled" :key="r.route" style="margin-right:8px">
           <span class="mono">{{ r.route }}</span>
           （{{ r.removed_by }} 於 {{ r.removed_at }}）
-          <a @click="addRoute2(r.route)">恢復</a>
+          <a @click="askRoute('restore', r.route)">恢復</a>
         </span>
       </div>
 
@@ -232,6 +246,36 @@ export default {
           橫幅上。<br>
         · 不能清空。空清單不會報錯，只會讓 R05 靜靜不再命中任何東西 ——
           要停止那條規則請到它的詳細頁停用規則本身。
+      </div>
+    </div>
+
+    <!-- 移除／恢復的理由詢問。不用 window.prompt（同 allowlist.js 的
+         .modal-mask/.modal，這裡是同一個模式）。 -->
+    <div v-if="srAsk" class="modal-mask" @click.self="srAsk=null">
+      <div class="modal">
+        <div style="font-weight:700;font-size:15px;margin-bottom:8px">
+          {{ srAsk.kind === 'remove' ? '移除' : '恢復' }}敏感路由
+          <span class="mono">{{ srAsk.route }}</span>
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-bottom:12px;line-height:1.7">
+          <template v-if="srAsk.kind === 'remove'">
+            這會同時讓 R05（非上班時間敏感操作）與期間掃描停止看這條路由。
+          </template>
+          <template v-else>
+            恢復之後 R05 與期間掃描會重新看這條路由 —— 恢復監測也是一次設定變更，
+            所以理由同樣必填。
+          </template>
+        </div>
+        <div class="field">
+          <div class="field-label">理由<span class="req">＊必填</span></div>
+          <textarea v-model="srAskReason" aria-required="true"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" @click="srAsk=null">取消</button>
+          <button class="btn btn-primary" :disabled="!srAskReason.trim() || srBusy"
+                  @click="confirmRouteAction">
+            確定{{ srAsk.kind === 'remove' ? '移除' : '恢復' }}</button>
+        </div>
       </div>
     </div>
 

@@ -58,7 +58,9 @@ export default {
       // 判斷條件用「SQL 裡有沒有那個佔位符」，**不要寫死 r.id === 'R05'** ——
       // 日後別的規則也吃同一份清單時，寫死的判斷會漏掉它而畫面完全正常。
       const sql = this.d && this.d.rule && this.d.rule.sql;
-      if (!sql || !sql.includes('%(sensitive_routes)s')) return;
+      // 元件沒有依 ruleId 的 :key（只有 watch），跨規則導覽會重用同一個實例 ——
+      // 不重置的話，從 R05 切到不吃這份清單的規則時，卡片會留著 R05 的清單。
+      if (!sql || !sql.includes('%(sensitive_routes)s')) { this.srRoutes = null; return; }
       try {
         this.srRoutes = await api('/sensitive-routes');
       } catch (e) {
