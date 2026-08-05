@@ -38,7 +38,7 @@ def test_quick_catalog_has_16_templates(client):
 def test_rules_endpoint_lists_all(client):
     r = client.get("/api/rules")
     rules = r.json()["rules"]
-    assert len(rules) == 17
+    assert len(rules) == 18
     assert {"R01", "R04", "R06", "R12", "R13"} <= {x["id"] for x in rules}
 
 

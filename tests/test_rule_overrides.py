@@ -168,7 +168,7 @@ def test_disabled_rule_still_appears_in_the_list(client):
     """停用的規則若不列出，畫面就沒辦法把它開回來。"""
     _patch(client, "R05", {"reason": REASON, "enabled": False})
     body = client.get("/api/rules").json()
-    assert len(body["rules"]) == 17
+    assert len(body["rules"]) == 18
     assert "R05" in body["disabled"]
     assert any(x["id"] == "R05" for x in body["rules"])
 

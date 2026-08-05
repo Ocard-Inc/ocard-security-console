@@ -195,6 +195,26 @@ def calibrate() -> dict:
     with _segment(skipped, "backend_acc_10m"):
         _append_global(all_rows, skipped, "backend_acc_10m", inner, params)
 
+    # 3b. backend 單一來源 IP 的 60 分鐘請求分布（R15 的門檻依據，全域母體）
+    #
+    # **GROUP BY 與 WHERE 都必須與 R15 的 SQL 逐欄位相同**（只有 ip，且同樣帶
+    # `ip IS NOT NULL AND ip != ''`）。CLAUDE.md 記著三種不成對的災難：
+    # GROUP BY 粗一級讓門檻系統性偏高（R03 曾誤用 api_src_60m，實測 P99 差 26 倍）、
+    # WHERE 少一個條件讓哨兵值拿一個不含自己的母體當門檻（R13 的 `_store > 0`）。
+    # 這裡漏掉 `ip != ''` 的後果是所有「沒記到來源」的列併成一個巨大的桶，
+    # p99 被拉高一個數量級，R15 的門檻跟著失效 —— 不報錯，只是不再告警。
+    #
+    # 與段 3 刻意分開而不是共用一趟查詢：粒度不同（10 分鐘 × 帳號 vs
+    # 60 分鐘 × 來源），分布也不同（2026-08-05 實測 p99 分別是 104 與 240）。
+    inner = (
+        f"SELECT ip, toStartOfHour(create_time) AS b, count() AS c"
+        f" FROM ods_backend_sys_log WHERE {tf}{excl}"
+        f" AND ip IS NOT NULL AND ip != ''"
+        f" GROUP BY ip, b"
+    )
+    with _segment(skipped, "backend_ip_60m"):
+        _append_global(all_rows, skipped, "backend_ip_60m", inner, params)
+
     # 4. backend **全部** route 的 60 分鐘量（R14）
     #
     # 原本只算 `sensitive_routes()` 那六條（給已退休的 R02）。改成全路由是因為
