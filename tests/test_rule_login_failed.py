@@ -83,3 +83,53 @@ def test_r07a_does_not_select_raw_params():
     assert "params" not in df.columns, (
         "R07A 的 SQL 輸出了 params 欄位 —— 那會讓密碼 hash 流進 events.context、"
         "Slack 訊息與磁碟上的 log。只 JSONExtract 需要的那一個鍵。")
+
+
+def test_params_acc_usage_is_confined_to_new_login_family():
+    """Guard the premise: params.acc 只在 Boss_initial/auth_v2 登入動作出現。
+
+    explorer.py:52 的三層 coalesce 依賴一個假設：params.acc 只用來儲存操作者帳號。
+    如果未來某個新的 function 把 params.acc 當目標帳號用，或其他用途，這個假設就破掉了，
+    而 GROUP_BY["actor"]["admin"] 會把整個資料來源的列誤認成不同的操作者。
+
+    28 天實測（2026-07-08 ~ 08-06）：
+    ① params.acc 非空且 acc 為空，**只在這兩個 function/action**：
+       - Boss_initial/auth_v2/login_success （219K 筆）
+       - Boss_initial/auth_v2/login_failed （3.6K 筆）
+    ② acc 有值且 params.acc 也有值時，兩者 100% 相同 —— 不存在矛盾。
+    """
+    # 測試區間擴大到 28 天，確保涵蓋足夠的樣本
+    lookback = {"start": "2026-07-08 00:00:00", "end": "2026-08-06 00:00:00"}
+
+    # 檢查 1：params.acc 非空且 acc 為空的列，只出現在兩個特定動作
+    empty_acc_with_params = query(
+        "SELECT DISTINCT concat(function, '/', action) AS fn_action"
+        " FROM ods_admin_log"
+        " WHERE create_time >= %(start)s AND create_time < %(end)s"
+        "   AND (acc IS NULL OR acc = '')"
+        "   AND JSONExtractString(params, 'acc') != ''",
+        lookback)
+
+    fn_actions = set(empty_acc_with_params["fn_action"])
+    expected_actions = {"Boss_initial/auth_v2/login_success", "Boss_initial/auth_v2/login_failed"}
+    assert fn_actions <= expected_actions, (
+        f"params.acc 被用在意外的 function/action 組合裡！預期只在 {expected_actions}，"
+        f"但還出現在 {fn_actions - expected_actions}。這代表 params.acc 可能有了第二種意義，"
+        f"GROUP_BY[\"actor\"][\"admin\"] 的全域 fallback 會把這些列誤認成錯誤的操作者。")
+
+    # 檢查 2：當 acc 有值且 params.acc 也有值時，兩者必須完全相同
+    both_present = query(
+        "SELECT count() AS total,"
+        "       countIf(acc = JSONExtractString(params, 'acc')) AS matching"
+        " FROM ods_admin_log"
+        " WHERE create_time >= %(start)s AND create_time < %(end)s"
+        "   AND acc != '' AND acc IS NOT NULL"
+        "   AND JSONExtractString(params, 'acc') != ''",
+        lookback)
+
+    total = int(both_present["total"][0])
+    matching = int(both_present["matching"][0])
+    assert total == 0 or matching == total, (
+        f"acc 和 params.acc 出現矛盾！{total} 筆列中只有 {matching} 筆相同。"
+        f"這代表 params.acc 可能被用來記錄**目標**帳號而非操作者，"
+        f"explorer.py:52 的全域 fallback 會對誰是操作者給出錯誤的答案。")
