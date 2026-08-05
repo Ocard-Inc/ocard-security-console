@@ -45,6 +45,9 @@ def active_count() -> int:
 
 
 def disabled_count() -> int:
+    """已停用的路由數。brief 的 Produces 清單沒列這個函式，但資安總覽的
+    「目前有多少監測被關閉」橫幅（Task 7）需要它 —— 那條橫幅同時要能數
+    allowlist 的抑制與這裡的停用路由，兩者都是人工關掉的監測範圍。"""
     row = db.one("SELECT count(*) AS n FROM sensitive_routes WHERE status = ?",
                  (STATUS_DISABLED,))
     return int((row or {}).get("n") or 0)

@@ -35,6 +35,26 @@ def test_seed_is_idempotent():
     assert len(sr.all_rows()) == before
 
 
+def _restore_row(original: dict) -> None:
+    """把一列還原成停用前的原始內容（明列全部七欄，直接 UPDATE）。
+
+    刻意不透過 `sr.add()` 還原：`add()` 對既有列的 UPDATE 是「重新啟用」的
+    語意 —— 有一個真人現在重新核准這條路由，所以 `added_by`/`added_at`/
+    `reason` **應該**跟著換成這次核准的人與理由。測試 teardown 要的是相反的
+    事：假裝什麼都沒發生過，把 provenance 全部復原成原始值。這張表存在的
+    唯一理由就是回答「這條是誰加的、為什麼」，teardown 寫錯值等於悄悄
+    偽造那個答案 —— 而且不會有任何斷言失敗，因為復原後 status 一樣是
+    生效中，下一次讀 `active()` 完全看不出差異。
+    """
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE sensitive_routes SET status = ?, added_by = ?, added_at = ?,"
+            " reason = ?, removed_by = ?, removed_at = ? WHERE route = ?",
+            (original["status"], original["added_by"], original["added_at"],
+             original["reason"], original["removed_by"], original["removed_at"],
+             original["route"]))
+
+
 def test_seed_does_not_resurrect_a_manually_disabled_route():
     """人工停用的路由不可以被下一次啟動悄悄復活。
 
@@ -44,6 +64,8 @@ def test_seed_does_not_resurrect_a_manually_disabled_route():
     而使用者以為自己已經關掉了。
     """
     target = settings()["sensitive_routes"][0]
+    original = sr.get(target)
+    assert original is not None, f"{target} 應該已經被播種進表 —— 前提不成立"
     try:
         sr.disable(target, who="test@olis.com.tw")
         assert target not in sr.active()
@@ -56,7 +78,11 @@ def test_seed_does_not_resurrect_a_manually_disabled_route():
         assert row["removed_by"] == "test@olis.com.tw"
         assert row["removed_at"]
     finally:
-        sr.add(target, who="test@olis.com.tw", reason="測試還原")
+        # 直接 UPDATE 還原成停用前的原始內容，不經 sr.add()（見 _restore_row
+        # 的說明）—— 否則這條路由的 added_by/reason 會從「seed / settings.yaml
+        # 初始清單」被永久改寫成這個測試留下的痕跡，而 status 一樣是生效中，
+        # 沒有任何斷言會失敗，錯誤要等到後續讀 added_by 的測試才會現形。
+        _restore_row(original)
 
 
 def test_add_then_disable_then_reactivate():
