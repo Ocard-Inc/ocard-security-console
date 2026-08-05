@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+from contextlib import contextmanager
 from datetime import timedelta
 
 from console.core import timewin
-from console.core.ch import query
+from console.core.ch import ChQueryError, query
 from console.core.config import settings
 from console.core.logging_setup import setup_logging
 from console.core import masking
@@ -101,6 +102,31 @@ def _append_global(all_rows: list, skipped: list, mk: str,
     all_rows.append((mk, -1, "all", *dist))
 
 
+@contextmanager
+def _segment(skipped: list, name: str):
+    """一段基線的邊界：SQL 失敗只記名並跳過，不拖垮其他段。
+
+    **這是「空母體」那個修補的另一半。** `_append_global` 處理的是「查詢成功
+    但沒有資料」；這裡處理「查詢直接失敗」。2026-08-05 兩種都真的發生了，
+    而且是同一張表在同一天的兩個階段：`ods_api_log` 先被清空（空母體），
+    回填後 `has_error` 變成 `Nullable(String)`（查詢拋 code 386）。
+
+    為什麼一段失敗會全毀：11 段的結果累積在 `all_rows`，**最後才一次性
+    upsert**。第 7 段炸掉時，前 6 段已經算好的一萬多列跟著被丟掉 ——
+    包括與 api_log 完全無關的 backend / admin / auth 基線。
+    症狀是「一張表的 schema 變了，四張表的基線一起停止更新」。
+
+    **只吃 `ChQueryError`，不吃 `ChConnectionError`。** 連不上 ClickHouse 不是
+    某一段的問題，而是整個監測中斷；把它吞掉會寫出一份幾乎空的基線並回報成功，
+    那比大聲失敗糟得多。
+    """
+    try:
+        yield
+    except ChQueryError as exc:
+        skipped.append(name)
+        logger.warning("基線 %s：查詢失敗，跳過此段（沿用舊值）—— %s", name, exc)
+
+
 def calibrate() -> dict:
     """重算全部基線，回傳統計摘要。"""
     cfg = settings()["baseline"]
@@ -124,14 +150,15 @@ def calibrate() -> dict:
                 f" count() AS c FROM {src['table']} WHERE {tf}{excl} GROUP BY b"
             )
             mk = f"table_{n}m:{key}"
-            rows = _bucketed_distribution(inner, params, f"'{mk}'")
-            all_rows.extend(rows)
-            # (-1,'all') 保底列：baseline.get() 的回退鏈是
-            # (hour,dc) → (hour,'all') → (-1,dc) → (-1,'all')，但上面只產生
-            # (hour, weekday|weekend)。樣本一少就會出現中間破洞，把 median
-            # 參考線斷成好幾截；補這一列讓回退鏈永遠不會走到底。
-            _append_global(all_rows, skipped, mk, inner, params)
-            logger.info("%s → %d 列", mk, len(rows))
+            with _segment(skipped, mk):
+                rows = _bucketed_distribution(inner, params, f"'{mk}'")
+                all_rows.extend(rows)
+                # (-1,'all') 保底列：baseline.get() 的回退鏈是
+                # (hour,dc) → (hour,'all') → (-1,dc) → (-1,'all')，但上面只
+                # 產生 (hour, weekday|weekend)。樣本一少就會出現中間破洞，
+                # 把 median 參考線斷成好幾截；補這一列讓回退鏈不會走到底。
+                _append_global(all_rows, skipped, mk, inner, params)
+                logger.info("%s → %d 列", mk, len(rows))
 
     # 2. 登入成功 / 失敗（overview 線）
     for n in GRANULARITIES:
@@ -144,8 +171,9 @@ def calibrate() -> dict:
                 f"SELECT toStartOfInterval(create_time, INTERVAL {n} MINUTE) AS b,"
                 f" count() AS c FROM ods_admin_log WHERE {tf}{excl} AND {cond} GROUP BY b"
             )
-            all_rows.extend(_bucketed_distribution(inner, params, f"'{mk}'"))
-            _append_global(all_rows, skipped, mk, inner, params)
+            with _segment(skipped, mk):
+                all_rows.extend(_bucketed_distribution(inner, params, f"'{mk}'"))
+                _append_global(all_rows, skipped, mk, inner, params)
 
     # 2b. R06 的 boss 登入成功。固定 10 分鐘、不進粒度迴圈 ——
     #     它是規則引擎的門檻依據（config/rules/r06_login_success_anomaly.yaml），
@@ -154,7 +182,9 @@ def calibrate() -> dict:
         f"SELECT toStartOfInterval(create_time, INTERVAL 10 MINUTE) AS b, count() AS c"
         f" FROM ods_admin_log WHERE {tf}{excl} AND {exprs.BOSS_LOGIN_SUCCESS} GROUP BY b"
     )
-    all_rows.extend(_bucketed_distribution(inner, params, "'boss_login_success_10m'"))
+    with _segment(skipped, "boss_login_success_10m"):
+        all_rows.extend(
+            _bucketed_distribution(inner, params, "'boss_login_success_10m'"))
 
     # 3. backend 單帳號 10 分鐘請求分布（R01，全域）
     inner = (
@@ -162,7 +192,8 @@ def calibrate() -> dict:
         f" FROM ods_backend_sys_log WHERE {tf}{excl} AND acc IS NOT NULL AND acc != ''"
         f" GROUP BY acc, b"
     )
-    _append_global(all_rows, skipped, "backend_acc_10m", inner, params)
+    with _segment(skipped, "backend_acc_10m"):
+        _append_global(all_rows, skipped, "backend_acc_10m", inner, params)
 
     # 4. backend **全部** route 的 60 分鐘量（R14）
     #
@@ -181,31 +212,35 @@ def calibrate() -> dict:
         f" FROM ods_backend_sys_log WHERE {tf}{excl}"
         f" GROUP BY r2, b"
     )
-    all_rows.extend(_bucketed_distribution(inner, params, "concat('backend_route_60m:', r2)"))
+    with _segment(skipped, "backend_route_60m"):
+        all_rows.extend(
+            _bucketed_distribution(inner, params, "concat('backend_route_60m:', r2)"))
 
     # 5. API endpoint 60 分鐘量（R04/R11 + 風險排名）：取 28 天量 top 300
-    top_df = query(
-        f"SELECT {exprs.ENDPOINT} AS ep, count() AS cnt FROM ods_api_log"
-        f" WHERE {tf}{excl} GROUP BY ep ORDER BY cnt DESC LIMIT 300",
-        params,
-    )
-    # 空母體時 clickhouse-connect 回的是 (0, 0) 的 DataFrame —— **連欄位名都沒有**，
-    # 所以 `top_df["ep"]` 是 KeyError 而不是空清單。2026-08-05 `ods_api_log` 的歷史
-    # 分區消失時就是炸在這裡，而且因為基線最後才一次性寫入，backend 那幾段也跟著沒寫。
-    top_eps = [str(e) for e in top_df["ep"]] if "ep" in top_df.columns else []
-    if not top_eps:
-        skipped.append("api_endpoint_60m")
-        logger.warning("基線 api_endpoint_60m：%s ~ %s 內 ods_api_log 沒有任何列，跳過",
-                       start, end)
-    if top_eps:
-        inner = (
-            f"SELECT {exprs.ENDPOINT} AS ep, toStartOfHour(create_time) AS b, count() AS c"
-            f" FROM ods_api_log WHERE {tf}{excl} AND ep IN {exprs.in_list(top_eps)}"
-            f" GROUP BY ep, b"
+    with _segment(skipped, "api_endpoint_60m"):
+        top_df = query(
+            f"SELECT {exprs.ENDPOINT} AS ep, count() AS cnt FROM ods_api_log"
+            f" WHERE {tf}{excl} GROUP BY ep ORDER BY cnt DESC LIMIT 300",
+            params,
         )
-        rows = _bucketed_distribution(inner, params, "concat('api_endpoint_60m:', ep)")
-        all_rows.extend(rows)
-        logger.info("api_endpoint_60m：%d endpoints → %d 列", len(top_eps), len(rows))
+        # 空母體時 clickhouse-connect 回的是 (0, 0) 的 DataFrame —— **連欄位名都沒有**，
+        # 所以 `top_df["ep"]` 是 KeyError 而不是空清單。2026-08-05 `ods_api_log` 的歷史
+        # 分區消失時就是炸在這裡，而且因為基線最後才一次性寫入，backend 那幾段也跟著沒寫。
+        top_eps = [str(e) for e in top_df["ep"]] if "ep" in top_df.columns else []
+        if not top_eps:
+            skipped.append("api_endpoint_60m")
+            logger.warning("基線 api_endpoint_60m：%s ~ %s 內 ods_api_log 沒有任何列，跳過",
+                           start, end)
+        else:
+            inner = (
+                f"SELECT {exprs.ENDPOINT} AS ep, toStartOfHour(create_time) AS b,"
+                f" count() AS c"
+                f" FROM ods_api_log WHERE {tf}{excl} AND ep IN {exprs.in_list(top_eps)}"
+                f" GROUP BY ep, b"
+            )
+            rows = _bucketed_distribution(inner, params, "concat('api_endpoint_60m:', ep)")
+            all_rows.extend(rows)
+            logger.info("api_endpoint_60m：%d endpoints → %d 列", len(top_eps), len(rows))
 
     # 6. API 單一來源 60 分鐘分布（全域；headers 解析成本高 → 取 7 天）。
     #    這是 **per (來源 IP)、跨全部 endpoint** 的分布，讀取端是
@@ -217,7 +252,9 @@ def calibrate() -> dict:
         f" (SELECT {exprs.API_SRC_IP} AS src, create_time FROM ods_api_log WHERE {tf}{excl})"
         f" WHERE src != '' GROUP BY src, b"
     )
-    _append_global(all_rows, skipped, "api_src_60m", inner, {"start": s7, "end": e7})
+    with _segment(skipped, "api_src_60m"):
+        _append_global(all_rows, skipped, "api_src_60m", inner,
+                       {"start": s7, "end": e7})
 
     # 6b. API (來源 IP × endpoint) 60 分鐘分布（R03 的門檻依據）。
     #     **必須與 R03 的 metric 同單位。** R03 的 SQL 是 `GROUP BY src, endpoint`，
@@ -238,14 +275,18 @@ def calibrate() -> dict:
         f" (SELECT {exprs.API_SRC_IP} AS src, {exprs.ENDPOINT} AS ep, create_time"
         f"  FROM ods_api_log WHERE {tf}{excl}) WHERE src != '' GROUP BY src, ep, b"
     )
-    _append_global(all_rows, skipped, "api_src_ep_60m", inner, {"start": s7, "end": e7})
+    with _segment(skipped, "api_src_ep_60m"):
+        _append_global(all_rows, skipped, "api_src_ep_60m", inner,
+                       {"start": s7, "end": e7})
 
     # 7. API error 5 分鐘分布（R09，全域）
     inner = (
-        f"SELECT toStartOfFiveMinutes(create_time) AS b, countIf(has_error = 1) AS c"
+        f"SELECT toStartOfFiveMinutes(create_time) AS b,"
+        f" countIf({exprs.API_HAS_ERROR}) AS c"
         f" FROM ods_api_log WHERE {tf}{excl} GROUP BY b"
     )
-    _append_global(all_rows, skipped, "api_error_5m", inner, params)
+    with _segment(skipped, "api_error_5m"):
+        _append_global(all_rows, skipped, "api_error_5m", inner, params)
 
     # 8. 單品牌 15 分鐘分布（R10，全域）
     for mk, table in [("brand_backend_15m", "ods_backend_sys_log"),
@@ -254,7 +295,8 @@ def calibrate() -> dict:
             f"SELECT _brand, toStartOfInterval(create_time, INTERVAL 15 MINUTE) AS b,"
             f" count() AS c FROM {table} WHERE {tf}{excl} GROUP BY _brand, b"
         )
-        _append_global(all_rows, skipped, mk, inner, params)
+        with _segment(skipped, mk):
+            _append_global(all_rows, skipped, mk, inner, params)
 
     # 8b. API (品牌 × 分店) 60 分鐘分布。目前沒有規則讀它 —— 這是「長期持續的
     #     單店濫用」那條規則的門檻依據，先算出母體才有依據決定 factor 與 floor。
@@ -289,7 +331,8 @@ def calibrate() -> dict:
         f"SELECT _brand, _store, toStartOfHour(create_time) AS b, count() AS c"
         f" FROM ods_api_log WHERE {tf}{excl} AND _store > 0 GROUP BY _brand, _store, b"
     )
-    _append_global(all_rows, skipped, "brand_store_60m", inner, params)
+    with _segment(skipped, "brand_store_60m"):
+        _append_global(all_rows, skipped, "brand_store_60m", inner, params)
 
     n = baseline.upsert_many(all_rows, now_str)
     logger.info("基線寫入 %d 列（樣本 %s ~ %s）", n, start, end)
