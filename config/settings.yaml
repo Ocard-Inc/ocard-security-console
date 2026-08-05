@@ -81,7 +81,18 @@ baseline:
     - ["2026-07-30 21:30:00", "2026-07-30 22:30:00"]   # 7/30 Boss 登入成功尖峰
 
 sensitive_routes:
-  # backend_sys_log route 前綴（前 2 段）— R02/R05 監測對象
+  # backend_sys_log route 前綴（前 2 段）。
+  #
+  # **這份清單有兩個讀取端，而且其中一個是抄過去的字面值**：
+  #   ① sweep/probes.py（期間掃描的敏感路由探針，讀 exprs.sensitive_routes()）
+  #   ② config/rules/r05_off_hours.yaml 的 SQL —— **裡面寫死了一份副本**
+  # tests/test_sensitive_routes_consistency.py 綁住兩者一致。改這裡一定要
+  # 同時改 R05 的 SQL，否則「加了一條敏感路由」會靜靜地只有掃描看得到。
+  #
+  # R02（敏感路由大量遍歷）已於 2026-08 退休，由 R14 取代 —— R14 對**全部**
+  # route 各自比對自己的基線，不需要事後圈定的清單。這份清單現在只服務
+  # R05（非上班時間敏感操作），它的 metric 是「一個帳號打全部敏感路由的合計」，
+  # 實測拆成逐路由會漏掉 36% 的命中，所以它不能改用 R14 的形狀。
   - orderlist/detail
   - orderlist/delivery
   - orderlist/summary

@@ -76,13 +76,25 @@ def run_daily() -> None:
         logger.exception("抑制紀錄修剪失敗（不影響基線與五分鐘檢查）")
 
     now_str = timewin.fmt(timewin.taipei_now())
+    # 跳過的段落要進 note。calibrate 現在不會因為某張表沒資料就整個崩潰
+    # （見 calibrate._append_global），代價是「少算了幾段」會變成一個安靜的
+    # 成功 —— 那些 metric 會沿用舊基線，而心跳顯示綠燈。
+    note = f"基線 {result['rows']} 列"
+    if result.get("skipped"):
+        note += f"；{len(result['skipped'])} 段母體為空已跳過（沿用舊值）：" \
+                f"{'、'.join(result['skipped'])}"
     with db.tx() as conn:
         conn.execute(
             "INSERT INTO heartbeat (key, last_tick, last_ok, consecutive_failures, note)"
             " VALUES ('daily', ?, ?, 0, ?)"
             " ON CONFLICT(key) DO UPDATE SET last_tick = ?, last_ok = ?, note = ?",
-            (now_str, now_str, f"基線 {result['rows']} 列",
-             now_str, now_str, f"基線 {result['rows']} 列"))
+            (now_str, now_str, note, now_str, now_str, note))
+    if result.get("skipped"):
+        notify.send_ops_message(
+            "基線有段落被跳過",
+            f"{len(result['skipped'])} 段的母體在基線視窗內沒有任何樣本，"
+            f"已沿用舊值：{'、'.join(result['skipped'])}。"
+            f"對應規則的門檻會停在上一次算出來的數字。")
     age = bl.age_days(timewin.taipei_now())
     if age is not None and age > settings()["baseline"]["max_age_days"]:
         notify.send_ops_message("基線超齡", f"基線已 {age:.0f} 天未重算，請檢查每日排程")

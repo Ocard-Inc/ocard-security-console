@@ -54,7 +54,8 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 
 | 情境 | 結果 |
 |---|---|
-| 7/16 攻擊（00:13 起） | 00:25 觸發 R01（4,646 次，門檻 928）、R02（orderlist/detail 4,558 次為 median 20 的 228 倍）、R10A（台灣和民集團（7340））；00:15 觸發 R08A 新來源 |
+| 7/16 攻擊（00:13 起） | **00:20** 觸發 R14（orderlist/detail 468 次為 median 20 的 23.4 倍）與 R08A 新來源（andrew_c · 131.143.215.229，592 次）；00:25 觸發 R01（4,646 次，門檻 864）與 R10A（台灣和民集團（7340））。四小時內 R14 對 4 條 route 各自開單（orderlist/detail、orderlist/delivery、customer/index、customer/profile）—— 已退休的 R02 只看六條敏感路由清單，看不到 customer/index |
+| 8/5 凌晨 customer/index 抽取 | **01:05** 觸發 R14（209 次為 median 8 的 26.1 倍）。單一帳號 00:00–06:00 持續拉取，02:00 換到一個 90 天內首見的 IP。R01 抓不到（10 分鐘視窗內每桶僅約 200 次，低於其 HAVING 400）；R02 也抓不到（customer/index 不在敏感路由清單內） |
 | 7/30 登入尖峰 21:40 | 21:45 觸發 R06（316 次 vs 同時段 median 52 / P95 80，6.1 倍） |
 | 8/1 正常日（全天） | 12 件（P1 僅 1 件）。R03 的 4 件為固定批次整合，應以 Allowlist 處理 |
 

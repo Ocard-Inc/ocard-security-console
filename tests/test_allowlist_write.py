@@ -222,7 +222,7 @@ def test_rules_payload_lists_the_available_filters(client):
     assert not r09["allowlistable"]
     # 標籤依資料來源而異（api 與 backend 的 endpoint 不是同一個東西）
     assert "Controller" in r03["filters"][0]["label"]
-    assert "Route" in rules["R02"]["filters"][0]["label"]
+    assert "Route" in rules["R14"]["filters"][0]["label"]
 
 
 def test_unknown_key_is_rejected(client):

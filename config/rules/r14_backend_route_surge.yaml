@@ -1,0 +1,44 @@
+id: R14
+name: Backend route 流量異常
+severity: P1
+source: backend
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+sql: |
+  SELECT arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/') AS route2,
+         count() AS metric, uniq(acc) AS accs, uniq(ip) AS ips, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+  GROUP BY route2
+  HAVING metric >= 200
+threshold:
+  static_floor: 200
+  baseline_key: "backend_route_60m:{route2}"
+  stat: p95
+  factor: 3
+entity:
+  - {col: route2, fp: null}
+note: |
+  取代已退休的 R02（敏感路由大量遍歷）。R02 只看六條事後圈定的敏感路由，
+  而 7/16 那場攻擊實際打了 12 條 route —— 清單天生只涵蓋上次攻擊用過的路由。
+  這條改成全部 route 各自對照自己的 28 天同時段基線。
+
+  **factor 必須 <= 3。** 回測（7/08-8/05，28 天）顯示 factor=4 會漏掉 R02
+  現行參數抓得到的 4 個桶，那就不算取代。factor=3 是 R02 的嚴格超集
+  （R02 的 60 桶全涵蓋），factor=2.5 也是超集但事件數多 47%。
+
+  **門檻的兩臂各管一邊。** 高流量 route 由基線主導（p95 x 3），安靜的 route
+  由 static_floor 主導。R02 對六條路由共用 floor 800 的後果是實際靈敏度差 53 倍
+  —— customer/profile 是 p95 的 2.5 倍，而 orderlist/delivery 是 133 倍
+  （等於沒在監測）。改成低 floor + 基線主導之後，每條 route 自動有自己的尺度。
+
+  回測結果（28 天，floor=200 / factor=3）：17 則事件，其中 12 則在 7/16-17
+  攻擊期間；扣掉那兩天是 5 則 / 26 天（約每 5 天一則）—— 這個量撐得起 P1，
+  資安總覽的「目前沒有達到 P0/P1 門檻的事件」不會因為降級而失效。
+
+  已知限制：`baseline.get()` 沒有最小樣本數保護，而全路由的基線裡有 3,134 列
+  只有 1 個樣本。某條 route 在某個時段只出現過一次且量很大時，p95 x 3 會把
+  門檻推高到那條 route 在該時段實質上不受監測。低流量端的保護是 static_floor，
+  高流量端沒有 —— 這與其他規則的行為一致，不是這條規則獨有的。
