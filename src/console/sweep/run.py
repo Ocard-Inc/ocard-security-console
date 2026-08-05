@@ -67,7 +67,9 @@ class ProbeRun:
     timings_ms: dict[str, int]      # probe_id → 耗時
     failures: dict[str, str]        # probe_id → 錯誤訊息
     skipped: tuple[str, ...]        # 未執行的 probe_id（cost=high 未勾選、需 intel 但無資料）
-    params: dict[str, str]
+    # build_params() 回傳的 sensitive_routes 是 list[str]，不是字串 —— 這個型別
+    # 標註必須跟著它，否則只是一個看起來精確卻是錯的宣稱。
+    params: dict[str, object]
 
 
 def range_days(start: datetime, end: datetime) -> float:
@@ -124,7 +126,7 @@ def _clean(value: object) -> object:
     return masking.scrub_text(value, max_len=80)
 
 
-def _run_one(probe: Probe, params: dict[str, str], floor: float) -> list[Hit]:
+def _run_one(probe: Probe, params: dict[str, object], floor: float) -> list[Hit]:
     fp = masking.DISPLAY_FUNCS[probe.fp_kind]
     df = query(probe.sql, {**params, "floor": floor})
     hits: list[Hit] = []
