@@ -239,7 +239,7 @@ export default {
            style="margin-top:8px">{{ w }}</div>
 
       <div class="note-quote" style="margin-top:10px">
-        · 比對是**字串完全相等**，不是前綴 —— <span class="mono">customer/index</span>
+        · 比對是<strong>字串完全相等</strong>，不是前綴 —— <span class="mono">customer/index</span>
           不會涵蓋 <span class="mono">customer/indexExtra</span>。<br>
         · 移除一條路由就是製造盲區：R05 與期間掃描同時停止看它。每次改動都必填
           理由、寫入操作稽核、發 Slack ops 訊息，已停用的條數也會顯示在資安總覽的
