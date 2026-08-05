@@ -213,6 +213,48 @@ def test_untrackable_entity_degrades_with_a_reason(client):
         assert "peers" not in p, f"{evt_no} 不支援卻仍回傳了母體資料"
 
 
+def test_entity_condition_that_matches_nothing_degrades_instead_of_lying(client):
+    """事件正在命中，而對象條件比對到 0 筆 → 那是**運算式不成對**，
+    不是「這個對象很安靜」。整塊面板必須降級並說出原因。
+
+    實例（2026-08-05 由 EVT-0052 暴露）：R06 的 entity 值是規則 SQL 裡的字面常數
+    `Boss_initial/auth_v2`，而 admin 的 endpoint 母體鍵是
+    `concat(function, '/', action)` —— 值有三段，完全相等比對永遠 0 筆。
+    `entity.py` 的模組說明假設「事件的 entity 值就是 `entity_expr()` 算出來的」，
+    字面常數的規則違反這個假設，而**沒有任何執行期檢查**。
+
+    症狀是三塊面板各自編出一個不同的、看起來合理的錯誤說法：
+      - 母體位置：`above` 數到 9 → rank=10 而 groups=9（排名比母體還大），
+        且 `comparable=False` 的說明把原因誤指為「規則指標另外帶了條件」；
+      - 24 小時作息：`own_total=0` → 「此區間內沒有任何活動」，
+        而那個對象正在告警；
+      - 端點集中度：全 0。
+
+    `own < expected` 是**矛盾**（總數不可能小於它的子集），所以這個檢查不需要
+    知道任何規則的細節，也不必為 R06 寫特例。
+    """
+    checked = 0
+    for e in _events(client, limit=25):
+        p = client.get(f"/api/events/{e['evt_no']}/entity").json()
+        if not p["supported"]:
+            assert p.get("reason"), f"{e['evt_no']} 不支援卻沒有給原因"
+            assert "peers" not in p
+            continue
+        checked += 1
+        peers, where = p["peers"], f"{e['evt_no']}（{e.get('rule_id')}）"
+        assert peers["own"] >= 1, (
+            f"{where} 事件正在命中（metric={e.get('metric_value')}）而對象條件"
+            f"比對到 {peers['own']} 筆 —— 比對運算式與事件的 entity 值不成對，"
+            "面板必須整塊降級並說出原因，不可以給假排名或說「沒有任何活動」")
+        assert peers["own"] >= (peers["expected"] or 0) - 1, (
+            f"{where} own={peers['own']} 小於事件指標 {peers['expected']} —— "
+            "總數不可能小於它的子集，這是對象條件錯了")
+        assert 1 <= peers["rank"] <= peers["groups"], f"{where} 排名超出母體範圍"
+        assert p["profile"]["own_total"] >= 1, \
+            f"{where} 作息說對象完全沒有活動，而它正在告警"
+    assert checked, "沒有任何 supported 的事件，這個測試等於空跑"
+
+
 def test_timeline_is_contiguous_and_zero_filled(client):
     """分桶必須連續。沒有零填的話空桶直接消失，而 category 軸依索引等距排列 ——
     停掉的那幾天會被壓縮成一段直線而不是凹下去（同 trends 的教訓）。"""

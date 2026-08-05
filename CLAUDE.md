@@ -591,6 +591,20 @@ EVT-0001 三個欄位都填著同一句「APP 讀取資料」—— 必填只是
 `explorer.entity_meta()`。跳過 drilldown 的捷徑會讓不支援的組合靜靜產生一個
 永遠命中 0 筆的面板（`tests/test_event_entity.py` 有反向測試守著）。
 
+**entity 值是規則 SQL 裡的字面常數時，完全相等比對永遠 0 筆 —— 要在執行期擋。**
+上一條的前提是「事件的 entity 值就是 `entity_expr()` 算出來的」，而 R06 輸出
+`'Boss_initial/auth_v2' AS endpoint`（字面常數），admin 的 endpoint 母體鍵卻是
+`concat(function, '/', action)`（三段）。2026-08-05 由 EVT-0052 暴露：三塊面板
+**各自編出一個看起來合理的錯誤說法** —— 母體給 `rank=10 / groups=9`（排名比母體
+還大）且把原因誤指為「規則指標另外帶了條件」、作息說「此區間內沒有任何活動」
+（而它正在告警）、集中度全 0。`entity.unresolved_reason()` 以
+**`own < expected` 是矛盾**（總數不可能小於它的子集）判定，所以不必為 R06 寫特例；
+檢查掛在 `routes._entity_context()`，**兩個端點都擋**（時序那支用同一個 ref，
+漏了會畫出一條 28 天全 0 的線）。刻意**不改規則的 entity 值**：那同時是事件
+去重鍵與 drilldown 的篩選值，改它會讓進行中的事件重新編號，而
+`Boss_initial/auth_v2` 在 Explorer 的 `function` 篩選（前綴比對）上查得到 ——
+壞的只有「用母體分組鍵做完全相等比對」這一件事。
+
 **比對是完全相等，不是前綴。** `explorer.entity_expr()` 回的是 `GROUP_BY` 的運算式
 （事件的 entity 值就是它算出來的），不是 Explorer 篩選器用的 `FILTER_COLUMN`——
 後者對 endpoint 是 `startsWith`，會把 `Api2/GetProfileExtra` 算進 `Api2/GetProfile`

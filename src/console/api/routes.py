@@ -441,6 +441,21 @@ def _entity_context(evt_no: str) -> tuple[dict, object, object | None, str | Non
         return row, rule, None, (
             f"{row['rule_name']}沒有可追蹤的對象"
             "（它的偵測範圍是整張表，不是某個帳號或來源），因此不提供對象面板。")
+    # 對象條件是否真的比對得到記錄，只有執行期問得出來（規則的 entity 可以是
+    # SQL 裡的字面常數，見 entity.unresolved_reason）。**兩個端點都要擋** ——
+    # 時序那支用同一個 ref，漏了它會畫出一條 28 天全 0 的線。
+    # 多一趟 count（實測 0.2 秒）換掉三塊各自編出錯誤說法的面板。
+    end = timewin.parse(row["last_seen"])
+    window = rule.window_minutes if rule else 60
+    try:
+        unresolved = entity.unresolved_reason(
+            ref, end - timedelta(minutes=window), end, row["metric_value"])
+    except ChQueryError as exc:
+        # 查不動不等於不成對 —— 說出「無法確認」，不要假裝面板是好的，
+        # 也不要因此把一個正常的對象判成不成對（同 explorer 的 explain_failed）。
+        return row, rule, None, f"無法確認這個事件的對象是否可查詢：{exc}"
+    if unresolved:
+        return row, rule, None, unresolved
     return row, rule, ref, None
 
 
