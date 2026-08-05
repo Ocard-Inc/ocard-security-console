@@ -72,7 +72,12 @@ def _brand_top(event: dict, rule: Rule) -> tuple[list[dict] | None, str]:
     tried = []
     for name, start, end in _windows(event, rule):
         try:
-            df = query(rule.sql, {"start": start, "end": end})
+            # 一律走 engine._sql_params()（唯一真相），不要在這裡另外拼
+            # {"start":..., "end":...}。R05 這類會用到 %(sensitive_routes)s
+            # 的規則若少了這個參數，clickhouse-connect 會拋 Python 原生的
+            # KeyError（不是 ChQueryError），下面的 except 接不住，整支 CLI
+            # 就會在還沒補完的事件上中斷。
+            df = query(rule.sql, engine._sql_params(rule, start, end))
         except ChQueryError as exc:
             return None, f"查詢失敗：{exc}"
         matched = None
