@@ -160,3 +160,28 @@ def test_delete_a_missing_route_is_404(client):
     r = client.request("DELETE", "/api/sensitive-routes/nope_test/nope",
                        json={"reason": "測試"})
     assert r.status_code == 404
+
+
+def test_overview_banner_counts_disabled_sensitive_routes(client):
+    """移除的路由必須出現在「目前有多少監測被我們自己關閉」的橫幅上。
+
+    少了這個數字，一個刻意的盲區就只有進到規則頁的人知道 —— 那正是
+    CLAUDE.md 對 allowlist、停用規則、Slack 關閉一再要求的同一件事。
+    """
+    body = client.get("/api/overview?minutes=60").json()
+    s = body["suppression"]
+    assert "disabled_sensitive_routes" in s
+    assert "active_sensitive_routes" in s
+    assert s["active_sensitive_routes"] == sr.active_count()
+    assert s["disabled_sensitive_routes"] == sr.disabled_count()
+
+
+def test_audit_mode_page_lists_the_new_write_endpoints():
+    """web/pages/audit-mode.js 是對稽查人員的承諾清單。
+
+    CLAUDE.md：新增可寫端點必須同步。宣稱一個不存在的控制比什麼都不說更糟，
+    反過來漏掉一個真實的可寫端點也一樣。
+    """
+    from pathlib import Path
+    text = Path("web/pages/audit-mode.js").read_text(encoding="utf-8")
+    assert "敏感路由" in text, "audit-mode.js 沒有提到敏感路由的可寫端點"

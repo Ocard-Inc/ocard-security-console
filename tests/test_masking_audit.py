@@ -41,6 +41,9 @@ CREDENTIAL_LEAK = re.compile(
 # 之後任何真正的洩漏都可能剛好落在被放寬的範圍裡，而那正是這個檔案存在的理由。
 OPERATOR_KEYS = {
     "who", "owner", "approved_by", "created_by", "updated_by",
+    # 敏感路由清單的「誰加的／誰停的」。移除一條路由就是製造盲區，
+    # 操作者必須看得見 —— 同 approved_by。
+    "added_by", "removed_by",
     "email", "logout_url", "ros_url",
 }
 
@@ -406,6 +409,14 @@ def test_allowlist_response_is_clean(client):
     r = client.get("/api/allowlist")
     assert r.status_code == 200, r.text
     _scan_json(r.json(), "GET /api/allowlist")
+
+
+def test_sensitive_routes_response_is_clean(client):
+    """清單會回操作者 Email（added_by / removed_by，走結構性豁免）；
+    reason 是人工自由文字，必須已遮罩。"""
+    r = client.get("/api/sensitive-routes")
+    assert r.status_code == 200, r.text
+    _scan_json(r.json(), "GET /api/sensitive-routes")
 
 
 def test_audit_response_is_clean(client):
