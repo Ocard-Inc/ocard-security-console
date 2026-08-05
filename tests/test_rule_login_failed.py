@@ -88,7 +88,8 @@ def test_r07a_does_not_select_raw_params():
 def test_params_acc_usage_is_confined_to_new_login_family():
     """Guard the premise: params.acc 只在 Boss_initial/auth_v2 登入動作出現。
 
-    explorer.py:52 的三層 coalesce 依賴一個假設：params.acc 只用來儲存操作者帳號。
+    `explorer.GROUP_BY["actor"]["admin"]` 的三層 coalesce 依賴一個假設：
+    params.acc 只用來儲存操作者帳號。
     如果未來某個新的 function 把 params.acc 當目標帳號用，或其他用途，這個假設就破掉了，
     而 GROUP_BY["actor"]["admin"] 會把整個資料來源的列誤認成不同的操作者。
 
@@ -132,4 +133,5 @@ def test_params_acc_usage_is_confined_to_new_login_family():
     assert total == 0 or matching == total, (
         f"acc 和 params.acc 出現矛盾！{total} 筆列中只有 {matching} 筆相同。"
         f"這代表 params.acc 可能被用來記錄**目標**帳號而非操作者，"
-        f"explorer.py:52 的全域 fallback 會對誰是操作者給出錯誤的答案。")
+        f"explorer.GROUP_BY[\"actor\"][\"admin\"] 的全域 fallback 會對誰是"
+        f"操作者給出錯誤的答案。")

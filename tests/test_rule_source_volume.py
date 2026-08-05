@@ -9,7 +9,10 @@ WHERE 少一個條件讓哨兵值拿一個不含自己的母體當門檻（R13 �
 """
 from __future__ import annotations
 
+from console.checker import calibrate as calib
 from console.core.ch import query
+from console.core.config import settings
+from console.queries import exprs
 from console.rules import baseline
 from console.rules.loader import load_rules
 
@@ -73,17 +76,28 @@ def test_backend_ip_60m_population_matches_the_rule_group_by():
     對帳方式：用同一個母體定義在近期一段區間現算一次分布，與 baselines 裡那
     一列比對數量級。粗一級（例如漏掉 `ip != ''` 而把所有無來源的列併成一個
     巨大的桶）會讓 p99 差一個數量級以上，這裡就會失敗。
+
+    **視窗與排除條件必須跟 calibrate 一樣，不是寫死的日期字串。** calibrate
+    的母體是「now-3d 往前 28 天、排除污染窗」的**滾動**視窗（見
+    `calibrate._range()`），不是某個固定區間。原本這裡寫死
+    `2026-07-08 ~ 08-05`：一個月後那段區間會落到 calibrate 樣本範圍之外，
+    這個測試會開始比對兩個不同時期的分布而變得忽通忽不通；而且原本沒帶
+    `exprs.exclusion_filter()`，7/16-17 那個污染窗會被算進「現算」的分布卻
+    不在 baselines 那一列裡，兩邊的 p99 天生就不該相等。改成呼叫
+    calibrate 用的同一個 `_range()` 與 `exclusion_filter()`，這個測試才會
+    一直對比到「calibrate 真的會拿來算基線」的那段資料。
     """
     base = baseline.get("backend_ip_60m")
     assert base is not None, "先跑 calibrate"
+    start, end = calib._range(settings()["baseline"]["window_days"])
     live = query(
         "SELECT quantileExact(0.99)(c) AS p99 FROM ("
         "  SELECT ip, toStartOfHour(create_time) AS b, count() AS c"
         "  FROM ods_backend_sys_log"
-        "  WHERE create_time >= %(start)s AND create_time < %(end)s"
+        f"  WHERE {exprs.time_filter()}{exprs.exclusion_filter()}"
         "    AND ip IS NOT NULL AND ip != ''"
         "  GROUP BY ip, b)",
-        {"start": "2026-07-08 00:00:00", "end": "2026-08-05 00:00:00"})
+        {"start": start, "end": end})
     live_p99 = float(live["p99"][0])
     assert live_p99 > 0, "對帳查詢沒有樣本 —— 區間或表名不對"
     ratio = max(base.p99, live_p99) / max(min(base.p99, live_p99), 1.0)
