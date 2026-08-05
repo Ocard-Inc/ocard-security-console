@@ -56,9 +56,24 @@ def _plain(value: object) -> str | None:
     return None if text in _EMPTY else text
 
 
+# R07A 的新版登入端點把 acc 存在 params 裡（見
+# config/rules/r07a_login_failed_acc.yaml 的 JSONExtractString fallback）——
+# 那是攻擊者可以自由填寫的登入表單欄位，沒有經過任何長度限制就落地。舊的
+# acc 欄位本來就可能很長（同一類風險不是新的），但這裡加一個上限：這個值會
+# 變成事件去重鍵（entity_key）的一部分，也會原樣進 Slack 訊息文字，一個極長
+# 的字串會讓去重鍵變得笨重、也可能撐大 Slack 訊息。上限刻意寬鬆（真實帳號名
+# 遠遠不會碰到），只是把成本壓低，不影響任何真實識別值的顯示。
+_ACTOR_MAX_LEN = 200
+
+
 def actor(account: object) -> str | None:
-    """後台帳號（`acc` / `_admin` / `_user_admin`）。原樣顯示。"""
-    return _plain(account)
+    """後台帳號（`acc` / `_admin` / `_user_admin`）。原樣顯示，長度有上限。"""
+    text = _plain(account)
+    if text is None:
+        return None
+    if len(text) > _ACTOR_MAX_LEN:
+        text = text[:_ACTOR_MAX_LEN] + f"…（截斷，原長 {len(text)}）"
+    return text
 
 
 def src(ip: object) -> str | None:

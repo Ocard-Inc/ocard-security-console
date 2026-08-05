@@ -41,6 +41,24 @@ def test_surrounding_whitespace_stripped():
     assert masking.src("  1.2.3.4  ") == "1.2.3.4"
 
 
+def test_actor_caps_length_for_attacker_controlled_values():
+    """`masking.actor()` 的值不再保證來自一個有長度限制的資料庫欄位。
+
+    R07A 從 params 取回新版登入端點不寫的 acc（見
+    config/rules/r07a_login_failed_acc.yaml），那是攻擊者可以自由填寫的登入
+    表單欄位，沒有經過任何長度驗證就落地。這個值會變成事件去重鍵
+    （entity_key）的一部分，也會原樣進 Slack 訊息文字——沒有上限的話，一個
+    刻意塞超長字串的登入請求可以撐大這兩者。真實帳號名遠遠不會碰到這個上限。
+    """
+    huge = "a" * 5000
+    out = masking.actor(huge)
+    assert len(out) < len(huge)
+    assert out.startswith("a" * 200)
+    assert "5000" in out, "截斷說明要帶原長，不能只是靜靜切掉"
+    # 正常長度的帳號名完全不受影響
+    assert masking.actor("andrew_c") == "andrew_c"
+
+
 # ── token：仍然是不可逆指紋 ────────────────────────────────────────
 
 def test_token_is_still_fingerprinted():
