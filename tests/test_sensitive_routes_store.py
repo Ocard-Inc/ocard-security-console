@@ -124,3 +124,67 @@ def test_all_rows_lists_every_column_explicitly():
     row = sr.all_rows()[0]
     assert set(row) == {"route", "status", "added_by", "added_at", "reason",
                         "removed_by", "removed_at"}
+
+
+def test_exprs_reads_the_store_not_the_yaml():
+    """exprs.sensitive_routes() 必須回表的內容。
+
+    簽名刻意不變（回 list[str]），所以呼叫端一行都不用改。
+    """
+    from console.queries import exprs
+    assert exprs.sensitive_routes() == sr.active()
+
+
+def test_p03_sql_has_no_hardcoded_route_literals():
+    """P03 的 SQL 不可以把清單內插進字串。
+
+    probes() 有 lru_cache(maxsize=1)，內插的話探針表會凍結在 server 啟動時的
+    清單 —— 於是 R05 立即生效而掃描要重啟，而畫面上兩邊都正常。
+    這正是「一份清單兩邊一起生效」要避免的事。
+    """
+    from console.sweep.probes import probes
+    p03 = next(p for p in probes() if p.id == "P03")
+    assert "%(sensitive_routes)s" in p03.sql, (
+        "P03 的 SQL 沒有用 %(sensitive_routes)s 參數")
+    for route in sr.active():
+        assert f"'{route}'" not in p03.sql, (
+            f"P03 的 SQL 裡有寫死的路由字面值 {route!r} —— "
+            "lru_cache 會讓它凍結在啟動時的清單")
+
+
+def test_sweep_build_params_supplies_the_live_list():
+    from datetime import datetime
+    from console.sweep import run
+    params = run.build_params(datetime(2026, 8, 1), datetime(2026, 8, 2))
+    assert params["sensitive_routes"] == sr.active()
+
+
+def test_p03_declares_that_it_needs_the_route_list():
+    """P03 要標記 needs_sensitive_routes，否則 run_probes 不知道要跳過它。"""
+    from console.sweep.probes import probes
+    p03 = next(p for p in probes() if p.id == "P03")
+    assert p03.needs_sensitive_routes is True
+
+
+def test_limits_reports_blocking_when_the_list_is_empty(monkeypatch):
+    """空清單要在「資料限制」以 blocking 明說沒有檢查。
+
+    實測 ClickHouse 的 `IN []` **不報錯、回 0 筆** —— 那與「這段期間沒有敏感
+    路由存取」在畫面上一模一樣，而後者是結論、前者是「我們沒在看」。
+    把「沒有資料」說成「沒有發生」是這個專案一再警告的錯誤。
+
+    直接驗 `limits.collect()` 而不是跑一整趟 `run_probes()`：後者會執行全部
+    探針（實測單次含 API 探針約 30 秒），而要驗的是降級文案本身。
+    """
+    from console.core import timewin
+    from console.sweep import limits, run
+    monkeypatch.setattr(limits.exprs, "sensitive_routes", lambda: [])
+    empty_run = run.ProbeRun(hits=(), timings_ms={}, failures={},
+                             skipped=("P03",), params={})
+    items = limits.collect(timewin.parse("2026-08-04 00:00:00"),
+                           timewin.parse("2026-08-05 00:00:00"), empty_run)
+    hit = [i for i in items if i.key == "sensitive_routes_empty"]
+    assert hit, "空清單沒有產生限制項目 —— 那等於靜靜回報「沒有異常」"
+    assert hit[0].level == "blocking", (
+        f"空清單的限制等級是 {hit[0].level!r}，必須是 blocking")
+    assert "沒有執行" in hit[0].detail

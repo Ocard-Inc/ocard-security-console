@@ -111,6 +111,10 @@ class Probe:
     sql: str
     cost: str = "low"         # low = 秒內；high = 需使用者明確勾選
     needs_intel: bool = False  # 需要來源情報才有意義（空表時 run.py 自動跳過）
+    # 需要敏感路由清單。清單為空時 run.py 自動跳過並由 limits 標 blocking ——
+    # 實測 ClickHouse 的 `IN []` 不報錯、回 0 筆，那與「這段期間沒有敏感路由
+    # 存取」在畫面上一模一樣，而後者是結論、前者是「我們沒在看」。
+    needs_sensitive_routes: bool = False
     # 逐列的後處理。回 None = 丟掉這一列；回 dict = 併進 evidence。
     #
     # 為什麼需要它：來源型態存在 SQLite（ip_intel）而探針跑在 ClickHouse，
@@ -188,7 +192,6 @@ def probes() -> tuple[Probe, ...]:
     """探針表。lru_cache 讓 settings() 在首次呼叫時才讀（改 config 要重啟 server）。"""
     tf = exprs.time_filter()
     route2 = exprs.ROUTE2
-    sensitive_in = exprs.in_list(exprs.sensitive_routes())
     off_hours = _off_hours_expr()
 
     return (
@@ -246,6 +249,12 @@ def probes() -> tuple[Probe, ...]:
             # top_route 必須是敏感路由：報告的訊號 3 原話是「集中於單一**資料導出型**路由」。
             #   少了這個限定，任何做批次作業的商家都會命中，而 concentration 是這裡
             #   唯一與量級獨立的訊號 —— 汙染它就等於讓交叉計票失去意義。
+            #
+            # **清單一律走 %(sensitive_routes)s，不內插字面值。** probes() 有
+            # lru_cache(maxsize=1)，內插的話探針表會凍結在 server 啟動時的清單，
+            # 於是 R05 立即生效而掃描要重啟 —— 而畫面上兩邊都正常。
+            # 同 `%(floor)s` 不寫字面值的理由。
+            needs_sensitive_routes=True,
             sql=f"""
             SELECT entity, metric, peak_day, top_route, top_share, uniq_routes, peak_day_total
             FROM (
@@ -273,7 +282,7 @@ def probes() -> tuple[Probe, ...]:
               GROUP BY entity
             )
             WHERE metric >= %(floor)s AND top_share >= 0.85
-              AND top_route IN {sensitive_in}
+              AND top_route IN %(sensitive_routes)s
             """,
         ),
         Probe(
@@ -294,6 +303,11 @@ def probes() -> tuple[Probe, ...]:
             # 嚴重程度就變成「分析師選了多長的區間」的函數 —— 報告談的也是單日
             #（「單日 4.3 萬次客戶資料查詢」），不是區間總和。
             floor=300, floor_kind=ABSOLUTE,
+            # **清單一律走 %(sensitive_routes)s，不內插字面值。** probes() 有
+            # lru_cache(maxsize=1)，內插的話探針表會凍結在 server 啟動時的清單，
+            # 於是 R05 立即生效而掃描要重啟 —— 而畫面上兩邊都正常。
+            # 同 `%(floor)s` 不寫字面值的理由。
+            needs_sensitive_routes=True,
             sql=f"""
             SELECT entity, metric, total_in, days_in, median_prev, days_prev
             FROM (
@@ -310,7 +324,7 @@ def probes() -> tuple[Probe, ...]:
                 FROM ods_backend_sys_log
                 WHERE create_time >= %(prev_start)s AND create_time < %(end)s
                   AND acc IS NOT NULL AND acc != ''
-                  AND {route2} IN {sensitive_in}
+                  AND {route2} IN %(sensitive_routes)s
                 GROUP BY acc, d
               )
               GROUP BY entity

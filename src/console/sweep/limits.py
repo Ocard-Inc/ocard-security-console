@@ -182,6 +182,40 @@ def collect(start: datetime, end: datetime, probe_run: ProbeRun) -> list[Limitat
                    "小型 VPS 商與新啟用的網段特別容易落在未涵蓋的部分。",
             level="caution"))
 
+    # ── 敏感路由清單：空的等於這項檢查沒有執行 ──
+    #
+    # 空清單影響的不只「敏感路由大量存取」（P03）本身：P02（集中存取資料導出路由）
+    # 也吃同一份清單，而 P02 是 concentration 這組**唯一**的訊號來源，也是唯一真正
+    # 與量級無關的訊號（P01/P03 同屬 volume，量級突變已經有 P01 頂著，不會因為
+    # P03 沒跑就少一組）。correlate.py 要求交叉命中兩組獨立訊號才會列入報告，
+    # 少了 concentration 之後，一個帳號只剩 volume 這一票，第二票只能靠
+    # source_type（來源是機房／VPN）或 off_hours（非上班時間）幫忙湊。
+    # 於是一個來源正常、白天上班時間、但高度集中打某個資料導出路由的帳號，
+    # 永遠湊不到第二組訊號 —— **完全不會出現在報告裡**，而這正是比毫無掩飾的
+    # 攻擊者更謹慎的那種行為模式。
+    routes = exprs.sensitive_routes()
+    if not routes:
+        items.append(Limitation(
+            key="sensitive_routes_empty",
+            title="敏感路由清單是空的",
+            detail="「集中存取資料導出路由」與「敏感路由大量存取」兩支探針都"
+                   "**沒有執行**。清單目前一條生效中的路由都沒有（可在規則頁面"
+                   "編輯）。前者是與量級無關的 concentration 訊號唯一的來源 ——"
+                   "少了它，一個帳號的第二組訊號只能靠來源型態或非上班時間湊，"
+                   "在上班時間、來源看起來正常的情況下高度集中存取資料導出路由"
+                   "**完全不會被列入報告**。這不是「沒有異常」，是沒有檢查。",
+            level="blocking"))
+    else:
+        items.append(Limitation(
+            key="sensitive_routes",
+            title="敏感路由的範圍",
+            detail=f"「集中存取資料導出路由」與「敏感路由大量存取」兩支探針都只"
+                   f"涵蓋清單上的 {len(routes)} 條路由（{'、'.join(routes)}）。"
+                   "清單之外的路由由「帳號自身量級突變」涵蓋量的面向，但不會被"
+                   "算進這兩支探針的訊號。清單可在規則頁面編輯，改動同時影響"
+                   "即時規則 R05。",
+            level="info"))
+
     # ── 探針覆蓋：跳過與失敗都必須說出來 ──
     if probe_run.skipped:
         names = "、".join(

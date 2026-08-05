@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from console.core import masking, timewin
 from console.core.config import settings
 from console.core.ch import query
+from console.queries import exprs
 from console.sweep.probes import PER_DAY, Probe, probes
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def range_days(start: datetime, end: datetime) -> float:
     return max((end - start).total_seconds() / 86400, 1.0)
 
 
-def build_params(start: datetime, end: datetime) -> dict[str, str]:
+def build_params(start: datetime, end: datetime) -> dict[str, object]:
     """探針的共用參數。每支探針另外拿到自己的 `floor`（見 effective_floor）。
 
     prev_start / seed_start 一律由 **start** 往回推，不是由 end ——
@@ -87,6 +88,8 @@ def build_params(start: datetime, end: datetime) -> dict[str, str]:
         "end": timewin.fmt(end),
         "prev_start": timewin.fmt(start - timedelta(days=cfg["window_days"])),
         "seed_start": timewin.fmt(start - timedelta(days=cfg["seed_days"])),
+        # 執行期取值（不是啟動時）—— 見 exprs.sensitive_routes() 的說明。
+        "sensitive_routes": exprs.sensitive_routes(),
     }
 
 
@@ -158,12 +161,16 @@ def run_probes(
 ) -> ProbeRun:
     params = build_params(start, end)
     days = range_days(start, end)
+    routes = exprs.sensitive_routes()
     selected: list[Probe] = []
     skipped: list[str] = []
     for p in probes():
         if p.cost == "high" and not include_high_cost:
             skipped.append(p.id)
         elif p.needs_intel and not intel_available:
+            skipped.append(p.id)
+        elif p.needs_sensitive_routes and not routes:
+            # 空清單不會報錯，只會靜靜回 0 筆 —— 那與「沒有異常」長得一樣。
             skipped.append(p.id)
         else:
             selected.append(p)
