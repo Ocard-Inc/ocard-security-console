@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from console.store import db, sensitive_routes as sr
 
 NEW = "zzz_api_test/route"
@@ -45,6 +47,20 @@ def test_post_rejects_a_bad_route_shape(client):
     r = client.post("/api/sensitive-routes",
                     json={"route": "a/b/c", "reason": "測試"})
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("route", ["a/b?x", "a/b#x", "a /b", "a/b\tc", "a/<b>"])
+def test_post_rejects_characters_outside_the_segment_whitelist(client, route):
+    """route2() 是逐段字元白名單，不是黑名單。
+
+    原本只擋 `'"%\\` 四個字元，`?`／`#`／空白都會放行——`?` 與 `#` 在瀏覽器與
+    某些反向代理會被當成查詢字串／錨點的分隔符，而空白不會出現在真實的 route
+    段落裡（見 config/settings.yaml 目前的種子清單，全部是英數字、底線、句點、
+    減號）。這裡驗證這些字元現在會被拒絕，而不是被放行後永遠不會命中任何東西。
+    """
+    r = client.post("/api/sensitive-routes", json={"route": route, "reason": "測試"})
+    assert r.status_code == 400, r.text
+    assert "不允許的字元" in r.json()["detail"]
 
 
 def test_post_rejects_unknown_keys(client):
