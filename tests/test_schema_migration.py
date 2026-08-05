@@ -165,3 +165,20 @@ def test_session_db_is_already_migrated():
     """conftest 的複本經過 get_conn()，所以真實資料也必須已經遷移完成。"""
     assert "source_ip" in _columns(db.get_conn(), "allowlist")
     assert "source_fp" not in _columns(db.get_conn(), "allowlist")
+
+
+def test_seed_status_matches_sensitive_routes_status_active():
+    """`migrate.SEED_STATUS` 必須跟 `sensitive_routes.STATUS_ACTIVE` 完全相同。
+
+    `migrate.py` 不能 import `store.sensitive_routes`（那是反向依賴，
+    sensitive_routes 是建在 migrate 之上的更高層），所以種子列的初始狀態
+    只能是一個手動保持同步的字面值。兩邊分岔的話：`seed_after_schema()`
+    寫進去的種子列會是一個 `active()`（`WHERE status = STATUS_ACTIVE`）永遠
+    查不到的狀態字串——`sensitive_routes` 表看起來完全正常（`all_rows()` 一樣
+    顯示得出來、筆數也對），但 R05 與期間掃描的兩支探針收到的清單是空的，
+    而且不會有任何錯誤訊息，只會在下一次規則評估時被 `engine._sql_params()`
+    的空清單保護擋下來變成規則的心跳失敗。
+    """
+    from console.store import sensitive_routes as sr
+
+    assert migrate.SEED_STATUS == sr.STATUS_ACTIVE

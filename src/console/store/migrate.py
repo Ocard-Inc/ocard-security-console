@@ -125,6 +125,14 @@ def _try(conn: sqlite3.Connection, sql: str) -> bool:
 # 播種用的常數。`add()` 的呼叫端要能分辨「這是種子」與「這是人加的」。
 SEED_BY = "seed"
 SEED_REASON = "settings.yaml 初始清單"
+# 種子列的初始狀態。**這裡沒辦法 import store.sensitive_routes.STATUS_ACTIVE**
+# ——那會是 store 層對 migrate（更底層）的反向依賴，形成循環 import。所以這個
+# 字面值只能手動保持跟 STATUS_ACTIVE 一致，而 tests/test_schema_migration.py
+# 的 test_seed_status_matches_sensitive_routes_status_active 就是那條手動同步
+# 的安全網：兩邊分岔的話，種子列會被寫成一個 active() 永遠查不到的狀態字串
+# ——sensitive_routes 表看起來很正常（all_rows() 顯示得出來），只是 R05 與
+# 期間掃描的兩支探針都收到空清單，且完全不會有任何錯誤訊息。
+SEED_STATUS = "生效中"
 
 
 def seed_after_schema(conn: sqlite3.Connection) -> list[str]:
@@ -143,6 +151,15 @@ def seed_after_schema(conn: sqlite3.Connection) -> list[str]:
 
     與 `apply()` 一樣全程 idempotent：連線是 thread-local，每條 thread 與每個
     CLI process 都會各跑一次。
+
+    **這支函式讓 `db.get_conn()` 多了一個新的依賴方向：資料層去讀
+    `config/settings.yaml`（透過 `core.config.settings()`）。** 在這之前，
+    `store/` 只依賴 `sqlite3`；現在每一條新連線（排程器 thread、FastAPI
+    threadpool 的每條 thread、每個 CLI process）在拿到連線之前都會多做一次
+    YAML 解析。這在正常情況下是免費的（`settings()` 有 `lru_cache`），但表示
+    `config/settings.yaml` 壞掉的話，**連 SQLite 都打不開**——不只是規則載入
+    失敗（那個既有的降級路徑走 `RuleConfigError` → 503，畫面上看得到原因），
+    而是任何碰 DB 的請求都會在 `get_conn()` 這一層直接 500。
     """
     # 這裡才 import：migrate 由 db.get_conn() 呼叫，而 config/timewin 不 import
     # store，所以沒有循環。放在模組頂端也可以，放在函式內是為了讓「migrate 只
@@ -158,8 +175,8 @@ def seed_after_schema(conn: sqlite3.Connection) -> list[str]:
     conn.executemany(
         "INSERT OR IGNORE INTO sensitive_routes"
         " (route, status, added_by, added_at, reason)"
-        " VALUES (?, '生效中', ?, ?, ?)",
-        [(r, SEED_BY, now, SEED_REASON) for r in routes])
+        " VALUES (?, ?, ?, ?, ?)",
+        [(r, SEED_STATUS, SEED_BY, now, SEED_REASON) for r in routes])
     after = conn.execute("SELECT count(*) FROM sensitive_routes").fetchone()[0]
     if after > before:
         done = [f"sensitive_routes 播種 {after - before} 條"]
