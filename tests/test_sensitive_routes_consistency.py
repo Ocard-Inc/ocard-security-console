@@ -10,11 +10,24 @@ route 各自比對自己的基線，不需要事後圈定的清單。
 """
 from __future__ import annotations
 
+import pytest
+
 from console.checker import calibrate as calib
 from console.core.ch import query
 from console.queries import exprs
 from console.rules.loader import load_rules
 from console.store import db
+
+# R14 母體測試曾經用的六條清單（2026-08-05 加入 customer/index 之前的原始清單）。
+# **刻意寫死在這裡**：那個測試驗的是「R14 的 SQL 沒有路由過濾」，這件事不該
+# 隨清單內容漂移 —— 清單現在是執行期可從 UI 編輯的表，用當前清單會讓
+# 「誰加了一條剛好覆蓋掉這個歷史命中的路由」變成一次與 R14 無關的測試失敗
+# （2026-08-05 加入 customer/index 就是一次實測：同一個視窗的四條命中全部
+# 落進新清單，斷言瞬間失去意義）。
+_HISTORICAL_SIX_ROUTES = [
+    "orderlist/detail", "orderlist/delivery", "orderlist/summary",
+    "customer/profile", "customer/voucherList", "point/get-analysis-data",
+]
 
 
 def _rule(rid: str):
@@ -80,39 +93,52 @@ def test_sql_params_raises_when_the_list_is_empty(monkeypatch):
     這條不在 brief 的 Step 1 清單裡，是自我審查時另外補的：`_sql_params()`
     的 docstring 明講「清單為空時拋例外而不是傳空 list」，但原本四個測試都沒有
     真的驗過這件事。`IN ()` 在 ClickHouse 實測不報錯、靜靜回 0 筆 ——
-    「R05 沒有命中」與「R05 沒有在看」在畫面上一模一樣，所以這裡要驗兩件事：
-    ① 真的拋例外；② 拋的是 `evaluate()` 逐規則 `try` 接得住的一般例外，
-    不是會逃出去讓心跳整段不更新的東西（同 checker/tick.py 的說明）。
+    「R05 沒有命中」與「R05 沒有在看」在畫面上一模一樣。
+
+    **用 `pytest.raises(RuntimeError)`，不是 `try/except Exception: pass`。**
+    後者的第一版寫法是 `try: ...; assert False, "..."; except Exception: pass`——
+    `AssertionError` 本身是 `Exception` 的子類，所以就算 `_sql_params()` 退化成
+    靜靜回傳 `{"sensitive_routes": []}`，走到 `assert False` 拋出的
+    `AssertionError` 會被自己的 `except Exception` 接住，測試照樣綠燈。
+    那不是「沒有測試」，是比沒有測試更糟的「假保證」，剛好蓋在這個功能最重要的
+    那句約束上。斷言具體型別（`RuntimeError`）而不是裸 `Exception`，避免
+    `_sql_params()` 因為不相關的 bug 拋出 `KeyError` 之類的東西也讓這裡通過。
+
+    至於「拋的例外必須是 `evaluate()` 逐規則 `try` 接得住的東西」——
+    `evaluate()` 的 `try: ... except Exception:` 是裸 `except Exception`，
+    任何非 `BaseException`（如 `SystemExit`/`KeyboardInterrupt`）的例外都接得住，
+    這裡驗證的 `RuntimeError` 顯然符合，不需要另外斷言；有需要查證的話見
+    `src/console/rules/engine.py` 的 `evaluate()`。
     """
     from console.rules import engine
     monkeypatch.setattr(engine.sensitive_routes, "active", lambda: [])
-    try:
+    with pytest.raises(RuntimeError):
         engine._sql_params(_rule("R05"), "2026-08-05 00:00:00",
                            "2026-08-05 01:00:00")
-        assert False, "清單為空時應該拋例外，不是靜靜回傳空 list 的參數"
-    except Exception:
-        pass
 
 
-def test_r14_population_is_every_route_not_a_whitelist():
+def test_r14_population_is_every_route_not_a_whitelist(monkeypatch):
     """R14 必須看得到不在敏感路由清單裡的 route。
 
     行為驗證而非比對 SQL 字串（同 tests/test_rule_store_volume.py 的做法）：
     有人把路由過濾加回 R14 的話，這個測試會失敗。用 7/16 那場攻擊的視窗，
     因為那段歷史資料穩定，而且它正是「六條清單看不到 customer/index」的證據。
 
-    **視窗於 2026-08-05（本任務）由 00:10-01:10 延長到 00:10-03:10。**
-    原視窗只命中 `customer/index`／`customer/profile`／`orderlist/detail`／
-    `orderlist/delivery` 四條 —— 這批攻擊流量本身。加入 `customer/index` 之後
-    這四條剛好**全部**落在清單內（清單現在有 7 條），「outside」變空集合，
-    與測試的斷言（R14 不可被清單過濾）矛盾，但矛盾的來源是清單變大覆蓋了
-    這批流量，不是 R14 的 SQL 被加了過濾。延長兩小時抓進 `Ui/NavState`
-    （後台導覽列，非敏感路由），讓斷言重新有意義，視窗仍在同一天的
-    off-hours 範圍（23:00–08:00）內。
+    **清單刻意 monkeypatch 成歷史六條，不讀執行期的 `exprs.sensitive_routes()`。**
+    清單現在是可以從 UI 編輯的表，這個測試驗的是「R14 的 SQL 沒有路由過濾」，
+    與清單目前裝了什麼無關 —— 讀執行期清單的話，這個斷言的成立與否會跟著
+    「現在清單裡有幾條、剛好覆蓋掉這個視窗的哪些命中」漂移。2026-08-05 加入
+    `customer/index` 就是一次實測：清單從 6 條變 7 條之後，7/16 00:10-01:10
+    這個視窗命中的四條（`customer/index`／`customer/profile`／
+    `orderlist/detail`／`orderlist/delivery`）剛好全部落進新清單，`outside`
+    變空集合，斷言瞬間失去意義 —— 而那與 R14 的 SQL 完全無關，只是清單變大了。
+    固定成歷史六條之後，這個視窗命中的 `customer/index` 就是清單外的那一條，
+    也正是 docstring 這段故事本來要講的「六條清單看不到 customer/index」的證據。
     """
+    monkeypatch.setattr(exprs, "sensitive_routes", lambda: _HISTORICAL_SIX_ROUTES)
     rule = _rule("R14")
-    df = query(rule.sql, {"start": "2026-07-16 00:10:00", "end": "2026-07-16 03:10:00"})
-    assert not df.empty, "7/16 00:10-03:10 應該有 route 超過 R14 的 HAVING 門檻"
+    df = query(rule.sql, {"start": "2026-07-16 00:10:00", "end": "2026-07-16 01:10:00"})
+    assert not df.empty, "7/16 00:10-01:10 應該有 route 超過 R14 的 HAVING 門檻"
     hit = set(df["route2"])
     outside = hit - set(exprs.sensitive_routes())
     assert outside, (
