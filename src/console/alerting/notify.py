@@ -125,7 +125,51 @@ def on_tick_failure() -> None:
             link_page="health")
 
 
+def log_startup_status() -> None:
+    """啟動時把「通知會不會真的送出去」講清楚（由 `app.py` 的 lifespan 呼叫）。
+
+    停用是 WARNING 而不是 INFO：`SLACK_ENABLED` 漏設的正式環境會安靜地不發任何
+    告警，而主控台其餘部分完全正常 —— 那正是這個系統最糟的失效模式。啟動選擇
+    「只警告、不擋啟動」（使用者於 2026-08 決定），所以這一行與資安總覽的橫幅
+    就是唯一的痕跡。
+    """
+    setting = config.slack_setting()
+    if not setting.enabled:
+        logger.warning("Slack 通知已停用（%s）—— 告警只會寫進主控台與 log，"
+                       "不會送到 Slack", setting.reason)
+    elif not slack_webhook_url():
+        logger.warning("Slack 通知已啟用（%s），但 SLACK_WEBHOOK_URL 是空的 ——"
+                       " 告警只會寫進 log", setting.reason)
+    else:
+        logger.info("Slack 通知已啟用（%s）", setting.reason)
+
+
+def summary() -> dict:
+    """給資安總覽橫幅的現況：訊息**真的會送出去嗎**，不會的話是哪一個原因。
+
+    開關與 webhook 兩者缺任一個都是「不會送」，但處置完全不同（改 .env 開開關
+    vs 去補 webhook），所以 note 要分開講而不是合併成「未啟用」。
+    """
+    setting = config.slack_setting()
+    has_url = bool(slack_webhook_url())
+    if not setting.enabled:
+        note = (f"Slack 通知已停用（{setting.reason}）。"
+                "P0/P1 告警只會出現在這個主控台裡，沒有人會被通知。")
+    elif not has_url:
+        note = ("Slack 通知已開啟，但沒有設定 SLACK_WEBHOOK_URL，"
+                "訊息只會寫進 log。")
+    else:
+        note = ""
+    return {"enabled": setting.enabled and has_url, "note": note}
+
+
 def _send(text: str) -> None:
+    # 總開關關閉時**不寫 slack_queue**：那張表的語意是「送出失敗，待補送」，
+    # 而刻意不發不是失敗。寫進去的話，之後某天把開關打開，_flush_queue 會把
+    # 累積的整批舊訊息一次倒進頻道（本機跑過的每一次 replay 與驗收都在裡面）。
+    if not config.slack_enabled():
+        logger.info("Slack 通知已停用，僅記錄：%s", text.replace("\n", " / "))
+        return
     url = slack_webhook_url()
     if not url:
         logger.info("Slack 未設定，通知僅記錄：%s", text.replace("\n", " / "))

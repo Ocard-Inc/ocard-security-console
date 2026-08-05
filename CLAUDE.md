@@ -644,6 +644,20 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 - **絕不在測試裡塞假的 `CLICKHOUSE_*` 環境變數**：`ch_config()` 有 `lru_cache`，
   `load_dotenv` 預設不覆蓋既有環境變數，一個假值會讓整個 pytest session 後續的真實查詢
   全部連到假主機（見 commit becb2ce）。
+- **測試絕不可以真的發 Slack**（`conftest.slack_outbox` 攔在 `notify._send`；
+  `.env` 的 `SLACK_ENABLED` 總開關是第二道，但取代不了它 —— 在本機把開關打開來
+  驗收是正常操作，那時 pytest 不可以跟著發）。
+  `.env` 的 `SLACK_WEBHOOK_URL` 是正式頻道，而 `slack_webhook_url()` 有 `lru_cache`
+  又自己 `load_dotenv` —— `monkeypatch.setenv` 清不掉它（同上一條）。漏了這個 fixture
+  的實測結果：每跑一次 pytest 就對正式頻道發一輪「新增／修改／停用 Allowlist 例外」
+  （`203.0.113.55`、理由「驗收」、操作者 `dev@olis.com.tw（開發模式）`、**沒有尾端連結**
+  —— 那是分辨「這則來自測試」最快的指紋，正式環境發的一定有）。
+  後果不是吵：那個 ops 訊息是 Allowlist **唯一一個當事人改不掉的偵測型控制**，
+  把值班的人訓練成忽略那個頻道等於把控制拆掉，而畫面上一切正常。
+  攔截點必須在**傳輸層**（`_send`）而不是 `send_ops_message` / `dispatch`，
+  否則訊息格式化不再被測試執行，欄位名錯誤只會在正式環境現形。
+  `tests/test_no_outbound_slack.py` 守攔截點，`test_allowlist_write.py` 的
+  `test_every_write_sends_an_ops_message` 反向守「不可為了消音而拿掉這個通道」。
 - 共用 `tests/conftest.py` 的 session 範圍 `client` fixture，不要各自建 `TestClient`
   （多個 TestClient 會累積 thread-local ClickHouse 連線撞上併發限制）。TestClient 未進入
   context manager，因此測試期間 lifespan 排程器不會啟動 ——
@@ -677,9 +691,35 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
 改 `.env` 或 `config/settings.yaml` 一律要重啟 server。`MYSQL_*` 未設定時
 `mysql_config()` 回 None（品牌名稱只是輔助標示，缺它不該讓監測起不來）。
 
+**Slack 通知的總開關是 `.env` 的 `SLACK_ENABLED`**（2026-08 加）。本機的 `.env` 帶的是
+**正式頻道**的 webhook，而本機會跑 pytest、replay 與手動驗收 —— 那些訊息送進值班
+頻道只會把人訓練成忽略它，而 Allowlist 的 ops 訊息是唯一一個當事人改不掉的偵測型
+控制。開啟值只認 `1`/`true`/`yes`/`on`：白名單的方向是刻意的，`SLACK_ENABLED=ture`
+一律視為關閉（反過來寫成 `!= "false"` 等於把設定錯誤解讀成「要發」）。
+
+**留空時由 `CONSOLE_BASE_URL` 推導**（`config._looks_local()`）：localhost → 關，
+對外網址 → 開。明確設定一律優先。**不要改成固定預設 `false`** —— 那是最先想到的
+做法，而它把「正式環境會不會發告警」綁在「有沒有人記得在 Secret Manager 那份
+`prod.env` 補一行」上面，漏掉的症狀是**靜靜不發任何告警而主控台其餘部分完全正常**。
+推導的方向相反：正式環境什麼都不用設就是開的，要關才需要動手。
+`CONSOLE_BASE_URL` 因此是第四個用途（前三個見 `config.console_base_url()`）。
+
+關掉通知**一定要看得見**，兩個痕跡不可以拿掉（決定是「只警告、不擋啟動」——
+設定問題不該讓整個監測停掉）：`notify.log_startup_status()` 在啟動時記 WARNING、
+`notify.summary()` 讓資安總覽的「目前有部分監測被我們自己關閉」橫幅固定顯示。
+兩者都說出**是哪一個原因**（`SlackSetting.reason`：明確關閉／值無法辨識／
+本機推導）—— 只說「未啟用」的話，使用者不知道要去改哪裡。
+`_suppression_summary()` 的 `slack` 鍵**連規則檔載入失敗的降級分支也要帶**：
+YAML 壞掉時一條規則都沒在跑，那時更需要看見通知也送不出去。
+
+**關閉時不寫 `slack_queue`。** 那張表的語意是「送出失敗，待補送」，而刻意不發不是
+失敗。寫進去的話，哪天把開關打開，`_flush_queue()` 會把本機累積的每一次 replay
+與驗收訊息一次倒進值班頻道。
+
 前端無建置流程，`web/vendor/` 只放**未修改的上游檔案、版本寫在檔名裡**（升級 = 改名）。
 `app.py` 的 `cache_policy` 對 `/static/vendor/` 發 `immutable`（那些檔案內容永不就地變更），
 其餘 `/static/` 與 `/` 發 `no-store`，否則瀏覽器快取會讓改動不生效。**分支順序不可對調。**
+
 新增頁面需同時改 `web/app.js` 的 `NAV`、`TITLES`、components 與模板中的 `v-else-if` 分支。
 `TITLES` **兼作 hash 路由的白名單**（見 `applyHash`），少一筆就開不起來；
 帶參數的路由（`#/events/EVT-0001`、`#/rules/R06`）必須判在 `TITLES[head]` **之前** ——
@@ -754,7 +794,7 @@ VPC connector 出去時不解析 VPC 內部 DNS）。那個位址**寫死在 nex
 驗收一定要打 `/security/static/app.css` 而不只是 `/security`。
 
 **CI 不跑測試**：pytest 需要真實 ClickHouse，而 Cloud Build 不在 VPC 內、
-出口 IP 不被放行。本機跑完 508 則再 push 是刻意的取捨 ——
+出口 IP 不被放行。本機跑完 574 則再 push 是刻意的取捨 ——
 CI 只驗證映像建得起來、容器啟動得了。
 
 ## 圖表（`web/charts/`）

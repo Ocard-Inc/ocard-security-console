@@ -334,6 +334,21 @@ def test_every_write_is_audited(client, action, call):
     assert rows[0]["reason"]
 
 
+def test_every_write_sends_an_ops_message(client, slack_outbox):
+    """Slack ops 訊息是**當事人改不掉的**那個通道，不可以為了消音而拿掉。
+
+    測試自己不會真的送出（見 `conftest.slack_outbox`），但「有沒有要送」必須守住：
+    沒有角色分級，一筆全域條目就讓 17 條規則與整份掃描看不見那個來源，
+    偵測型控制只剩這一個。
+    """
+    eid = _create(client).json()["entry"]["id"]
+    client.post(f"/api/allowlist/{eid}/disable", json={"reason": "停掉"})
+    actions = [m for m in slack_outbox if "Allowlist 例外" in m]
+    assert len(actions) == 2, "新增或停用少發了 ops 訊息"
+    assert IP in actions[0] and "dev@olis.com.tw" in actions[0], \
+        "訊息要說出是誰對哪個來源做的，否則收到的人得自己進主控台查"
+
+
 def test_effective_is_computed_by_the_backend(client):
     """前端看到 status='生效中' 就顯示「生效中」而它其實已過期，是誤導型 UI。"""
     eid = _create(client).json()["entry"]["id"]

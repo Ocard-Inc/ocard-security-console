@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from console.alerting import notify
 from console.api import allowlist_routes, audit_routes, routes, rules_routes
 from console.auth import ros
 from console.checker.scheduler import scheduler_loop
@@ -39,6 +40,9 @@ def _index_html() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging("console.log")
+    # 必須排在 setup_logging 之後 —— 在那之前 WARNING 還沒有 handler 可以落到
+    # state/logs/console.log，而這一行的整個用途就是留下痕跡。
+    notify.log_startup_status()
     stop = asyncio.Event()
     task = asyncio.create_task(scheduler_loop(stop))
     logger.info("Security Log Console 啟動，五分鐘檢查已排程")
