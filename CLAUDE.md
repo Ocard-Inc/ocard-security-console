@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 專案概要
 
 ClickHouse log 即時異常監測主控台（`ods_admin_log` / `ods_backend_sys_log` /
-`ods_api_log` / `ods_auth_log`）。單一 FastAPI process 同時提供 API、SPA 靜態檔，
+`ods_api_log` / `ods_auth_log` / `ods_order_api_log`）。單一 FastAPI process
+同時提供 API、SPA 靜態檔，
 以及在 lifespan 內常駐的五分鐘檢查排程。設計稿為 `docs/design/security_log_console.dc.html`
 （150KB，程式碼註解常以「設計稿 N 節」引用它）。README.md 記錄實測得到的資料特性與回測結果。
 
@@ -112,10 +113,10 @@ R13 的對象是 (品牌 × 分店)，而 `_store` 有兩個哨兵值：`-1` 是
 門檻變成 18,180（全域是 504），在最該敏感的時段把規則關掉。低流量端的保護
 交給 `static_floor`。
 
-**時間**：ClickHouse 伺服器時區是 UTC，但四張表的 `create_time` 存的是**台北牆鐘時間**。
+**時間**：ClickHouse 伺服器時區是 UTC，但五張表的 `create_time` 存的是**台北牆鐘時間**。
 所有邊界一律由 `core/timewin.py` 在 Python 端算好、以含秒的完整字串傳參，
 **絕不在 SQL 裡用 `now()`**（缺秒會 `CANNOT_PARSE_DATETIME`）。監測視窗右界固定退
-`lag_buffer_minutes`（6 分）補資料落地延遲。四張表的 sorting key 不含時間、只有月分區，
+`lag_buffer_minutes`（6 分）補資料落地延遲。五張表的 sorting key 不含時間、只有月分區，
 所以**每個查詢都必須帶 `create_time` 範圍**。
 
 **API 端點一律是同步 `def`，不是 `async def`**（2026-08 全站統一）。裡面的
@@ -180,6 +181,39 @@ clickhouse client（thread-local 是為了避開 clickhouse-connect 同 session 
 那是程式錯誤而且原本完全靜默），不擋人。前端 `web/app.js` 的 NAV 只是隱藏，
 不算保護；**也不要把權限清單加回 `/session`** ——
 `tests/test_api_smoke.py` 反向守著它，沒有分級時那是假的保護。
+
+**新增資料來源會靜靜壞掉三個地方。** `config/settings.yaml` 的 `data_sources`
+加一個 key，五處自動吃到（`sparklines` 的 UNION ALL、`calibrate` 的
+`table_{n}m:{key}`、R12 新鮮度、`rules/loader` 的表白名單、`explorer.validate`），
+但三處是 **`KeyError`** —— 不是 `ChQueryError`，`health.source_health()` 的
+`except` 接不到：`health._MISSING_EXPR[table]`、`explorer._DETAIL_COLUMNS[source]`、
+`explorer._PAYLOAD_COLUMNS[source]`。症狀是 `/api/health`、`/api/overview`、
+`/api/explorer` **三個端點一起 500**，而 `/healthz` 不碰它們、照樣回 200，
+**部署看起來成功**。`tests/test_data_source_coverage.py` 擋這件事（含
+`routes._LIMITATIONS_BY_SOURCE` 與 `GROUP_BY` 的四個維度）。
+它**刻意不含** `GROUP_BY["source"]`、`FILTER_COLUMN`、`SUGGEST_EXPR` ——
+那三張合法地不覆蓋全部來源（Order Log 真的沒有來源 IP、`auth` 真的沒有
+`function` 欄位），漏了的症狀是可讀的 400 或面板降級，不是 500。
+
+**Order Log（`ods_order_api_log`）沒有來源 IP，這不是「還沒做」。**
+它沒有 `ip` 也沒有 `headers`，所以來源排名、依 IP 反查、`entity_extent`
+對它都不成立。三個地方各說一次原因（`health._NOTES`、
+`routes._LIMITATIONS_BY_SOURCE`、`explorer._ENTITY_FILTER_UNSUPPORTED`
+—— 後者經 `explorer.source_meta()` 的 `unsupported_filters` 顯示在
+**那個篩選欄位旁邊**）—— 只說「不支援」會讓人去等一個
+永遠不會來的功能。它的 endpoint 維度是**完整 `url`** 而不是
+`controller/function`：`url` 在 180 天只有 46 個相異值、沒有動態段，
+而 `controller/function` 會把 accept／deny／complete 全部收進 `v1/order` 一格，
+「誰在大量拒單」就從排名上消失。操作者是 `_admin` 整數，
+`core/admins.py` 查 ClickHouse `ods_user_admin FINAL` 補帳號名
+（**走 ClickHouse 而不是 MySQL** 是刻意的：`mysql_config()` 可以回 None，
+而這個名稱不是輔助標示 —— `_admin` 整數本身沒有任何調查價值）。
+
+**「哪個分析在哪張表可用」的唯一真相是 `explorer.supported_analyses()`。**
+原本前端 `ANALYSES` 不分來源全部列出，於是 backend 選「Unique resource 分析」、
+Order Log 選「來源排名」都是**永遠回 400 的下拉選項**，而畫面上看起來是正常功能。
+現在前端只拿 key，標籤仍在前端（標籤錯了看得見，可用性錯了是靜靜的）。
+`tests/test_explorer_source_meta.py` 兩個方向都守。
 
 ## SQLite 欄位遷移（`src/console/store/migrate.py`）
 
@@ -923,8 +957,10 @@ CI 只驗證映像建得起來、容器啟動得了。
   **不要用 `xaxis.categories`** —— 否則滾動視窗每 30 秒都會改到軸設定。
   tooltip 要用到但沒進 series 的欄位，透過非響應式的 `this._rows = {current: rows}` 持有者傳遞。
 - **顏色只能來自 `app.css` `:root` 的 `--chart-*`，透過 `charts/tokens.js` 讀取**，
-  JS 裡不得出現色碼字面值。序列色已通過 dataviz validator 全配對檢查，
-  改色必須重跑（指令寫在 app.css 的註解裡）。登入失敗的虛線筆畫是紅綠色盲下的
+  JS 裡不得出現色碼字面值。五條序列色已通過 dataviz validator 的「全配對」檢查
+  （`--pairs all`），改色必須重跑（指令寫在 app.css 的註解裡）——
+  **validator 由 dataviz skill 提供，不在本 repo 的 `scripts/` 底下**，
+  照著舊註解在 `scripts/` 找那個檔案會找不到。登入失敗的虛線筆畫是紅綠色盲下的
   必要第二編碼，不是裝飾。
 - **tooltip 內容一律用 `charts/tooltip.js`**（createElement + textContent 組 DOM 再序列化）。
   ApexCharts 的 `tooltip.custom` 必須回傳 HTML 字串，而 endpoint 與品牌名稱來自
@@ -961,34 +997,37 @@ CI 只驗證映像建得起來、容器啟動得了。
 - **不要自己包一層 `.chart-frame`。** `ApexChart.js` 的 template 自己就渲染一個，
   並以 `:height` prop 設高度。外面再包一層的結果是兩個嵌套的 frame（外層你設的高度、
   內層預設 260px），症狀是圖與下一個元素之間一大塊空白。高度一律走 `:height`。
-- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（四張表的量
+- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（五張表的量
   都是計數），但百分比序列（24 小時作息的兩條線）四捨五入成整數會讓所有刻度變成同一個
   數字，圖要傳達的結論就從畫面上消失了。
 - **比例值一律以小數（0..1）在 API 與 series 裡流動**，顯示時才經 `lib.js` 的 `pct()`。
   那個函式會乘 100 —— 傳百分比進去等於乘兩次（實測 97.47 顯示成 9747.0%）。
 
-### 首頁趨勢是 2×2 小倍數，不是一張四線圖
+### 首頁趨勢是兩欄小倍數，不是一張五線圖
 
-四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），單一 y 軸下小的那幾條被壓在底部，
-而**雙軸是最容易誤導人的圖表做法，禁用**。所以拆成四個面板，每個自己一個 y 軸、
-自己一條同時段 median 虛線（`overview.js` 的 `PANELS` 與 `panels()`）。
+五條線的量級差可達 1000 倍以上（API 776 vs 登入失敗 1），單一 y 軸下小的那幾條被壓在
+底部，而**雙軸是最容易誤導人的圖表做法，禁用**。所以拆成五個面板，每個自己一個 y 軸、
+自己一條同時段 median 虛線（`overview.js` 的 `PANELS` 與 `panels()`）。版面維持兩欄，
+五個面板排成三列、**第三列右邊刻意留白**（`charts/charts.css` 的 `.panel-grid`）——
+不讓第五格跨兩欄：跨欄會讓它的 y 軸比其他四個寬，與下面「面板的縱軸各自獨立、
+不可跨面板比較高度」自相矛盾，一個更寬的面板會暗示它更重要。
 
-- **不要用 `chart.group`。** 它看起來是同步準星的正解，但會做兩件壞事：一次彈出四個
-  tooltip；而且**把 `updateOptions` 廣播給整個群組** —— 切換時間區間時四個面板依序
-  update，最後一個（登入失敗）的設定就覆蓋掉全部，包含 `tooltip.custom`。
-  症狀是「切過區間之後每個面板的 tooltip 都顯示登入失敗的數字」，初次載入卻正常
+- **不要用 `chart.group`。** 它看起來是同步準星的正解，但會做兩件壞事：一次彈出五個
+  tooltip；而且**把 `updateOptions` 廣播給整個群組** —— 切換時間區間時五個面板依序
+  update，最後一個（Order request）的設定就覆蓋掉全部，包含 `tooltip.custom`。
+  症狀是「切過區間之後每個面板的 tooltip 都顯示同一個面板的數字」，初次載入卻正常
   （那時走 `new ApexCharts()`，沒有廣播）。只有在同群組圖表的設定**完全一樣**時才可用。
 - **小面板只畫 median 參考線，不畫 median–P95 帶**：P95 比實際流量高一個量級
   （8,323 vs 776），畫成帶會把軸撐到 8,800、線只剩 9% 高，換成小倍數也沒解決。
   只畫 median 的話線佔 55%。P95 在面板標頭與 tooltip 裡都是精確數字。
   帶**保留在事件詳細頁** —— 那裡是單一序列，帶就是重點。
 - 面板標頭是 HTML 不是 ApexCharts 的 `title`，才帶得動即時數字與倍數。
-- 四個面板的縱軸各自獨立，**不可跨面板比較高度**，說明文字要寫出來。
+- 五個面板的縱軸各自獨立，**不可跨面板比較高度**，說明文字要寫出來。
 
-`queries/trends.py` 的 `baseline_keys` 是四條線 → metric key 的對照。四個基線都由
+`queries/trends.py` 的 `baseline_keys` 是五條線 → metric key 的對照。五個基線都由
 `calibrate.py` 算好（`table_10m:api`／`table_10m:backend`／`login_success_10m`／
-`login_failed_10m`），以前只讀了兩個。`baseline.get()` 每次都是一趟 SQLite，
-所以在 `request_trend` 內用 dict memoize（相異鍵最多 4 × 24 × 2）。
+`login_failed_10m`／`table_10m:order`），以前只讀了兩個。`baseline.get()` 每次都是一趟
+SQLite，所以在 `request_trend` 內用 dict memoize（相異鍵最多 5 × 24 × 2）。
 
 `web/app.js` 的 30 秒自動更新走 `reloadToken` **prop**，不是 `:key` —— 進 `:key` 會讓
 Vue 每半分鐘卸載重建整頁，圖表實例跟著被銷毀。`sessionKey` 才是給 `:key` 的
