@@ -47,9 +47,23 @@ GROUP_BY = {
         "admin": ("ip", "src", "來源"),
         "auth": ("ip", "src", "來源"),
     },
+    # admin 的操作者來自三層 fallback：
+    #
+    # `Boss_initial/auth_v2`（2026-08 的新版登入端點，佔登入流量 77%）**永不寫 acc 欄位**
+    # —— 帳號只存在 `params` 這個 JSON 字串裡的 `acc` 鍵。R07A 需要這個 fallback 才能看見
+    # 新版端點的暴力破解嘗試；沒有它 test_event_drilldown.py::test_drilldown_actually_returns_rows[R07A]
+    # 會失敗（drilldown 查不到任何資料）。
+    #
+    # 實測 28 天（2026-07-08 ~ 08-06）：
+    # ① acc IS NULL 且 params.acc 非空，只出現在 Boss_initial/auth_v2/login_success（219K 筆）
+    #   與 login_failed（3.6K 筆），**只有這兩個 function/action**。
+    # ② acc 有值且 params.acc 也有值時，兩者在 100% 的列都相同（66K 筆 login/* 全族，
+    #   0 筆不一致）—— 不存在「params.acc 用來表示目標帳號」的用法。
+    #
+    # 所以這個全域 fallback 是安全的，不應限制在特定 function —— 限制會增加複雜度而沒有理由。
     "actor": {
         "backend": ("acc", "actor", "操作者"),
-        "admin": ("coalesce(acc, toString(_admin))", "actor", "操作者"),
+        "admin": ("coalesce(nullIf(acc, ''), nullIf(JSONExtractString(params, 'acc'), ''), toString(_admin))", "actor", "操作者"),
         "api": ("toString(_admin)", "actor", "操作者"),
         "auth": ("token", "token", "憑證"),
     },
@@ -349,7 +363,7 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         raw = r["k"]
         # Nullable 欄位在 pandas 是 pd.NA，`not raw` 會拋
         # 「boolean value of NA is ambiguous」而讓整個端點回 502。
-        # admin 的操作者是 coalesce(acc, toString(_admin))，兩者皆 NULL 時就會走到這裡。
+        # admin 的操作者是三層 coalesce(acc, params.acc, _admin)，三者皆 NULL 或空時就會走到這裡。
         if raw is pd.NA or raw is None:
             raw = ""
         if is_brand_dim:
@@ -597,7 +611,18 @@ EXTENT_LOOKBACK_DAYS_JSON_IP = 30
 
 
 def extent_lookback_days(source: str, field: str) -> int:
-    """這個 (來源, 欄位) 組合的回看天數。貴的組合問得窄一點。"""
+    """這個 (來源, 欄位) 組合的回看天數。貴的組合問得窄一點。
+
+    **付 JSONExtract 成本的不只 `api` 的來源 IP。** R07A 從 `params` 取回新版
+    登入端點不寫的 `acc` 之後（見 `config/rules/r07a_login_failed_acc.yaml`），
+    `entity_expr()` 給 admin/actor 的運算式也變成
+    `coalesce(nullIf(acc,''), nullIf(JSONExtractString(params,'acc'),''), ...)`
+    —— 同樣沒有欄位可以剪枝。實測 365 天等值查詢從 1.86s 上升到 7.38s，
+    **仍然遠在 55 秒上限與這裡的成本分級之內，所以刻意不改變回看天數**
+    （沒有必要為一個仍然快的查詢多切一個常數）。留這段註解只是為了讓下一個人
+    在替 admin/actor 加別的 fallback、或者上游哪天真的變慢時，不會誤以為
+    「這個組合一定跟 JSONExtract 無關，只有 api 的 IP 才要小心」。
+    """
     if source == "api" and field == "source_ip":
         return EXTENT_LOOKBACK_DAYS_JSON_IP
     return EXTENT_LOOKBACK_DAYS

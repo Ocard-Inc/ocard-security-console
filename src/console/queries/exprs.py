@@ -78,7 +78,17 @@ def exclusion_filter(alias: str = "create_time") -> str:
 
 
 def sensitive_routes() -> list[str]:
-    return list(settings()["sensitive_routes"])
+    """生效中的敏感路由。**執行期取值，不可以快取。**
+
+    唯一真相是 SQLite 的 `sensitive_routes` 表（`config/settings.yaml` 的那份
+    只是首次播種的種子，見 `store/migrate.seed_after_schema`）。快取的話從 UI
+    改完要重啟才生效，而且不會有任何錯誤訊息 —— 同 `rules/effective.effective_rules()`
+    刻意不加 lru_cache 的理由。
+
+    回 `list[str]`，簽名與改動前相同。
+    """
+    from console.store import sensitive_routes as store
+    return store.active()
 
 
 def in_list(values: list[str]) -> str:

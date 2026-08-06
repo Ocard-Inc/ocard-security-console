@@ -120,3 +120,66 @@ def _try(conn: sqlite3.Connection, sql: str) -> bool:
             logger.debug("遷移已由其他連線完成：%s（%s）", sql, exc)
             return False
         raise
+
+
+# 播種用的常數。`add()` 的呼叫端要能分辨「這是種子」與「這是人加的」。
+SEED_BY = "seed"
+SEED_REASON = "settings.yaml 初始清單"
+# 種子列的初始狀態。**這裡沒辦法 import store.sensitive_routes.STATUS_ACTIVE**
+# ——那會是 store 層對 migrate（更底層）的反向依賴，形成循環 import。所以這個
+# 字面值只能手動保持跟 STATUS_ACTIVE 一致，而 tests/test_schema_migration.py
+# 的 test_seed_status_matches_sensitive_routes_status_active 就是那條手動同步
+# 的安全網：兩邊分岔的話，種子列會被寫成一個 active() 永遠查不到的狀態字串
+# ——sensitive_routes 表看起來很正常（all_rows() 顯示得出來），只是 R05 與
+# 期間掃描的兩支探針都收到空清單，且完全不會有任何錯誤訊息。
+SEED_STATUS = "生效中"
+
+
+def seed_after_schema(conn: sqlite3.Connection) -> list[str]:
+    """把 settings.yaml 的敏感路由補進 `sensitive_routes`。
+
+    **必須在 `db.executescript(_SCHEMA)` 之後呼叫，不可以放進 `apply()`。**
+    表是由 `_SCHEMA` 建立的，而 `apply()` 依規定跑在 `_SCHEMA` **之前**
+    （`_SCHEMA` 的 CREATE INDEX 引用遷移後的欄位名，反過來會在舊 DB 上
+    `no such column`，而那個例外發生在 `get_conn()` 裡 → 走到 DB 的請求全部
+    500、排程器拿不到連線，而 /healthz 不碰 DB 照樣回 200，部署看起來成功）。
+    放進 `apply()` 的話它會對一張還不存在的表下 INSERT。
+
+    **`INSERT OR IGNORE` 刻意不看 `status`。** 人工停用的路由不可以被下一次
+    啟動悄悄復活 —— 同 `intel/refresh.seed_allowlist()` 的去重檢查。復活一條
+    路由會讓 R05 與期間掃描重新看它，而使用者以為自己已經關掉了。
+
+    與 `apply()` 一樣全程 idempotent：連線是 thread-local，每條 thread 與每個
+    CLI process 都會各跑一次。
+
+    **這支函式讓 `db.get_conn()` 多了一個新的依賴方向：資料層去讀
+    `config/settings.yaml`（透過 `core.config.settings()`）。** 在這之前，
+    `store/` 只依賴 `sqlite3`；現在每一條新連線（排程器 thread、FastAPI
+    threadpool 的每條 thread、每個 CLI process）在拿到連線之前都會多做一次
+    YAML 解析。這在正常情況下是免費的（`settings()` 有 `lru_cache`），但表示
+    `config/settings.yaml` 壞掉的話，**連 SQLite 都打不開**——不只是規則載入
+    失敗（那個既有的降級路徑走 `RuleConfigError` → 503，畫面上看得到原因），
+    而是任何碰 DB 的請求都會在 `get_conn()` 這一層直接 500。
+    """
+    # 這裡才 import：migrate 由 db.get_conn() 呼叫，而 config/timewin 不 import
+    # store，所以沒有循環。放在模組頂端也可以，放在函式內是為了讓「migrate 只
+    # 依賴 sqlite3」這個既有性質在讀檔時仍然明顯。
+    from console.core import timewin
+    from console.core.config import settings
+
+    routes = list(settings().get("sensitive_routes") or [])
+    if not routes:
+        return []
+    now = timewin.fmt(timewin.taipei_now())
+    before = conn.execute("SELECT count(*) FROM sensitive_routes").fetchone()[0]
+    conn.executemany(
+        "INSERT OR IGNORE INTO sensitive_routes"
+        " (route, status, added_by, added_at, reason)"
+        " VALUES (?, ?, ?, ?, ?)",
+        [(r, SEED_STATUS, SEED_BY, now, SEED_REASON) for r in routes])
+    after = conn.execute("SELECT count(*) FROM sensitive_routes").fetchone()[0]
+    if after > before:
+        done = [f"sensitive_routes 播種 {after - before} 條"]
+        logger.info("SQLite 播種：%s", "；".join(done))
+        return done
+    return []

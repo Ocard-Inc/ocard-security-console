@@ -255,6 +255,29 @@ CREATE TABLE IF NOT EXISTS slack_queue (
     attempts INTEGER NOT NULL DEFAULT 0,
     sent_at TEXT
 );
+
+-- 敏感路由清單。R05（非上班時間敏感操作）與期間掃描的 P03 探針共用同一份。
+--
+-- 原本寫在 config/settings.yaml，而 R05 的 SQL 裡還有第二份寫死的副本
+-- （由 tests/test_sensitive_routes_consistency.py 綁著）。搬進 DB 是為了能從
+-- 後台編輯，而 **移除一條就是製造盲區** —— 跟 allowlist 一樣必須能回答
+-- 「這條是誰拿掉的、為什麼」，所以逐列留痕而不是一列存一份 JSON。
+--
+-- settings.yaml 的那份從此只是**首次播種的種子**（見 migrate.seed_after_schema）。
+-- 播種之後改 YAML 沒有任何作用。
+--
+-- PRIMARY KEY 寫在 CREATE TABLE 裡是安全的，因為這是全新表 —— CLAUDE.md 警告的
+-- 是「對既有表 ALTER TABLE 加不了約束」與「既有重複資料讓 CREATE UNIQUE INDEX
+-- 失敗」那兩個坑，兩者都不適用。
+CREATE TABLE IF NOT EXISTS sensitive_routes (
+    route      TEXT PRIMARY KEY,
+    status     TEXT NOT NULL,
+    added_by   TEXT NOT NULL,
+    added_at   TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    removed_by TEXT,
+    removed_at TEXT
+);
 """
 
 
@@ -303,6 +326,9 @@ def get_conn() -> sqlite3.Connection:
         # 所以全新的 DB 不需要「先讓 _SCHEMA 把表建起來」。
         migrate.apply(conn)
         conn.executescript(_SCHEMA)
+        # **在 _SCHEMA 之後**：表是 _SCHEMA 建的，而 migrate.apply() 依規定在
+        # _SCHEMA 之前（見上面的註解與 migrate.seed_after_schema 的說明）。
+        migrate.seed_after_schema(conn)
         conn.commit()
         _local.conn = conn
     return conn

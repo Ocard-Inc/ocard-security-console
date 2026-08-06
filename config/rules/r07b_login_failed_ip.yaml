@@ -18,4 +18,10 @@ threshold:
   static_floor: 20
 entity:
   - {col: ip, fp: src}
-note: 部分登入紀錄無 IP（顯示「來源 IP 不可用」），此規則僅涵蓋有 IP 的失敗
+note: |
+  部分登入紀錄無 IP（顯示「來源 IP 不可用」），此規則僅涵蓋有 IP 的失敗。
+
+  兩個登入家族在這件事上是互補的：`Boss_initial/auth_v2` 一直有 ip、沒有 acc
+  （帳號那半見 R07A）；legacy 的 `login` 家族有 acc，而 **ip 在 2026-07-29 ~
+  08-04 實測是 100% 空的，2026-08-05 14:00 左右開始有值**。
+  所以這條規則的覆蓋率在那個時間點之後才提升，SQL 一行都沒有改。

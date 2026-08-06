@@ -28,6 +28,16 @@ _TABLE_RE = re.compile(r"\bFROM\s+([A-Za-z_][\w.]*)\b(?!\s*\()", re.IGNORECASE)
 # 抓不到就留 None 而不是猜一個數字 —— 見 Rule.sql_floor 的說明。
 _SQL_FLOOR_RE = re.compile(r"\bHAVING\s+metric\s*>=\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
+# 規則 SQL 允許的具名參數。start/end 是必填（見 _validate_sql），
+# sensitive_routes 由 engine._sql_params 依佔位符供值。
+#
+# 白名單而不是「隨便什麼都行」：打錯成 `%(sensitive_route)s`（少個 s）的症狀是
+# ClickHouse 缺參數、規則**每個 tick 失敗**，而 YAML 看起來完全正常。
+# 擋在載入時就變成一個看得見的啟動錯誤。
+SQL_PARAMS = ("start", "end", "sensitive_routes")
+
+_PARAM_RE = re.compile(r"%\((\w+)\)s")
+
 
 class RuleConfigError(ValueError):
     pass
@@ -51,6 +61,12 @@ def _validate_sql(rule_id: str, sql: str) -> None:
         if name not in allowed and not name.startswith("("):
             raise RuleConfigError(
                 f"{rule_id}: SQL 引用了白名單外的表 {table!r}（允許：{sorted(allowed)}）")
+    unknown = sorted(set(_PARAM_RE.findall(sql)) - set(SQL_PARAMS))
+    if unknown:
+        raise RuleConfigError(
+            f"{rule_id}: SQL 用了未知的具名參數 {unknown}"
+            f"（允許：{list(SQL_PARAMS)}）—— 打錯的參數名不會在載入時報錯，"
+            f"而是讓這條規則每個 tick 都失敗")
 
 
 def _parse_rule(path: Path, data: dict) -> Rule:

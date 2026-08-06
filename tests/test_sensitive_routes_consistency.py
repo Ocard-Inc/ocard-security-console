@@ -1,16 +1,16 @@
-"""敏感路由清單有兩份副本，這裡綁住它們；以及 R14 的母體必須是全部 route。
+"""敏感路由清單與 R14 母體的成對性。
 
-`settings.yaml` 的 `sensitive_routes` 只有兩個讀取端（`sweep/probes.py` 與
-`exprs.sensitive_routes()`），但 **`config/rules/r05_off_hours.yaml` 的 SQL 裡
-寫死了第二份**。兩份不一致不會報錯：加一條路由只改 settings 的話，期間掃描
-看得到而 R05 完全不理它，畫面上一切正常。
+清單原本有兩份副本：`config/settings.yaml` 與 **`config/rules/r05_off_hours.yaml`
+的 SQL 裡寫死的一份**。2026-08 清單搬進 SQLite 並改成執行期參數
+`%(sensitive_routes)s` 之後那份副本消失了，所以第一個測試從「兩份必須相等」
+反轉成「SQL 不得含任何路由字面值」。
 
 2026-08 之前有三份（R02 的 SQL 也寫死一份）。R02 已由 R14 取代 —— R14 對全部
-route 各自比對自己的基線，不需要事後圈定的清單，所以那一份消失了。
+route 各自比對自己的基線，不需要事後圈定的清單。
 """
 from __future__ import annotations
 
-import re
+import pytest
 
 from console.checker import calibrate as calib
 from console.core.ch import query
@@ -18,10 +18,16 @@ from console.queries import exprs
 from console.rules.loader import load_rules
 from console.store import db
 
-# R05 的 SQL 裡那串 `IN ('a', 'b', ...)`。路由字面值不含右括號，所以
-# `[^)]*` 抓得完整；R05 的 SQL 只有這一處 `IN (`。
-_IN_LIST = re.compile(r"\bIN\s*\(([^)]*)\)", re.IGNORECASE)
-_QUOTED = re.compile(r"'([^']*)'")
+# R14 母體測試曾經用的六條清單（2026-08-05 加入 customer/index 之前的原始清單）。
+# **刻意寫死在這裡**：那個測試驗的是「R14 的 SQL 沒有路由過濾」，這件事不該
+# 隨清單內容漂移 —— 清單現在是執行期可從 UI 編輯的表，用當前清單會讓
+# 「誰加了一條剛好覆蓋掉這個歷史命中的路由」變成一次與 R14 無關的測試失敗
+# （2026-08-05 加入 customer/index 就是一次實測：同一個視窗的四條命中全部
+# 落進新清單，斷言瞬間失去意義）。
+_HISTORICAL_SIX_ROUTES = [
+    "orderlist/detail", "orderlist/delivery", "orderlist/summary",
+    "customer/profile", "customer/voucherList", "point/get-analysis-data",
+]
 
 
 def _rule(rid: str):
@@ -30,34 +36,106 @@ def _rule(rid: str):
     return rule
 
 
-def _routes_in_sql(sql: str) -> list[str]:
-    m = _IN_LIST.search(sql)
-    assert m, "R05 的 SQL 裡找不到 `IN (...)` —— SQL 形狀變了，這個測試要跟著改"
-    return _QUOTED.findall(m.group(1))
+def test_r05_sql_has_no_hardcoded_route_literals():
+    """R05 的 SQL 不得含任何路由字面值。
 
-
-def test_r05_sql_route_list_matches_settings():
-    """R05 寫死的清單必須等於 settings.yaml 的 sensitive_routes。
-
-    不一致的症狀是靜默的：只改 settings 的話掃描的探針看得到新路由，
-    而 R05 這條「非上班時間敏感操作」永遠不會對它告警。
+    這個測試**取代**了原本「R05 的 SQL 與 settings.yaml 必須相等」那一個 ——
+    第二份副本已經不存在了（清單改成執行期參數 `%(sensitive_routes)s`），
+    所以要守的變成「不可以有人把清單抄回 SQL」。抄回去的症狀是靜默的：
+    從 UI 改清單之後掃描變了而 R05 沒變。
     """
-    in_sql = _routes_in_sql(_rule("R05").sql)
-    in_settings = exprs.sensitive_routes()
-    assert sorted(in_sql) == sorted(in_settings), (
-        "R05 的 SQL 與 settings.yaml 的 sensitive_routes 不一致。\n"
-        f"  只在 SQL 裡：{sorted(set(in_sql) - set(in_settings))}\n"
-        f"  只在 settings 裡：{sorted(set(in_settings) - set(in_sql))}\n"
-        "改敏感路由清單時兩邊都要改（見 config/settings.yaml 的註解）。")
+    sql = _rule("R05").sql
+    assert "%(sensitive_routes)s" in sql, (
+        "R05 的 SQL 沒有用 %(sensitive_routes)s —— 清單不會生效")
+    for route in exprs.sensitive_routes():
+        assert f"'{route}'" not in sql, (
+            f"R05 的 SQL 裡有寫死的路由字面值 {route!r}")
 
 
-def test_r14_population_is_every_route_not_a_whitelist():
+def test_r05_receives_exactly_the_active_list():
+    """engine 實際傳給 ClickHouse 的清單必須等於 store.active()。
+
+    行為驗證而非讀 SQL：中間任何一層（`_sql_params` 的佔位符判斷、
+    `exprs` 的轉接）漏掉的話這裡會失敗，而症狀本來是「改了清單但 R05 沒變」。
+    """
+    from console.rules import engine
+    from console.store import sensitive_routes as sr
+    params = engine._sql_params(_rule("R05"), "2026-08-05 00:00:00",
+                                "2026-08-05 01:00:00")
+    assert params["sensitive_routes"] == sr.active()
+
+
+def test_rules_without_the_placeholder_do_not_get_the_list():
+    """沒有用到清單的規則不該收到它。
+
+    多餘參數實測不報錯，所以這條不是為了正確性 —— 是為了讓「哪條規則吃這份
+    清單」在程式裡看得出來。
+    """
+    from console.rules import engine
+    params = engine._sql_params(_rule("R14"), "2026-08-05 00:00:00",
+                                "2026-08-05 01:00:00")
+    assert "sensitive_routes" not in params
+    assert set(params) == {"start", "end"}
+
+
+def test_customer_index_is_in_the_list():
+    """2026-08-05 那起遍歷打的就是 customer/index，而 R05 全天靜音。
+
+    這條斷言守著「有人把它拿掉」—— 拿掉不會報錯，只會讓同一種攻擊再次
+    完全靜音。要暫時關掉 R05 請停用規則（那會出現在資安總覽的橫幅上）。
+    """
+    assert "customer/index" in exprs.sensitive_routes()
+
+
+def test_sql_params_raises_when_the_list_is_empty(monkeypatch):
+    """空清單要拋例外，不是傳空 list 給 ClickHouse。
+
+    這條不在 brief 的 Step 1 清單裡，是自我審查時另外補的：`_sql_params()`
+    的 docstring 明講「清單為空時拋例外而不是傳空 list」，但原本四個測試都沒有
+    真的驗過這件事。`IN ()` 在 ClickHouse 實測不報錯、靜靜回 0 筆 ——
+    「R05 沒有命中」與「R05 沒有在看」在畫面上一模一樣。
+
+    **用 `pytest.raises(RuntimeError)`，不是 `try/except Exception: pass`。**
+    後者的第一版寫法是 `try: ...; assert False, "..."; except Exception: pass`——
+    `AssertionError` 本身是 `Exception` 的子類，所以就算 `_sql_params()` 退化成
+    靜靜回傳 `{"sensitive_routes": []}`，走到 `assert False` 拋出的
+    `AssertionError` 會被自己的 `except Exception` 接住，測試照樣綠燈。
+    那不是「沒有測試」，是比沒有測試更糟的「假保證」，剛好蓋在這個功能最重要的
+    那句約束上。斷言具體型別（`RuntimeError`）而不是裸 `Exception`，避免
+    `_sql_params()` 因為不相關的 bug 拋出 `KeyError` 之類的東西也讓這裡通過。
+
+    至於「拋的例外必須是 `evaluate()` 逐規則 `try` 接得住的東西」——
+    `evaluate()` 的 `try: ... except Exception:` 是裸 `except Exception`，
+    任何非 `BaseException`（如 `SystemExit`/`KeyboardInterrupt`）的例外都接得住，
+    這裡驗證的 `RuntimeError` 顯然符合，不需要另外斷言；有需要查證的話見
+    `src/console/rules/engine.py` 的 `evaluate()`。
+    """
+    from console.rules import engine
+    monkeypatch.setattr(engine.sensitive_routes, "active", lambda: [])
+    with pytest.raises(RuntimeError):
+        engine._sql_params(_rule("R05"), "2026-08-05 00:00:00",
+                           "2026-08-05 01:00:00")
+
+
+def test_r14_population_is_every_route_not_a_whitelist(monkeypatch):
     """R14 必須看得到不在敏感路由清單裡的 route。
 
     行為驗證而非比對 SQL 字串（同 tests/test_rule_store_volume.py 的做法）：
     有人把路由過濾加回 R14 的話，這個測試會失敗。用 7/16 那場攻擊的視窗，
     因為那段歷史資料穩定，而且它正是「六條清單看不到 customer/index」的證據。
+
+    **清單刻意 monkeypatch 成歷史六條，不讀執行期的 `exprs.sensitive_routes()`。**
+    清單現在是可以從 UI 編輯的表，這個測試驗的是「R14 的 SQL 沒有路由過濾」，
+    與清單目前裝了什麼無關 —— 讀執行期清單的話，這個斷言的成立與否會跟著
+    「現在清單裡有幾條、剛好覆蓋掉這個視窗的哪些命中」漂移。2026-08-05 加入
+    `customer/index` 就是一次實測：清單從 6 條變 7 條之後，7/16 00:10-01:10
+    這個視窗命中的四條（`customer/index`／`customer/profile`／
+    `orderlist/detail`／`orderlist/delivery`）剛好全部落進新清單，`outside`
+    變空集合，斷言瞬間失去意義 —— 而那與 R14 的 SQL 完全無關，只是清單變大了。
+    固定成歷史六條之後，這個視窗命中的 `customer/index` 就是清單外的那一條，
+    也正是 docstring 這段故事本來要講的「六條清單看不到 customer/index」的證據。
     """
+    monkeypatch.setattr(exprs, "sensitive_routes", lambda: _HISTORICAL_SIX_ROUTES)
     rule = _rule("R14")
     df = query(rule.sql, {"start": "2026-07-16 00:10:00", "end": "2026-07-16 01:10:00"})
     assert not df.empty, "7/16 00:10-01:10 應該有 route 超過 R14 的 HAVING 門檻"

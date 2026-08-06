@@ -83,22 +83,30 @@ baseline:
 sensitive_routes:
   # backend_sys_log route 前綴（前 2 段）。
   #
-  # **這份清單有兩個讀取端，而且其中一個是抄過去的字面值**：
-  #   ① sweep/probes.py（期間掃描的敏感路由探針，讀 exprs.sensitive_routes()）
-  #   ② config/rules/r05_off_hours.yaml 的 SQL —— **裡面寫死了一份副本**
-  # tests/test_sensitive_routes_consistency.py 綁住兩者一致。改這裡一定要
-  # 同時改 R05 的 SQL，否則「加了一條敏感路由」會靜靜地只有掃描看得到。
+  # **這份清單只是「首次播種的種子」。** 2026-08 起唯一真相是 SQLite 的
+  # `sensitive_routes` 表（見 store/migrate.seed_after_schema）—— 表建立之後
+  # 改這裡**沒有任何作用，而且不會有錯誤訊息**。要改清單請走主控台的規則頁面
+  # （改完 R05 下一個 tick 生效、期間掃描下一次執行生效），或直接改表。
+  #
+  # 兩個讀取端都在執行期向那張表取值：
+  #   ① sweep/probes.py 的 P03（%(sensitive_routes)s，由 run.build_params 供值）
+  #   ② config/rules/r05_off_hours.yaml 的 SQL（同一個參數，由
+  #      rules/engine._sql_params 供值）
+  # 2026-08 之前 R05 的 SQL 裡**寫死了第二份副本**，由
+  # tests/test_sensitive_routes_consistency.py 綁著兩者一致。那份副本已經消失，
+  # 該測試反轉成「SQL 不得含任何路由字面值」。
   #
   # R02（敏感路由大量遍歷）已於 2026-08 退休，由 R14 取代 —— R14 對**全部**
-  # route 各自比對自己的基線，不需要事後圈定的清單。這份清單現在只服務
-  # R05（非上班時間敏感操作），它的 metric 是「一個帳號打全部敏感路由的合計」，
-  # 實測拆成逐路由會漏掉 36% 的命中，所以它不能改用 R14 的形狀。
+  # route 各自比對自己的基線，不需要事後圈定的清單。
   - orderlist/detail
   - orderlist/delivery
   - orderlist/summary
   - customer/profile
   - customer/voucherList
   - point/get-analysis-data
+  # 2026-08-05 加入：當天那起逐 ID 遍歷（131.143.239.176 / homeyakiniku，
+  # 凌晨 4,726 次）打的就是這條，而 R05 全天靜音。
+  - customer/index
 
 internal_accounts:
   # 內部/高權限帳號，新來源首見時升級為 critical

@@ -17,7 +17,7 @@ from console.core.ch import query
 from console.core.config import settings
 from console.rules import baseline
 from console.rules.model import Finding, Rule, Suppression
-from console.store import allowlist, db
+from console.store import allowlist, db, sensitive_routes
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,37 @@ def _suppression(rule: Rule, entry: allowlist.Entry, entity_key: str, label: str
         metric=metric, threshold=threshold, window_start=start, window_end=end)
 
 
+# R05 的 SQL 用它取代寫死的敏感路由清單。白名單也是 loader 驗證的依據。
+SENSITIVE_ROUTES_PARAM = "sensitive_routes"
+_SENSITIVE_ROUTES_PLACEHOLDER = f"%({SENSITIVE_ROUTES_PARAM})s"
+
+
+def _sql_params(rule: Rule, start: str, end: str) -> dict:
+    """規則 SQL 的參數。一律有 start/end；用到清單的規則才附上清單。
+
+    **執行期取值。** 清單存在 SQLite，engine 每個 tick 呼叫這裡 ——
+    所以從 UI 改完下一個 tick 生效，不必重啟（同 `effective_rules()`）。
+
+    實測 clickhouse-connect 對「傳了但 SQL 沒用到」的參數不報錯，所以「一律傳」
+    也可行。依佔位符判斷是為了讓「哪條規則吃這份清單」在程式裡看得出來。
+
+    清單為空時**拋例外而不是傳空 list**：`IN ()` 在 ClickHouse 實測不報錯、
+    靜靜回 0 筆，而「R05 沒有命中」與「R05 沒有在看」在畫面上一模一樣。
+    例外會被 `evaluate()` 的逐規則 try 接住 → 進 failures → 心跳帶出橘燈。
+    """
+    params: dict[str, object] = {"start": start, "end": end}
+    if _SENSITIVE_ROUTES_PLACEHOLDER in (rule.sql or ""):
+        routes = sensitive_routes.active()
+        if not routes:
+            raise RuntimeError(
+                f"{rule.id} 需要敏感路由清單，而清單目前一條生效中的都沒有。"
+                "空清單在 ClickHouse 是 `IN ()` —— 不報錯、回 0 筆，"
+                "那與「沒有異常」在畫面上一模一樣。"
+                "要停止這條規則請停用規則本身（那會出現在資安總覽的橫幅上）。")
+        params[SENSITIVE_ROUTES_PARAM] = routes
+    return params
+
+
 def _resolve_threshold(rule: Rule, row: dict, window_end: datetime):
     t = rule.threshold
     if t is None:
@@ -120,7 +151,7 @@ def _eval_sql_threshold(rule: Rule, start: str, end: str, end_dt: datetime,
                         allow: dict) -> tuple[list[Finding], list[Suppression]]:
     findings: list[Finding] = []
     suppressed: list[Suppression] = []
-    df = query(rule.sql, {"start": start, "end": end})
+    df = query(rule.sql, _sql_params(rule, start, end))
     for _, row in df.iterrows():
         row = {k: (None if isinstance(v, float) and math.isnan(v) else v)
                for k, v in row.items()}
@@ -164,7 +195,7 @@ def _eval_new_source(rule: Rule, start: str, end: str, end_dt: datetime,
                      allow: dict) -> tuple[list[Finding], list[Suppression]]:
     findings: list[Finding] = []
     suppressed: list[Suppression] = []
-    df = query(rule.sql, {"start": start, "end": end})
+    df = query(rule.sql, _sql_params(rule, start, end))
     now_str = timewin.fmt(timewin.taipei_now())
     for _, row in df.iterrows():
         row = dict(row)

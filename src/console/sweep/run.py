@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from console.core import masking, timewin
 from console.core.config import settings
 from console.core.ch import query
+from console.queries import exprs
 from console.sweep.probes import PER_DAY, Probe, probes
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,9 @@ class ProbeRun:
     timings_ms: dict[str, int]      # probe_id → 耗時
     failures: dict[str, str]        # probe_id → 錯誤訊息
     skipped: tuple[str, ...]        # 未執行的 probe_id（cost=high 未勾選、需 intel 但無資料）
-    params: dict[str, str]
+    # build_params() 回傳的 sensitive_routes 是 list[str]，不是字串 —— 這個型別
+    # 標註必須跟著它，否則只是一個看起來精確卻是錯的宣稱。
+    params: dict[str, object]
 
 
 def range_days(start: datetime, end: datetime) -> float:
@@ -74,7 +77,7 @@ def range_days(start: datetime, end: datetime) -> float:
     return max((end - start).total_seconds() / 86400, 1.0)
 
 
-def build_params(start: datetime, end: datetime) -> dict[str, str]:
+def build_params(start: datetime, end: datetime) -> dict[str, object]:
     """探針的共用參數。每支探針另外拿到自己的 `floor`（見 effective_floor）。
 
     prev_start / seed_start 一律由 **start** 往回推，不是由 end ——
@@ -87,6 +90,8 @@ def build_params(start: datetime, end: datetime) -> dict[str, str]:
         "end": timewin.fmt(end),
         "prev_start": timewin.fmt(start - timedelta(days=cfg["window_days"])),
         "seed_start": timewin.fmt(start - timedelta(days=cfg["seed_days"])),
+        # 執行期取值（不是啟動時）—— 見 exprs.sensitive_routes() 的說明。
+        "sensitive_routes": exprs.sensitive_routes(),
     }
 
 
@@ -121,7 +126,7 @@ def _clean(value: object) -> object:
     return masking.scrub_text(value, max_len=80)
 
 
-def _run_one(probe: Probe, params: dict[str, str], floor: float) -> list[Hit]:
+def _run_one(probe: Probe, params: dict[str, object], floor: float) -> list[Hit]:
     fp = masking.DISPLAY_FUNCS[probe.fp_kind]
     df = query(probe.sql, {**params, "floor": floor})
     hits: list[Hit] = []
@@ -158,12 +163,16 @@ def run_probes(
 ) -> ProbeRun:
     params = build_params(start, end)
     days = range_days(start, end)
+    routes = exprs.sensitive_routes()
     selected: list[Probe] = []
     skipped: list[str] = []
     for p in probes():
         if p.cost == "high" and not include_high_cost:
             skipped.append(p.id)
         elif p.needs_intel and not intel_available:
+            skipped.append(p.id)
+        elif p.needs_sensitive_routes and not routes:
+            # 空清單不會報錯，只會靜靜回 0 筆 —— 那與「沒有異常」長得一樣。
             skipped.append(p.id)
         else:
             selected.append(p)

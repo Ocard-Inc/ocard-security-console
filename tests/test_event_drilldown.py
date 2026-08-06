@@ -19,7 +19,7 @@ import pytest
 from console.api import drilldown
 from console.core.ch import query
 from console.queries import explorer
-from console.rules.engine import _masked_context
+from console.rules.engine import _masked_context, _sql_params
 from console.rules.loader import load_rules
 from console.rules.model import EntityField, Rule
 
@@ -81,7 +81,11 @@ def _top_row(rule: Rule) -> tuple[dict, str, str] | None:
     因為 drilldown 的時間範圍就是事件視窗 —— 兩邊用不同的區間比計數毫無意義。
     """
     for start, end in [(START, END), *FALLBACK_WINDOWS]:
-        df = query(rule.sql, {"start": start, "end": end})
+        # 用 engine._sql_params 而不是自己拼 {"start", "end"}：R05 的 SQL 現在用
+        # 執行期的 %(sensitive_routes)s 取代寫死清單（見 engine.py），自己拼參數
+        # 會漏這一個、直接撞 clickhouse-connect 的 KeyError。兩邊各自維護一份
+        # 「規則需要哪些參數」遲早會漂移，所以借用 production 那份唯一真相。
+        df = query(rule.sql, _sql_params(rule, start, end))
         if not len(df):
             continue
         top = df.sort_values("metric", ascending=False).iloc[0]

@@ -1,0 +1,65 @@
+id: R15
+name: Backend 單一來源大量請求
+severity: P2
+source: backend
+kind: sql_threshold
+window_minutes: 60
+cooldown_minutes: 120
+sql: |
+  SELECT ip, count() AS metric, uniq(acc) AS accs, uniq(_brand) AS brands,
+         sumMap([_brand], [toUInt64(1)]) AS brand_map,
+         uniqExact(arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/'))
+           AS uniq_routes
+  FROM ods_backend_sys_log
+  WHERE create_time >= %(start)s AND create_time < %(end)s
+    AND ip IS NOT NULL AND ip != ''
+  GROUP BY ip
+  HAVING metric >= 400
+threshold:
+  static_floor: 800
+  baseline_key: backend_ip_60m
+  population: true
+  stat: p99
+  factor: 3
+entity:
+  - {col: ip, fp: src}
+note: |
+  補 R01 的死穴：**R01 的對象是 (acc, ip)，一個來源換帳號就把量拆散。**
+  2026-08-05 實測 131.143.239.176 合計 4,754 次，拆成 7 個 (acc, ip) 之後
+  除了 homeyakiniku 的 4,726 次，其餘 6 個帳號只有 2–8 次。攻擊者只要把量
+  平均分到那 7 個帳號（各 679 次），R01 的 10 分鐘視窗與 R08A 的 150 門檻
+  **會同時落空**，而 R14 只認 route 不認來源。當天是因為對方沒有分散才被抓到。
+
+  **severity 是 P2 而不是 P1**：這條規則的網比 R01 大（對象是 IP、不分帳號），
+  回測（28 天、排除 7/16-17）扣掉辦公室出口後 1.77 桶/日。P1 目前的量是
+  R14 約 5 則/26 天，R15 進 P1 會讓 P1 頻道的量級跳一個檔。
+
+  **`HAVING metric >= 400` 刻意低於 static_floor 800。** SQL 的 HAVING 是門檻
+  的真正下限（見 model.Rule.sql_floor）—— 設成 800 的話日後想從 UI 調低就得改
+  SQL 並重啟，而 backend 量小、多回幾列沒有成本。
+
+  **生效門檻目前由 static_floor 主導**（實測 `backend_ip_60m`：median=12、
+  p95=88、p99=252.36、samples=69,316 → max(800, 252.36×3=757.08≈757)=800）。
+  這不是缺陷而是可驗證的事實：母體是全域單一分布（逐 IP 基線不可能，23 萬個
+  來源，而 CLAUDE.md 明說不該有逐對象的列），所以兩臂必然有一邊恆勝。基線那
+  一臂的作用是母體漂移時門檻自動跟上，floor 保護低母體時期。R01 也是這個形狀
+  （floor 800 vs p99×8=880，那裡是基線那臂勝）。
+
+  **上線前必須先把辦公室出口播進 allowlist**（`intel.refresh --seed-allowlist`；
+  ip_intel 已把 1.34.41.218 標成 office）。回測 floor 800 的 21 個來源裡，
+  辦公室出口一個人佔 104 桶 / 17 天；扣掉它是 46 桶 / 26 天 = 1.77/日、20 個來源。
+  沒先播種的話第一天就會為它叫 6 次。
+
+  對比：1.34.41.218 在 R01 只佔 1 桶，因為它的量分散在 49 個帳號上 ——
+  同一個來源、兩種對象粒度，噪音結構完全不同。
+
+  回測（28 天，floor 800）：正常日 150 桶（5.77/日，扣掉辦公室出口 1.77/日）、
+  21 個相異來源；7/16-17 攻擊期 47 桶。是現況的嚴格超集。
+
+  **replay 驗證（2026-08-04，正常日）：命中 30 次 / 不重複 1 件。** 那唯一一件
+  正是 1.34.41.218（辦公室出口）—— `[2026-08-04 11:55:00] P2 R15 Backend
+  單一來源大量請求｜1.34.41.218｜814 ≥ 門檻 800`。這把 28 天回測的桶級結論
+  （辦公室出口是最大噪音源）在事件級再驗證一次：**在還沒播種 allowlist 之前
+  上線，R15 在安靜的一天裡唯一一次告警就是誤報。** 一條規則如果每次叫都是
+  誤報，值班的人會學著忽略它 —— 那是偵測在沒有人決定要拿掉它的情況下被拿掉的
+  方式。所以「上線前先播種 allowlist」是硬性前置條件，不是建議。

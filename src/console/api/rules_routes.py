@@ -9,22 +9,31 @@ calibrate 會憑空生出假倍數（見 CLAUDE.md 的「分桶與基線粒度�
 `applies_at` / `restart_required` 由這裡告訴前端，前端不可自己推斷 ——
 猜錯的症狀是使用者以為改好了而檢查還在用舊值，完全沒有錯誤訊息。
 
-**這些端點不得呼叫 ClickHouse**（純 SQLite + YAML，所以 async def 是對的）。
+**`POST /sensitive-routes` 會查一次 ClickHouse**（只為了產生「這條路由在 log 裡
+不存在」的 warning），其餘端點都是純 SQLite + YAML。全部端點一律同步 `def`
+（見 CLAUDE.md：`async def` 會讓阻塞查詢佔住事件迴圈、連五分鐘排程一起卡住）。
 """
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from console.alerting import notify
 from console.api import allowlist_view, validate
 from console.auth.roles import CurrentUser, current_user, guard
-from console.core import timewin
+from console.core import ch, timewin
+from console.core.ch import ChConnectionError, ChQueryError
 from console.core.config import settings
+from console.queries import exprs
 from console.rules import effective
 from console.rules.loader import RuleConfigError, load_rules
-from console.store import allowlist, audit, db, rule_overrides, rule_suppressions
+from console.store import (allowlist, audit, db, rule_overrides,
+                          rule_suppressions, sensitive_routes)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -318,3 +327,168 @@ def whatif(rule_id: str, static_floor: float | None = None,
                 "被 Allowlist 抑制或未達 SQL 預篩的對象本來就不在 events 裡，"
                 "所以這個數字是下限。",
     }
+
+
+# ── 敏感路由清單 ────────────────────────────────────────────────────────
+#
+# 這份清單同時餵 R05（非上班時間敏感操作）與期間掃描的 P03 探針，**不屬於任何
+# 單一規則** —— 所以它不是 rule_overrides 的一個欄位。UI 放在規則頁面頂部。
+#
+# 權限重用 `edit_rules`：這是規則參數的一種，而 guard() 不做分級，多一個權限
+# 字串只是多一個字串。
+
+# 影響範圍由後端說出來，前端不自己列一份。使用者從規則頁面點進來，預設只會
+# 想到 R05 —— 而移掉一條路由其實同時影響期間掃描的**兩支**探針，不是一支：
+#
+# - P03「敏感路由大量存取」與 P01 同屬 volume 訊號組，量級突變仍由 P01 頂著，
+#   所以少了 P03 不會讓 volume 這組訊號整組消失。
+# - P02「集中存取資料導出路由」是 concentration 這組**唯一**的訊號來源，而
+#   `correlate.MIN_SIGNAL_GROUPS = 2`。少了它，一個上班時間、來源看起來正常、
+#   但高度集中打資料導出路由的帳號永遠湊不到第二組訊號 —— 不是「排名變低」，
+#   是**完全不會出現在報告裡**。這正是比毫無掩飾的攻擊者更謹慎的那種行為模式。
+#
+# 兩支探針的說明見 sweep/limits.py 的 sensitive_routes_empty／sensitive_routes
+# 限制項目（同一套說法，這裡是給規則頁面卡片與 ops 訊息用的精簡版）。
+_SENSITIVE_ROUTE_READERS = (
+    "R05 非上班時間敏感操作（即時規則，改完下一個 tick 生效）",
+    "期間異常掃描 P03「敏感路由大量存取」（下一次執行生效；與 P01 同屬 volume"
+    " 訊號組，量級突變仍由 P01 頂著）",
+    "期間異常掃描 P02「集中存取資料導出路由」（下一次執行生效；concentration"
+    " 訊號組唯一成員 —— 少了它，上班時間、來源正常但集中存取資料導出路由"
+    "的帳號會完全湊不到第二組訊號，不會出現在報告裡）",
+)
+
+# 判斷「這條路由在 log 裡存在嗎」的回看天數。只用來產生 warnings，不擋寫入。
+_ROUTE_EXISTS_LOOKBACK_DAYS = 30
+
+
+def _sensitive_routes_payload() -> dict:
+    return {
+        "routes": sensitive_routes.all_rows(),
+        "readers": list(_SENSITIVE_ROUTE_READERS),
+        "summary": {
+            "active": sensitive_routes.active_count(),
+            "disabled": sensitive_routes.disabled_count(),
+        },
+    }
+
+
+@router.get("/sensitive-routes")
+def list_sensitive_routes(user: CurrentUser = Depends(current_user)) -> dict:
+    guard(user, "view_rules")
+    return _sensitive_routes_payload()
+
+
+def _route_warnings(route: str) -> list[str]:
+    """打錯的路由不會報錯，只會永遠不生效 —— 所以要明說（不擋）。
+
+    刻意不擋：要允許預先加一條還沒出現過的路由。同 allowlist 到期日留空的
+    處理 —— 可以，但不能安靜。查詢失敗一律不產生 warning（那是「無法確認」，
+    不是「不存在」），也不擋寫入。
+    """
+    since = timewin.fmt(timewin.taipei_now() - timedelta(
+        days=_ROUTE_EXISTS_LOOKBACK_DAYS))
+    try:
+        df = ch.query(
+            f"SELECT count() AS n FROM ods_backend_sys_log"
+            f" WHERE create_time >= %(start)s AND {exprs.ROUTE2} = %(route)s",
+            {"start": since, "route": route})
+    except (ChConnectionError, ChQueryError) as exc:
+        logger.warning("敏感路由存在性檢查失敗：%s", exc)
+        return []
+    if int(df["n"][0]) == 0:
+        return [f"這條路由在近 {_ROUTE_EXISTS_LOOKBACK_DAYS} 天的 backend log 裡"
+                f"不存在，可能打錯了。比對是字串完全相等 —— 打錯的路由不會報錯，"
+                f"只會永遠不生效。"]
+    return []
+
+
+@router.post("/sensitive-routes")
+def add_sensitive_route(payload: dict = Body(...),
+                        user: CurrentUser = Depends(current_user)) -> dict:
+    guard(user, "edit_rules")
+    validate.reject_unknown_keys(payload, {"route", "reason"})
+    reason = validate.require_text(payload, ("reason",),
+                                   {"reason": "新增理由"})["reason"]
+    route = validate.route2(payload.get("route"))
+
+    before = sensitive_routes.active_count()
+    action = sensitive_routes.add(route, who=user.email, reason=reason)
+    if action == sensitive_routes.ADD_ALREADY_ACTIVE:
+        # 什麼都沒改：add() 已經確認這條路由目前就是生效中，沒有寫任何欄位。
+        # 這裡也不可以寫 audit_log / ops 訊息 —— 那會宣稱一件沒有發生過的事
+        # （新增或恢復），而 provenance（誰加的、為什麼）其實原封不動。
+        raise HTTPException(
+            409, f"{route} 已經在清單裡且生效中，不需要重新新增。"
+                 "若要修改新增理由，請先移除再重新加入。")
+    after = sensitive_routes.active_count()
+
+    label = "新增敏感路由" if action == "created" else "恢復敏感路由"
+    target = f"{route}（生效中 {before} → {after} 條）"
+    audit.record(who=user.email, role=user.role_label, action=label,
+                 target=target, reason=reason)
+    _ops(label, target, user, reason,
+         extra=f"影響：{'；'.join(_SENSITIVE_ROUTE_READERS)}")
+    return {"ok": True, "action": action, "warnings": _route_warnings(route),
+            **_sensitive_routes_payload()}
+
+
+@router.delete("/sensitive-routes/{route:path}")
+def remove_sensitive_route(route: str, payload: dict = Body(default={}),
+                           user: CurrentUser = Depends(current_user)) -> dict:
+    guard(user, "edit_rules")
+    validate.reject_unknown_keys(payload, {"reason"})
+    reason = validate.require_text(payload, ("reason",),
+                                   {"reason": "移除理由"})["reason"]
+    route = validate.route2(route)
+
+    # `before` 只給稽核訊息顯示用（可能因併發而稍微過期），實際的「不能清空」
+    # 不變量由 `sensitive_routes.disable()` 內的單顆 UPDATE 原子性地保證 ——
+    # 這裡**不可以**先讀 `active_count()` 再另外判斷要不要呼叫 disable()，
+    # 那正是這個檢查曾經有過的 race（見 disable() 的 docstring）。
+    before = sensitive_routes.active_count()
+    outcome = sensitive_routes.disable(route, who=user.email)
+    if outcome == sensitive_routes.DISABLE_NOT_FOUND:
+        raise HTTPException(404, f"清單裡沒有 {route}")
+    if outcome == sensitive_routes.DISABLE_ALREADY_DISABLED:
+        raise HTTPException(409, f"{route} 已經是停用狀態")
+    if outcome == sensitive_routes.DISABLE_LAST_ACTIVE:
+        # 空清單在 ClickHouse 是 `IN ()` —— 實測不報錯、靜靜回 0 筆，
+        # 也就是 R05 沒有命中與 R05 沒有在看長得一模一樣。
+        # detail 是純文字（HTTPException 不會被當 Markdown 渲染），
+        # 星號只會原樣顯示在畫面上，不要用。
+        raise HTTPException(
+            409, f"{route} 是最後一條生效中的敏感路由，不能移除。"
+                 "空清單不會報錯，只會讓 R05 靜靜不再命中任何東西，"
+                 "而畫面上規則仍顯示啟用中。要停止這條規則請停用規則本身 —— "
+                 "那會出現在資安總覽的「目前有多少監測被關閉」橫幅上，"
+                 "一份空清單不會。")
+    assert outcome == sensitive_routes.DISABLE_OK, f"未知的 disable() 結果：{outcome!r}"
+    after = sensitive_routes.active_count()
+
+    label = "移除敏感路由"
+    target = f"{route}（生效中 {before} → {after} 條）"
+    audit.record(who=user.email, role=user.role_label, action=label,
+                 target=target, reason=reason)
+    _ops(label, target, user, reason,
+         extra=f"影響：{'；'.join(_SENSITIVE_ROUTE_READERS)}\n"
+               "這是刻意製造的監測盲區，已計入資安總覽的橫幅。")
+    return {"ok": True, **_sensitive_routes_payload()}
+
+
+def _ops(action: str, target: str, user: CurrentUser, reason: str,
+         extra: str = "") -> None:
+    """發 ops 訊息。**Slack 掛掉不可以讓寫入失敗**（同 allowlist_routes 的做法）——
+    留痕的主要載體是 audit_log，ops 訊息是「當事人改不掉」的第二層。
+
+    不要繞過 `send_ops_message` 自己組字串再呼叫 `_send`：
+    `tests/test_no_outbound_slack.py` 守的攔截點是 `_send`，而格式化必須留在
+    被測試執行的路徑上，否則欄位名錯誤只會在正式環境現形。
+    """
+    try:
+        notify.send_ops_message(
+            action,
+            f"{target}\n操作者：{user.email}（{user.role_label}）\n理由：{reason}"
+            + (f"\n{extra}" if extra else ""))
+    except Exception:                                    # noqa: BLE001
+        logger.exception("敏感路由的 ops 訊息送出失敗（不影響寫入）")

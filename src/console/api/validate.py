@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import re
 
 from fastapi import HTTPException
 
@@ -103,6 +104,37 @@ def source_ip(value: object) -> str:
         return str(ipaddress.ip_address(text))
     except ValueError as exc:
         raise HTTPException(400, f"{text!r} 不是有效的 IP 位址") from exc
+
+
+# 逐段字元白名單，不是黑名單。原本只擋 `'"%\` 四個字元，`a/b?x`、`a/b#x`、
+# `a /b` 這類都會放行——`?`／`#` 在瀏覽器與某些反向代理會被當成查詢字串／
+# 錨點的分隔符，空白也不會出現在真實的 route 段落裡。與其一路加黑名單追字元
+# （下一個踩到的一定是還沒被加進去的那個），改成白名單：route 段落實際觀察到
+# 的字元集合就是英數字、下底線、句點、減號（見 config/settings.yaml 的種子清單）。
+_ROUTE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def route2(value: object) -> str:
+    """backend 的 route 前兩段（`a/b`），正規化後回傳。
+
+    比對是**字串完全相等**（見 `queries/exprs.ROUTE2` 與 R05 的 SQL），所以：
+    - 前綴會連 `customer/indexExtra` 一起放行，因此不接受前綴語意的輸入；
+    - 打錯的路由同樣不報錯，只會永遠不生效 —— 那是這裡擋形狀的理由。
+    形狀之外還會不會命中，由呼叫端用真實候選清單給 warnings（不擋）。
+    """
+    text = str(value or "").strip().strip("/")
+    if not text:
+        raise HTTPException(400, "路由為必填")
+    parts = text.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise HTTPException(
+            400, f"{text!r} 不是有效的 route 前兩段：格式必須是 `第一段/第二段`"
+                 f"（例如 `customer/index`）。比對是完全相等，不是前綴。")
+    if not all(_ROUTE_SEGMENT_RE.match(p) for p in parts):
+        raise HTTPException(
+            400, f"{text!r} 含不允許的字元：每一段只能是英數字、底線、句點或"
+                 f"減號（例如 `customer/index`）")
+    return text
 
 
 def bound(value: object, label: str, *, end_of_day: bool) -> str:

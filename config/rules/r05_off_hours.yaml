@@ -13,8 +13,7 @@ sql: |
   WHERE create_time >= %(start)s AND create_time < %(end)s
     AND acc IS NOT NULL AND acc != ''
     AND arrayStringConcat(arraySlice(splitByChar('/', route), 1, 2), '/') IN
-        ('orderlist/detail', 'orderlist/delivery', 'orderlist/summary',
-         'customer/profile', 'customer/voucherList', 'point/get-analysis-data')
+        %(sensitive_routes)s
   GROUP BY acc, ip
   HAVING metric >= 50
 threshold:
@@ -22,4 +21,21 @@ threshold:
 entity:
   - {col: acc, fp: actor}
   - {col: ip, fp: src}
-note: 7/16 攻擊始於 00:13；23:00–08:00 對敏感 route 的高頻操作
+note: |
+  7/16 攻擊始於 00:13；23:00–08:00 對敏感 route 的高頻操作。
+
+  **清單是執行期參數，不是寫死的字面值。** 唯一真相是 SQLite 的
+  `sensitive_routes` 表（可從規則頁面編輯，改完下一個 tick 生效）；
+  `config/settings.yaml` 的那份只是首次播種的種子。同一份清單也餵給期間掃描的
+  兩支探針 —— P03「敏感路由大量存取」與 P02「集中存取資料導出路由」，改一次
+  三邊一起變。P02 是 concentration 訊號組唯一成員，清單變空的代價不只是這條
+  規則靜音，還會讓期間掃描完全湊不到那組訊號（見 sweep/limits.py）。
+
+  metric 刻意是「一個帳號打**全部**敏感路由的合計」而不是逐路由：
+  實測拆成逐路由會漏掉 36% 的命中。
+
+  2026-08-05 加入 `customer/index`：當天那起逐 ID 遍歷打的就是它，而這條規則
+  全天只發了 2 則無關的告警。原本的 6 條清單是 7 月事後圈定的，天生只涵蓋上次
+  攻擊用過的路由（那正是 R02 退休、由 R14 取代的理由，而 R05 是這份清單最後一個
+  使用者）。回測（28 天、排除 7/16-17）：1.69 → 2.50 桶/日，相異對象 27 → 39，
+  攻擊期命中 25 不變。

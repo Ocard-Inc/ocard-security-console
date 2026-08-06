@@ -56,9 +56,45 @@ def _plain(value: object) -> str | None:
     return None if text in _EMPTY else text
 
 
+# R07A 的新版登入端點把 acc 存在 params 裡（見
+# config/rules/r07a_login_failed_acc.yaml 的 JSONExtractString fallback）——
+# 那是攻擊者可以自由填寫的登入表單欄位，沒有經過任何長度限制就落地。舊的
+# acc 欄位本來就可能很長（同一類風險不是新的），但這裡加一個上限：這個值會
+# 變成事件去重鍵（entity_key）的一部分，也會原樣進 Slack 訊息文字，一個極長
+# 的字串會讓去重鍵變得笨重、也可能撐大 Slack 訊息。上限刻意寬鬆（真實帳號名
+# 遠遠不會碰到），只是把成本壓低，不影響任何真實識別值的顯示。
+_ACTOR_MAX_LEN = 200
+
+
 def actor(account: object) -> str | None:
-    """後台帳號（`acc` / `_admin` / `_user_admin`）。原樣顯示。"""
-    return _plain(account)
+    """後台帳號（`acc` / `_admin` / `_user_admin`）。原樣顯示，長度有上限。
+
+    **超過上限的後綴刻意帶完整原文的雜湊，不是只帶原長。** 這個回傳值不只是
+    顯示文字：`rules/engine.entity_parts()` 直接拿它當 `entity_key` 的一段，
+    `store/events.py` 再拿 `entity_key` 去重。若後綴只由「原長」組成，
+    兩個前 200 字元相同、原長也相同、但中間或尾端不同的帳號名會產生一模一樣
+    的輸出 —— 兩個不同的攻擊來源被靜靜合併成同一個事件，`metric_value` 只留下
+    該 tick 最後處理到的那筆，另一筆的存在完全消失（R07A 的 `params.acc` 是
+    攻擊者自由填寫的登入表單欄位，實測 90 天內真實出現過 439 字元，這條路徑
+    不是理論上的）。改成對**完整原字串**取 HMAC-SHA256 + `FP_SECRET`
+    （複用 `token_fp()` 的作法，不另外發明第二種雜湊方式），碰不到剛好同前綴、
+    同原長又同雜湊的兩個值。
+
+    三個性質刻意保留：
+    - 沒超過上限的值完全原樣返回（不雜湊、不加後綴）—— 絕大多數真實帳號都在
+      這裡，既有測試也依賴這件事。
+    - 後綴仍然要讓人一看就知道「這不是完整帳號名」，不會被誤認成真值。
+    - 同一個輸入永遠得到同一個輸出：它是去重鍵的一部分，兩個 tick 看到同一個
+      帳號必須落在同一個 `entity_key`。
+    """
+    text = _plain(account)
+    if text is None:
+        return None
+    if len(text) > _ACTOR_MAX_LEN:
+        mac = hmac.new(fp_secret(), f"actor:{text}".encode("utf-8"), hashlib.sha256)
+        digest = mac.hexdigest()[:12].upper()
+        text = text[:_ACTOR_MAX_LEN] + f"…（截斷，原長 {len(text)}，{digest}）"
+    return text
 
 
 def src(ip: object) -> str | None:

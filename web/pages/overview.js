@@ -215,6 +215,10 @@ export default {
     sup() {
       return {
         available: false, disabled_rules: [], overridden_rules: [], active_allowlist: 0,
+        // 敏感路由的兩個鍵同理：舊後端沒有這兩個鍵時預設 0，
+        // 「沒有數字」在這裡不代表「沒有已停用的路由」，只代表後端還沒重啟
+        // （見 selfDisabled 與模板裡的 disabled_sensitive_routes 分支）。
+        disabled_sensitive_routes: 0, active_sensitive_routes: 0,
         ...(this.data?.suppression || {}),
       };
     },
@@ -222,10 +226,12 @@ export default {
     // Slack 送不出去與停用規則走同一個橫幅、同一個條件。三處判斷共用這裡，
     // 不各寫一份 —— 漏掉綠色橫幅那一處的話，畫面會同時說「一切正常」與
     // 「通知已停用」。slack 缺鍵時視為正常（舊版後端），不憑空生出警告。
+    // disabled_sensitive_routes 同樣進這個判斷 —— 少了它的話，停用一條敏感
+    // 路由（R05 與期間掃描同時看不見它）不會讓這個橫幅出現，數字存在卻沒人看到。
     selfDisabled() {
       const s = this.sup;
       return Boolean(s.disabled_rules?.length || s.active_allowlist
-        || (s.slack && !s.slack.enabled));
+        || s.disabled_sensitive_routes || (s.slack && !s.slack.enabled));
     },
     pendingBreakdown() {
       const by = this.pending.by_severity || {};
@@ -345,7 +351,8 @@ export default {
          有規則被停用或來源被抑制時，那句綠色的話就不是完整的事實。
          語意是「現況，不限時間」（見 CLAUDE.md 對總覽各區塊標明自己視窗的要求）。 -->
     <div v-if="selfDisabled"
-         :class="'banner ' + (sup.disabled_rules.length || (sup.slack && !sup.slack.enabled)
+         :class="'banner ' + (sup.disabled_rules.length || sup.disabled_sensitive_routes
+           || (sup.slack && !sup.slack.enabled)
            ? 'banner-danger' : 'banner-info')">
       <strong>目前有部分監測被我們自己關閉</strong>（不限時間的現況）
       <a @click="$emit('goto','rules')" style="float:right">規則與 Allowlist →</a>
@@ -356,6 +363,13 @@ export default {
         <template v-if="sup.disabled_rules.length">
           <strong>{{ sup.disabled_rules.length }} 條規則已停用</strong>（{{
             sup.disabled_rules.join('、') }}）—— 這些檢查不會執行。<br>
+        </template>
+        <template v-if="sup.disabled_sensitive_routes">
+          <strong>{{ sup.disabled_sensitive_routes }} 條敏感路由已停用</strong>
+          —— R05（非上班時間敏感操作）、期間掃描的「敏感路由大量存取」（P03）
+          與「集中存取資料導出路由」（P02）都不再看它們。P02 是 concentration
+          訊號組唯一成員，少了它，上班時間、來源正常但集中存取這些路由的帳號
+          會完全湊不到第二組訊號，不會出現在掃描報告裡。<br>
         </template>
         <template v-if="sup.overridden_rules.length">
           {{ sup.overridden_rules.length }} 條規則的門檻被覆寫（{{

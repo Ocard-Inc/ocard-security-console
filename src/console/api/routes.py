@@ -21,7 +21,7 @@ from console.queries import (
 )
 from console.rules import effective
 from console.rules.loader import load_rules
-from console.store import allowlist, audit, db, rule_overrides, sweeps
+from console.store import allowlist, audit, db, rule_overrides, sensitive_routes, sweeps
 from console.intel import store as intel_store
 from console.sweep import narrate
 from console.sweep import report as sweep_report
@@ -223,8 +223,11 @@ def _suppression_summary() -> dict:
         # YAML 壞掉不該讓整個總覽 500 —— 那會讓一個設定錯誤變成全站不可用
         logger.exception("讀取生效規則失敗（總覽的抑制摘要降級）")
         # slack 仍要帶：它不依賴規則檔，而「通知送不出去」在 YAML 壞掉的時候
-        # 更需要被看見（那時規則一條都沒在跑）。
-        return {"available": False, "slack": notify.summary()}
+        # 更需要被看見（那時規則一條都沒在跑）。敏感路由清單同理：它不依賴
+        # 規則檔，YAML 壞掉時更需要看見這個盲區。
+        return {"available": False, "slack": notify.summary(),
+                "active_sensitive_routes": sensitive_routes.active_count(),
+                "disabled_sensitive_routes": sensitive_routes.disabled_count()}
     entries = allowlist.active_entries()
     soon = settings()["allowlist"]["expiring_soon_days"]
     expiring = [e for e in entries if e.valid_to and 0 <= (
@@ -241,6 +244,10 @@ def _suppression_summary() -> dict:
         "no_expiry": sum(1 for e in entries if not e.valid_to),
         "expiring_soon": len(expiring),
         "expiring_soon_days": soon,
+        # 移除一條敏感路由是刻意的盲區：R05 與期間掃描同時停止看那條路由。
+        # 少了這個數字，那件事就只有進到規則頁的人知道。
+        "active_sensitive_routes": sensitive_routes.active_count(),
+        "disabled_sensitive_routes": sensitive_routes.disabled_count(),
     }
 
 
