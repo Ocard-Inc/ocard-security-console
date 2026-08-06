@@ -639,6 +639,102 @@ def event_entity_timeline(
     return {"supported": True, "label": ref.label, **data}
 
 
+# 回送的對象值長度上限。值本身走 `%(name)s` 參數所以沒有注入面，這個上限是
+# 為了讓「前端送了一整份 JSON 進來」變成可見的 400 而不是一支超長的查詢。
+_MAX_ENTITY_VALUE_LEN = 300
+
+
+def _selected_ref(ref, values: list[str]) -> tuple[object, bool]:
+    """`(選中的 EntityRef, 是不是本事件的對象)`。
+
+    母體排名可以點**任何一列**往下拆，不只本事件的對象 —— 實際調查時最有價值
+    的往往是「排在我前面那幾名是誰」。`values` 是那一列的原始值
+    （順序同 `ref.dims`），由 `peers()` 的 `keys` 經 `masking.echoable()`
+    的閘門給出來。
+
+    **`values` 為空 = 本事件的對象。** 預設載入不可以依賴 `keys`：本事件的對象
+    可能根本不在前 12 名裡，那時前端手上沒有任何可回送的值。
+
+    個數不符一律 400（`with_values()` 的 `ValueError` 轉過來）：少一個維度就是
+    在查一個範圍更大的對象，數字會比那根長條大而且不報錯。
+    """
+    if not values:
+        return ref, True
+    for v in values:
+        if len(v) > _MAX_ENTITY_VALUE_LEN:
+            raise HTTPException(400, f"對象值過長（上限 {_MAX_ENTITY_VALUE_LEN} 字）")
+    try:
+        picked = entity.with_values(ref, values)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return picked, list(values) == [d.value for d in ref.dims]
+
+
+# 刻意用同步 def，不是 async def（同 /entity 與 /sweep）。裡面的 ClickHouse
+# 查詢是阻塞的，寫成 async def 會佔住事件迴圈、連五分鐘排程一起卡住。
+@router.get("/events/{evt_no}/entity/breakdown")
+def event_entity_breakdown(
+    evt_no: str,
+    v: list[str] = Query(default=[]),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """選中對象的四個維度組成（endpoint／帳號／品牌／分店的前 N 名）。
+
+    **刻意不吃區間參數。** 區間固定是規則的 `window_minutes`，與母體排名相同 ——
+    這樣左欄那根長條的長度就等於右邊各維度 `rows` 的總和 + `blank`。
+    要看不同長度的區間請用 `/entity/trend`（那支才吃 `minutes`）。
+    """
+    guard(user, "view_events")
+    row, rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+    picked, is_self = _selected_ref(ref, v)
+
+    end = timewin.parse(row["last_seen"])
+    window = rule.window_minutes if rule else 60
+    try:
+        data = entity.breakdown(picked, end - timedelta(minutes=window), end)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象拆解查詢失敗：{exc}"}
+    return {"supported": True, "label": picked.label, "is_self": is_self, **data}
+
+
+# 同步 def，理由同上。
+@router.get("/events/{evt_no}/entity/trend")
+def event_entity_trend(
+    evt_no: str,
+    minutes: int = Query(1440),
+    v: list[str] = Query(default=[]),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """選中對象的請求趨勢：本期 + 前一個等長區間。
+
+    `minutes` 是封閉集合（`entity_history.TREND_RANGES`），打錯一律 400 ——
+    靜靜挑一個分桶的話畫面會寫「最近 5 小時」而圖是別的長度。
+
+    `ranges` 與 `slow_ranges` 把那個集合與實測的成本分級回給前端當選單來源，
+    **前端不列第二份**（差一個值就是一個永遠拿到 400 的選項，或一個永遠不出現
+    的警語）。
+    """
+    guard(user, "view_events")
+    if minutes not in entity_history.TREND_RANGES:
+        raise HTTPException(400, (
+            f"minutes={minutes} 不是可選的區間；"
+            f"可選：{sorted(entity_history.TREND_RANGES)}"))
+    row, _rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+    picked, is_self = _selected_ref(ref, v)
+    try:
+        data = entity_history.recent_trend(
+            picked, timewin.parse(row["last_seen"]), minutes)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象趨勢查詢失敗：{exc}"}
+    return {"supported": True, "label": picked.label, "is_self": is_self,
+            "ranges": sorted(entity_history.TREND_RANGES),
+            "slow_ranges": entity_history.slow_ranges(picked), **data}
+
+
 def _display_dim(dim) -> str:
     return dim.value if dim.mask is None else (
         masking.DISPLAY_FUNCS[dim.mask](dim.value) or dim.value)

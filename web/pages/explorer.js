@@ -1,6 +1,10 @@
 // Log Explorer（設計稿 10 節）：兩區式版面 — Filter Builder / 分析結果。
 // 設計稿的第三區「欄位說明與資料限制」已於 2026-08-07 移除（見 template 內的註解）。
-import { api, post, num, pct, SOURCE_LABEL } from '../lib.js';
+//
+// `api` 是給 GET /api/explorer/meta 用的（來源與分析能力的唯一真相）；
+// `requestGate` 是回應亂序到達的守門（見 lib.js）—— 兩者來自不同的分支，
+// 合併時都要留。
+import { api, post, num, pct, requestGate, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import BrandPicker from '../components/brand-picker.js';
 import StorePicker from '../components/store-picker.js';
@@ -270,7 +274,8 @@ export default {
   },
   // tooltip 讀的是這個非響應式持有者，不是 computed —— 這樣 options 可以完全
   // 不依賴資料數值，避免每次查詢都得重建整組設定（見 ApexChart.js 的契約）。
-  created() { this._rows = { current: [] }; },
+  // gate 放在非響應式的地方：它是流程控制，不是畫面狀態（見 lib.js 的 requestGate）
+  created() { this._rows = { current: [] }; this._gate = requestGate(); },
   methods: {
     async viewPayload(row) {
       if (!row.row_id) {
@@ -315,15 +320,33 @@ export default {
       if (this.result && this.result.__analysis !== this.f.analysis) this.result = null;
       this.loading = !this.result;
       this.reloading = true;
+      // **送出時就記住這次要查什麼**，不可以在回應到達時才讀 `this.f.analysis`。
+      // 那個值是「現在 UI 選的」，於是一個晚到的舊 payload 會被貼上新分析的標籤，
+      // 上面那行守門因此永遠看不到它（實測：畫面寫「失敗／錯誤分析」而圖是
+      // endpoint 排名的 20 根長條）。
+      const analysis = this.f.analysis;
+      const token = this._gate.begin();
       try {
         const r = await post('/explorer', this.f);
+        // 回應**會亂序到達**（實測 #7 送出較晚卻先回、#6 較早卻後回）。
+        // 沒有這道 gate 的話最後落地的是舊的那一個，而舊 payload 的形狀與新分析
+        // 對不上 → hasTrend / hasRanking / hasError 全 false → 整張圖連
+        // .chart-frame 都不存在。使用者看到的就是「圖有時候跑不出來，
+        // 再切一次又出現」（見 lib.js 的 requestGate）。
+        if (this._gate.isStale(token)) return;
         this._rows.current = r.rows || [];
-        this.result = { ...r, __analysis: this.f.analysis };
+        this.result = { ...r, __analysis: analysis };
         this.error = null;
       } catch (e) {
+        // 失敗也要擋：晚到的失敗會把 result 清成 null，而畫面上正好是新請求
+        // 剛畫好的圖 —— 圖消失，而且沒有任何錯誤訊息可循。
+        if (this._gate.isStale(token)) return;
         this.error = e.detail || e.message; this.result = null; this._rows.current = [];
+      } finally {
+        // 只有最新那個請求可以收掉 loading／reloading，否則舊的一收掉，
+        // 骨架就消失而新資料還沒到（畫面閃一下空白）。
+        if (!this._gate.isStale(token)) { this.loading = false; this.reloading = false; }
       }
-      this.loading = false; this.reloading = false;
     },
     // 切表時清掉該表不支援的篩選與分析方式，否則按查詢會直接回 400
     onSourceChange() {
