@@ -73,6 +73,56 @@ def test_entity_meta_carries_the_masking_kind():
     assert explorer.entity_meta("endpoint", "api")[1] is None
 
 
+def test_with_values_swaps_values_and_keeps_the_dimensions():
+    """點母體排名的第 N 列 → 用那一列的值組一個新的 EntityRef。
+
+    `EntityRef`／`Dim` 是 frozen dataclass，所以這裡一定是產生新物件 ——
+    就地改掉的話會污染同一個請求裡其他面板用的 ref（同 `rules/effective` 用
+    `dataclasses.replace()` 的理由）。
+    """
+    ref = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                      "endpoint": "Api2/GetProfile"})
+    other = entity.with_values(ref, ["5.6.7.8", "Api2/Login"])
+
+    assert [d.value for d in other.dims] == ["5.6.7.8", "Api2/Login"]
+    # 維度定義（欄位、運算式、遮罩、名稱）完全不變 —— 只有值換了
+    assert [(d.field, d.expr, d.mask) for d in other.dims] == \
+           [(d.field, d.expr, d.mask) for d in ref.dims]
+    # 原物件沒有被就地改掉
+    assert [d.value for d in ref.dims] == ["1.2.3.4", "Api2/GetProfile"]
+
+    # 個數不符要拋，不可以靜靜少比一個維度 —— 那會組出一個範圍更大的對象，
+    # 數字比左邊那根長條大而且不會有任何錯誤
+    with pytest.raises(ValueError):
+        entity.with_values(ref, ["5.6.7.8"])
+    with pytest.raises(ValueError):
+        entity.with_values(ref, ["5.6.7.8", "Api2/Login", "多的"])
+
+
+def test_breakdown_fields_excludes_what_is_already_the_ranking_unit():
+    """拆解維度 = 四個候選減掉「已經被拿去排序的」。
+
+    對 (來源 IP × endpoint) 的對象再按 endpoint 拆只會得到一列 —— 那不是資訊，
+    而是一塊看起來壞掉的面板。順序固定成「打什麼 → 誰 → 影響誰」，
+    同一條規則的事件每次讀起來才一樣。
+    """
+    both = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                       "endpoint": "Api2/GetProfile"})
+    assert entity.breakdown_fields(both) == ["actor", "brand", "store"]
+
+    only_src = entity.from_filters("api", {"source_ip": "1.2.3.4"})
+    assert entity.breakdown_fields(only_src) == \
+        ["endpoint", "actor", "brand", "store"]
+
+    # auth 的 endpoint 是 `action`、actor 是 API token，兩者都有運算式，
+    # 所以四個維度都在 —— 「能不能拿來反查」是 filter_support() 的事，
+    # 這裡只問「這張表有沒有這個分組運算式」（拆解只是分組顯示，
+    # 而 token 的指紋當標籤是正確的呈現）。
+    auth = entity.from_filters("auth", {"source_ip": "1.2.3.4"})
+    assert entity.breakdown_fields(auth) == \
+        ["endpoint", "actor", "brand", "store"]
+
+
 def test_flatness_refuses_to_invent_a_ratio_when_an_hour_is_empty():
     """有任何一小時是 0 時不給比值 —— 那會是無限大。
 

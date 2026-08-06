@@ -28,10 +28,11 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from console.core import brands, masking, stores, timewin
 from console.core.ch import query
@@ -51,6 +52,14 @@ SHARE_LIMIT = 6
 # 而且對 api 表（來源 IP 要對 headers 做 JSONExtract）實測仍在 1.5 秒內；
 # 28 天要 15 秒，那是 `entity_history` 的工作。
 PROFILE_DAYS = 7
+
+# 「這個對象還可以往下拆成什麼」的候選維度，順序固定成
+# 「打什麼 → 誰 → 影響誰」—— 同一條規則的事件每次讀起來都一樣。
+BREAKDOWN_FIELDS = ("endpoint", "actor", "brand", "store")
+
+# 每個拆解維度取幾名。6 是「一眼看出有沒有一個壓倒性的值」與
+# 「四張小圖並排放得下」的折衷；真正的相異值個數由 `groups` 說出來。
+BREAKDOWN_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -315,6 +324,44 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
         "expected": float(expected) if expected is not None else None,
         "note": note,
     }
+
+
+def with_values(ref: EntityRef, values: Sequence[str]) -> EntityRef:
+    """把 `ref` 的維度值換成 `values`，維度定義不變。
+
+    母體排名可以點**任何一列**往下拆，不只本事件的對象 —— 實際調查時最有價值的
+    往往是「排在我前面那幾名是誰」。那一列的原始值經 `masking.echoable()` 的
+    閘門回送（見 `peers()` 的 `keys`），到這裡組成新的 ref。
+
+    `EntityRef` / `Dim` 是 frozen dataclass，所以這裡必然產生**新物件** ——
+    就地改掉會污染同一個請求裡其他面板共用的 ref（同 `rules/effective.py`
+    用 `dataclasses.replace()` 的理由）。
+
+    個數不符一律拋 `ValueError`：少一個維度就是在查一個**範圍更大**的對象，
+    數字會比左欄那根長條大，而且不會有任何錯誤訊息。
+    """
+    if len(values) != len(ref.dims):
+        raise ValueError(
+            f"對象值的個數（{len(values)}）與維度數（{len(ref.dims)}）不符；"
+            f"維度依序是 {[d.field for d in ref.dims]}")
+    return dataclasses.replace(ref, dims=tuple(
+        dataclasses.replace(d, value=str(v)) for d, v in zip(ref.dims, values)))
+
+
+def breakdown_fields(ref: EntityRef) -> list[str]:
+    """這個對象還可以往下拆的維度 —— 候選減掉「已經被拿去排序的」。
+
+    對 (來源 IP × endpoint) 的對象再按 endpoint 拆只會得到一列，那不是資訊，
+    而是一塊看起來壞掉的面板。
+
+    「這張表有沒有這個分組運算式」問的是 `explorer.entity_meta()` ——
+    **不是** `filter_support()`。後者管的是「使用者能不能用這個欄位反查」
+    （auth 的 actor 是指紋，貼回去查不到），而這裡只是分組顯示，
+    指紋當標籤是正確的呈現。
+    """
+    used = {d.field for d in ref.dims}
+    return [f for f in BREAKDOWN_FIELDS
+            if f not in used and explorer.entity_meta(f, ref.source) is not None]
 
 
 def hour_profile(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS) -> dict:
