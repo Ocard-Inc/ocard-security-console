@@ -26,9 +26,9 @@ const RANK_TABS = [
   { key: 'failed_actors', label: '高失敗來源', col: '來源 IP' },
 ];
 
-// 四個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
+// 五個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
 //
-// 為什麼是四個面板而不是一張圖：四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），
+// 為什麼是五個面板而不是一張圖：五條線的量級差到 1000 倍以上（API 776 vs 登入失敗 1），
 // 單一 y 軸下小的那幾條永遠被壓在底部；雙軸是最容易誤導人的做法，不能用。
 // 每個面板自己一個 y 軸，再各自對照自己的 28 天同時段基線 ——
 // 這正好是本專案的核心命題（門檻 = 基線 × 倍數）。
@@ -37,22 +37,23 @@ const PANELS = [
   { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
   { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
   { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
+  { key: 'order', label: 'Order request', tokenName: '--chart-order' },
 ];
 
 // ★ 這裡刻意「不」用 ApexCharts 的 chart.group。
 //
 // group 原本是為了同步準星，但它同時做了兩件我們不要的事：
-//   1. 一次秀出四個 tooltip —— 四個浮動視窗同時彈出，各自貼在自己的小面板上。
-//   2. **把 updateOptions 廣播給同群組的所有圖表。** 切換時間區間時四個面板會
-//      依序 update，最後一個（登入失敗）的設定就覆蓋掉全部，包含 tooltip.custom。
-//      症狀：切過區間之後，四個面板的 tooltip 全部顯示「登入失敗」的數字。
+//   1. 一次秀出五個 tooltip —— 五個浮動視窗同時彈出，各自貼在自己的小面板上。
+//   2. **把 updateOptions 廣播給同群組的所有圖表。** 切換時間區間時五個面板會
+//      依序 update，最後一個的設定就覆蓋掉全部，包含 tooltip.custom。
+//      症狀：切過區間之後，五個面板的 tooltip 全部顯示同一個面板的數字。
 //      實測 07/30 08:00 那一桶，API 面板的 tooltip 顯示 22 —— 那是 login_failed
 //      的值（median 12／P95 23 也完全吻合），API 真正的值是 49,974。
 //
 // 初次載入不會壞，因為那時走的是 new ApexCharts()、沒有廣播；所以這個 bug
 // 只在「切換過區間之後」才出現，正好對應回報的現象。
 //
-// 四個面板的 x 類別與寬度本來就一致，視覺上已經對齊；為了同步準星換來四個
+// 五個面板的 x 類別與寬度本來就一致，視覺上已經對齊；為了同步準星換來五個
 // 互相打架又會顯示錯誤資料的 tooltip，並不划算。
 
 export default {
@@ -471,7 +472,7 @@ export default {
         <div class="muted" style="font-size:11px;margin-top:8px">
           灰虛線 = 該序列自己的 28 天同時段 median（逐時間桶）。P95 在標頭與 hover 的
           tooltip 裡 —— 它比實際流量高一個量級，畫進圖裡會把線壓扁到看不見。
-          四個面板的縱軸各自獨立，不可跨面板比較高度。
+          五個面板的縱軸各自獨立，不可跨面板比較高度。
         </div>
       </template>
 

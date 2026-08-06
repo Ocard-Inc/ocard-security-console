@@ -71,7 +71,7 @@ def request_trend(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> dict:
-    """四條線：API request / Backend request / 登入成功 / 登入失敗。
+    """五條線：API request / Backend request / 登入成功 / 登入失敗 / Order request。
 
     給 start/end 就用絕對區間，否則是「最近 minutes 分鐘」。
     bucket_minutes 不給就依 BUCKET_LADDER 自動選 —— 固定 10 分鐘的話，
@@ -90,6 +90,8 @@ def request_trend(
                           f" WHERE {tf} AND {exprs.ANY_LOGIN_SUCCESS} GROUP BY b"),
         ("login_failed", f"SELECT {interval} AS b, count() AS c FROM ods_admin_log"
                          f" WHERE {tf} AND {exprs.ANY_LOGIN_FAILED} GROUP BY b"),
+        ("order", f"SELECT {interval} AS b, count() AS c FROM ods_order_api_log"
+                  f" WHERE {tf} GROUP BY b"),
     ]:
         df = query(sql, params)
         series[name] = {timewin.fmt(r["b"].to_pydatetime()): int(r["c"])
@@ -104,6 +106,10 @@ def request_trend(
         "backend": f"table_{bucket_minutes}m:backend",
         "login_success": f"login_success_{bucket_minutes}m",
         "login_failed": f"login_failed_{bucket_minutes}m",
+        # Order Log。calibrate 的第 1 段對每個 data_source 都算 table_{n}m:{key}，
+        # 所以這裡不需要新的 calibrate 程式碼 —— 但**加了來源要重跑一次 calibrate**，
+        # 否則 baseline.get() 回 None、前端不畫 median 虛線（正確的降級）。
+        "order": f"table_{bucket_minutes}m:order",
     }
     # baseline.get() 每次都是一趟 SQLite。7 天視窗 × 4 條線 = 4,032 次呼叫，
     # 但相異鍵最多 4 × 24 × 2 = 192 個，memoize 起來。

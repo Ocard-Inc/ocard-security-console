@@ -504,7 +504,7 @@ def test_bucket_ladder_seven_days(client):
 def test_wide_window_still_has_baselines_and_sane_multiples(client):
     """分桶變粗時基線也要跟著換粒度，否則會冒出假的 12 倍。"""
     buckets = client.get("/api/overview?minutes=10080").json()["trend"]["buckets"]
-    for name in ("api", "backend", "login_success", "login_failed"):
+    for name in ("api", "backend", "login_success", "login_failed", "order"):
         assert any(b[f"{name}_median"] is not None for b in buckets), (
             f"{name} 在 120 分鐘分桶下沒有基線 —— calibrate 是否漏算這個粒度？")
     mults = [b["api_multiple"] for b in buckets if b["api_multiple"] is not None]
@@ -513,6 +513,15 @@ def test_wide_window_still_has_baselines_and_sane_multiples(client):
     # 這個上限抓得寬鬆，只是要擋掉「整段都被放大」那種粒度錯配。
     assert sum(m > 12 for m in mults) < len(mults) / 2, (
         f"超過一半的桶倍數 > 12，疑似基線粒度與分桶不匹配：{mults[:8]}")
+
+
+def test_overview_trend_has_an_order_series(client):
+    """Order Log 是第五條線。少了它，首頁的「總量趨勢」就少講了一張表 ——
+    而那張表一天 123 萬筆，比 Backend 以外的每一張都多。"""
+    buckets = client.get("/api/overview?minutes=360").json()["trend"]["buckets"]
+    assert buckets
+    assert all("order" in b for b in buckets), "趨勢沒有 order 序列"
+    assert any(b["order"] > 0 for b in buckets), "order 序列全是 0，SQL 是否查錯表？"
 
 
 def test_no_all_zero_trend_from_grid_misalignment(client):
