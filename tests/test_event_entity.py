@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from console.core import brands, stores, timewin
+from console.core import brands, masking, stores, timewin
 from console.queries import entity, entity_history, explorer, exprs
 
 
@@ -359,3 +359,50 @@ def test_peer_self_detection_still_uses_the_raw_values():
     result = _named_peers()
     assert sum(1 for r in result["top"] if r["is_self"]) == 1, (
         "本對象必須剛好命中一列")
+
+
+def test_peer_rows_carry_raw_keys_only_when_they_are_echoable():
+    """母體排名的每一列都要能被點來往下拆，而那需要**原始值**。
+
+    `keys` 的順序同 `ref.dims`，而且**只在可回送時才給** —— `auth` 的 actor 是
+    API token，畫面上是不可逆指紋，回送等於用主控台把它還原
+    （閘門是 `masking.echoable()`，見 tests/test_masking_audit.py）。
+
+    不可回送時給 `None` 而不是省略這個鍵：前端要能分辨「這一列點不動」與
+    「後端還是舊版、沒有這個功能」（後者整個 top 都沒有 `keys` 這個鍵，
+    前端據此把整塊降級成唯讀）。
+    """
+    ref = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                      "endpoint": "Api2/GetProfile"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.peers(ref, start, end)
+    assert out["top"], "這個區間應該有母體資料"
+
+    for row in out["top"]:
+        assert "keys" in row, "每一列都必須有 keys 鍵（不可回送時是 None）"
+        assert row["keys"] is not None, (
+            f"來源 IP 與 endpoint 在 2026-08 的政策下都是原樣顯示，"
+            f"應該可回送：{row['label']}")
+        assert len(row["keys"]) == len(ref.dims), (
+            "keys 的長度必須等於維度數，否則回送後組出的 WHERE 範圍更大，"
+            "數字會比那根長條大而且不會有任何錯誤")
+        # 這兩個維度都是原樣顯示，所以逐段串起來就是 label
+        assert " · ".join(row["keys"]) == row["label"]
+        for dim, value in zip(ref.dims, row["keys"]):
+            assert masking.echoable(dim.mask, value)
+
+
+def test_peer_keys_are_the_raw_values_not_the_named_labels():
+    """品牌與分店的 label 是「名稱（編號）」，但 `keys` 必須是**裸編號**。
+
+    回送 label 的話後端拿「wa10 瓦城（1180）」去比對 `toString(_brand)`
+    永遠 0 筆 —— 而畫面會顯示一個空的拆解面板，看起來像這個對象沒有活動。
+    """
+    result = _named_peers()
+    self_row = next((r for r in result["top"] if r["is_self"]), None)
+    assert self_row is not None, "本對象必須命中一列"
+    assert self_row["keys"] == [str(_NAMED["brand"]), str(_NAMED["store"])]
+    # 反向：label 確實已經解過名稱（兩者刻意不同）
+    assert self_row["keys"] != [self_row["label"]]
+    assert brands.label(_NAMED["brand"]) in self_row["label"]

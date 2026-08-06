@@ -267,6 +267,19 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
             # 長得一模一樣 —— 用標籤比對的話高亮會落在錯的長條上、或一次亮好幾條，
             # 而畫面看起來完全正常。
             "is_self": values == own_values,
+            # 點這一列往下拆時要回送的**原始值**（順序同 `ref.dims`）。
+            #
+            # 品牌與分店的 `label` 是「名稱（編號）」，而這裡一律是裸編號 ——
+            # 回送 label 的話後端拿「wa10 瓦城（1180）」去比對
+            # `toString(_brand)` 永遠 0 筆，而畫面會顯示一個空的拆解面板，
+            # 看起來像這個對象沒有活動。
+            #
+            # **不可回送時給 None，不是省略這個鍵**：前端要能分辨「這一列點不動」
+            # 與「後端還是舊版」（後者整個 top 都沒有這個鍵，前端據此把整塊降級
+            # 成唯讀，見 CLAUDE.md 關於「前端新、後端舊」的那一段）。
+            "keys": list(values) if all(
+                masking.echoable(d.mask, v)
+                for d, v in zip(ref.dims, values)) else None,
         })
 
     comparable = expected is None or abs(own - float(expected)) < 1
