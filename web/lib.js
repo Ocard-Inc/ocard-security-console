@@ -99,7 +99,7 @@ export const SEV_LABEL = {
 
 export const SOURCE_LABEL = {
   admin: 'Admin Log', backend: 'Backend System Log',
-  api: 'API Log', auth: 'Auth Log', all: '全部來源',
+  api: 'API Log', auth: 'Auth Log', order: 'Order Log', all: '全部來源',
 };
 
 // events.status 的三個值。active / resolved 由五分鐘排程的狀態機寫，

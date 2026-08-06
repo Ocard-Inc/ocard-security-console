@@ -1,6 +1,6 @@
 // Log Explorer（設計稿 10 節）：兩區式版面 — Filter Builder / 分析結果。
 // 設計稿的第三區「欄位說明與資料限制」已於 2026-08-07 移除（見 template 內的註解）。
-import { post, num, pct, SOURCE_LABEL } from '../lib.js';
+import { api, post, num, pct, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import BrandPicker from '../components/brand-picker.js';
 import StorePicker from '../components/store-picker.js';
@@ -50,6 +50,23 @@ export const ANALYSES = [
   { key: 'detail', label: '逐筆明細' },
 ];
 
+// 後端舊版（沒有 GET /api/explorer/meta）時的降級值。**這不是真相** ——
+// 真相是那個端點。前端是 no-store、重新整理就生效，而 Python 要重啟
+// （沒有 --reload），所以「前端新、後端舊」是每次改動的必經中間狀態。
+//
+// 降級成「四個來源、全部分析」—— 與改動前的行為完全一樣。少了 endpoint 欄位
+// 標籤與「不支援某個篩選」的說明，但頁面完全可用。
+// **不可以降級成空清單**：那會讓整個資料來源下拉消失，看起來像整頁壞了。
+//
+// 這裡刻意寫死四個而不是五個：它代表的是「後端還沒有 meta 端點」那個舊世界，
+// 而那個舊世界裡沒有 Order Log。寫五個會宣稱一個舊後端給不出來的來源，
+// 使用者選了它只會得到 400。
+const FALLBACK_SOURCES = ['api', 'backend', 'admin', 'auth'].map(key => ({
+  key, label: SOURCE_LABEL[key], sensitive: key === 'auth',
+  analyses: ANALYSES.map(a => a.key),
+  endpoint_label: null, endpoint_placeholder: null, unsupported_filters: {},
+}));
+
 export default {
   // 區間由本頁的 RangePicker 持有。舊的 defaultRange prop 是為了接全域 header
   // 而設計的，但 app.js 從來沒傳過 —— 已隨 header 的區間下拉一起移除。
@@ -73,7 +90,7 @@ export default {
       },
       range: '1h',
       result: null, loading: false, reloading: false, error: null,
-      SOURCE_LABEL, ANALYSES,
+      sourceMeta: null,      // GET /api/explorer/meta 的 sources；null = 還沒載到
       // 逐筆調閱：預設明細的 params 只有大小與欄位名，原文要另外要。
       // 後端會寫入操作稽核（誰、何時、哪一筆）。
       payloadLoading: null,   // 正在讀取的 row_id
@@ -85,16 +102,21 @@ export default {
     };
   },
   computed: {
-    // 各來源篩的欄位不同（見 queries/explorer.py 的 FILTER_COLUMN）。
-    // auth 不在其中 —— 空字串代表整個欄位不顯示。
-    endpointLabel() {
-      return { api: 'Controller/Function 前綴', backend: 'Route 前綴',
-               admin: 'Function 前綴' }[this.f.source] || '';
+    sources() { return this.sourceMeta || FALLBACK_SOURCES; },
+    currentSource() {
+      return this.sources.find(s => s.key === this.f.source) || this.sources[0] || null;
     },
-    endpointPlaceholder() {
-      return { api: 'Api2/TransDetail', backend: 'orderlist/detail',
-               admin: 'Boss_initial/auth_v2' }[this.f.source] || '';
+    // 分析下拉只列這個來源真的跑得起來的（後端 supported_analyses()）。
+    // 原本不分來源全部列出，於是 Order Log 的「來源排名」與 backend 的
+    // 「Unique resource 分析」都是永遠回 400 的選項。
+    availableAnalyses() {
+      const ok = new Set(this.currentSource?.analyses || []);
+      return ANALYSES.filter(a => ok.has(a.key));
     },
+    endpointLabel() { return this.currentSource?.endpoint_label || ''; },
+    endpointPlaceholder() { return this.currentSource?.endpoint_placeholder || ''; },
+    // 欄位 → 不支援的原因。有值就隱藏那個輸入框並顯示原因。
+    unsupportedFilters() { return this.currentSource?.unsupported_filters || {}; },
     // 事件視窗被截短時，提示條要寫出實際查了多長
     clampedHours() {
       return Math.round((this.origin?.window?.max_minutes ?? 0) / 60);
@@ -258,9 +280,18 @@ export default {
       }
       this.loading = false; this.reloading = false;
     },
-    // 切表時清掉該表不支援的篩選，否則按查詢會直接回 400
+    // 切表時清掉該表不支援的篩選與分析方式，否則按查詢會直接回 400
     onSourceChange() {
-      if (this.f.source === 'auth') this.f.actor = '';
+      const unsupported = this.unsupportedFilters;
+      if (unsupported.actor) this.f.actor = '';
+      if (unsupported.source_ip) this.f.source_ip = '';
+      if (unsupported.endpoint) this.f.endpoint = '';
+      if (this.f.source !== 'api') this.f.only_error = false;
+      // 分析方式可能在新來源上不存在（例：從 API Log 的「來源排名」切到
+      // Order Log）。靜靜留著的話按下查詢會拿到 400，而下拉裡已經沒有
+      // 那個選項了 —— 使用者看到一個選不到的值配一個錯誤訊息。
+      const ok = new Set(this.currentSource?.analyses || []);
+      if (!ok.has(this.f.analysis)) this.f.analysis = 'trend';
       this.run();
     },
     // 把區間換成該對象實際有活動的那一段，然後重查。
@@ -347,7 +378,21 @@ export default {
       if (!this.endpointLabel) this.f.endpoint = '';
     },
   },
-  mounted() {
+  async mounted() {
+    // meta 要在任何 run() 之前拿到：分析下拉、endpoint 欄位標籤、
+    // 以及「切表清掉不支援的篩選」都靠它。**必須在下面的 early return 之前** ——
+    // 從事件跳過來（applyDrilldown 成功）時那條路徑不會走到後面。
+    //
+    // 失敗不擋畫面：走 FALLBACK_SOURCES（見它的說明）。刻意不顯示錯誤 ——
+    // 使用者要的是查詢，而降級之後查詢完全可用。
+    try {
+      // `api()`（web/lib.js）已經會補上 `/api` 前綴，這裡再寫一次會變成
+      // `/api/api/explorer/meta`（實測 404）——同檔案其餘呼叫端都不帶前綴。
+      const r = await api('/explorer/meta');
+      this.sourceMeta = r.sources || null;
+    } catch {
+      this.sourceMeta = null;
+    }
     // 從事件跳過來時區間已經是絕對的事件視窗，不可以再被預設的「最近 1 小時」蓋掉。
     if (this.applyDrilldown()) return;
     this.applyPreset(this.range);
@@ -361,7 +406,7 @@ export default {
   <div class="filter-bar">
     <span class="filter-bar-label">資料來源</span>
     <select v-model="f.source" @change="onSourceChange">
-      <option v-for="k in ['api','backend','admin','auth']" :key="k" :value="k">{{ SOURCE_LABEL[k] }}</option>
+      <option v-for="s in sources" :key="s.key" :value="s.key">{{ s.label }}</option>
     </select>
     <span class="filter-bar-sep"></span>
     <span class="filter-bar-label">時間區間</span>
@@ -386,17 +431,20 @@ export default {
       <!-- 依對象反查。這是「掃描結果 → 明細」的那一步：把看到的帳號或 IP 貼進來。
            完全相等比對，不是前綴 —— 貼 1.34.41.21 不會連帶命中 1.34.41.218。 -->
       <div><div class="muted" style="margin-bottom:3px">帳號</div>
-        <input type="text" v-model.trim="f.actor" class="mono" placeholder="貼上帳號，如 andrew_c"
-               style="width:100%" @keyup.enter="run"
-               :disabled="f.source === 'auth'">
-        <div v-if="f.source === 'auth'" class="muted" style="font-size:11px;margin-top:3px">
-          Auth Log 的操作者是不可逆的 token 指紋，無法反查原始 token。
+        <input v-if="!unsupportedFilters.actor" type="text" v-model.trim="f.actor" class="mono"
+               placeholder="貼上帳號，如 andrew_c" style="width:100%" @keyup.enter="run">
+        <!-- 該來源沒有可反查的帳號欄位時，不要讓人填一個永遠回 400 的值 —— 說出原因 -->
+        <div v-if="unsupportedFilters.actor" class="muted" style="font-size:11px">
+          {{ unsupportedFilters.actor }}
         </div>
       </div>
       <div><div class="muted" style="margin-bottom:3px">來源 IP</div>
-        <input type="text" v-model.trim="f.source_ip" class="mono"
-               placeholder="貼上 IP，如 131.143.215.229"
-               style="width:100%" @keyup.enter="run">
+        <input v-if="!unsupportedFilters.source_ip" type="text" v-model.trim="f.source_ip" class="mono"
+               placeholder="貼上 IP，如 131.143.215.229" style="width:100%" @keyup.enter="run">
+        <!-- 該來源沒有來源 IP 欄位時，不要讓人填一個永遠回 400 的值 —— 說出原因 -->
+        <div v-if="unsupportedFilters.source_ip" class="muted" style="font-size:11px">
+          {{ unsupportedFilters.source_ip }}
+        </div>
         <div v-if="f.source === 'api'" class="muted" style="font-size:11px;margin-top:3px">
           API Log 的來源由 headers 推導，此篩選需解析 JSON，長區間會明顯變慢。
         </div>
@@ -476,7 +524,7 @@ export default {
     <div class="card" style="padding:12px 16px;margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12.5px">
       <span class="muted">分析方式</span>
       <select v-model="f.analysis" @change="run">
-        <option v-for="a in ANALYSES" :key="a.key" :value="a.key">{{ a.label }}</option>
+        <option v-for="a in availableAnalyses" :key="a.key" :value="a.key">{{ a.label }}</option>
       </select>
       <template v-if="f.analysis==='trend'">
         <span class="muted">分桶</span>

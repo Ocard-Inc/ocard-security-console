@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from console.queries import explorer
+
 # 報告事件 1：2026-07-16 攻擊當日。andrew_c 全部來自 131.143.215.229。
 WINDOW = {"start": "2026-07-16 00:00:00", "end": "2026-07-16 01:00:00"}
 ACCOUNT = "andrew_c"
@@ -94,15 +96,25 @@ def test_auth_still_supports_source_ip_filter(client):
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize("source", ["api", "backend", "admin"])
+@pytest.mark.parametrize("source", ["api", "backend", "admin", "order"])
 def test_ranking_values_can_be_pasted_back_as_filters(client, source):
     """不變量：排名裡看到的對象值，貼回篩選器就查得到。
 
-    篩選運算式複用 `GROUP_BY`，這條測試在三張表上實際驗證那個複用是對的
+    篩選運算式複用 `GROUP_BY`，這條測試在四張表上實際驗證那個複用是對的
     （auth 的操作者是指紋，另有專屬測試）。
+
+    Order Log 沒有「來源排名」（沒有 ip 也沒有 headers），這裡改問
+    `explorer.supported_analyses()` 而不是寫死三張表 —— 寫死的話這則測試會
+    對 order 的「來源排名」斷言 `status_code == 200`，而那個 400 是正確的拒絕
+    （見 test_order_log_hides_source_ranking_and_api_only_analyses），把它誤判成失敗。
     """
     window = {"start": "2026-08-01 12:00:00", "end": "2026-08-01 13:00:00"}
+    supported = set(explorer.supported_analyses(source))
     for dimension, field in (("actor", "actor"), ("source", "source_ip")):
+        if dimension not in supported:
+            # 這張表本來就不支援這個排名維度（例如 order 沒有來源 IP）——
+            # 跳過而非誤判失敗，「不支援」由 test_explorer_source_meta.py 守。
+            continue
         rank = client.post("/api/explorer", json={
             "source": source, "analysis": dimension, **window})
         assert rank.status_code == 200, rank.text

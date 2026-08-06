@@ -755,11 +755,12 @@ def _extra_limitations(event: dict) -> list[str]:
 # tests/test_data_source_coverage.py 看得到** —— 藏在函式內的 local dict
 # 沒辦法斷言「每個來源都有一項」。
 #
-# 這份與 `queries/explorer.SOURCE_LIMITS` 是**兩份，刻意不合併**：
+# 這份與 `queries/explorer.source_meta()` 的 `unsupported_filters` 是
+# **兩份，刻意不合併**：
 #   - 這裡渲染在事件詳細頁，該頁沒有「資料來源」標頭，所以每一句都自帶表名
 #     （「API Log 的來源 IP…」）。
-#   - explorer.SOURCE_LIMITS 渲染在 Explorer 該來源的區塊底下，表名已在上方，
-#     再寫一次是噪音。
+#   - explorer.source_meta() 的 unsupported_filters 渲染在 Explorer 該來源
+#     「那個篩選欄位旁邊」，表名已在上方（來源下拉本身），再寫一次是噪音。
 # 合併之後其中一邊的文案一定會變成謊話（少了主詞，或者多了重複的主詞）。
 # 兩份都由覆蓋率測試守著「每個來源都有一項」。
 _LIMITATIONS_BY_SOURCE = {
@@ -1181,6 +1182,20 @@ def _explain_empty(f: explorer.ExplorerFilter) -> dict | None:
                        f"{extent['last_seen']}。把區間改到這段時間就看得到。",
         }
     return None
+
+
+@router.get("/explorer/meta")
+# 同步 def（同 /explorer 與 /explorer/payload）。這一支不打 ClickHouse，
+# 但 `settings()` 有 lru_cache、其餘都是純運算 —— 沒有任何 await，
+# 寫成 async def 只會多一個要維護的例外。
+def explorer_meta(user: CurrentUser = Depends(current_user)) -> dict:
+    """Explorer 的來源清單與每個來源的能力（分析方式、資料限制、不支援的篩選）。
+
+    **刻意是獨立的 GET，不塞進 `POST /explorer` 的回應。** 這份資料每次查詢
+    都一樣，塞進去等於每次查詢都白傳一份；而前端只在 mounted 時要一次。
+    """
+    guard(user, "use_explorer")
+    return {"sources": explorer.source_meta()}
 
 
 @router.post("/explorer")

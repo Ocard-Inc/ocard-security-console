@@ -22,8 +22,9 @@ _MISSING_EXPR = {
     # **「沒有來源 IP」刻意不放進 missing_rate。** 那是 100% 的結構事實、
     # 不是浮動比率，放進去只會讓卡片永遠顯示 100% 而看不出任何變化。
     # 它改在四個地方各說一次：_NOTES（就在下面）、Explorer 的
-    # explorer.SOURCE_LIMITS、routes._LIMITATIONS_BY_SOURCE、以及
-    # explorer._ENTITY_FILTER_UNSUPPORTED 的拒絕理由。
+    # explorer.source_meta()（unsupported_filters，經 explorer._ENTITY_FILTER_UNSUPPORTED
+    # 產生）、routes._LIMITATIONS_BY_SOURCE，以及 explorer._ENTITY_FILTER_UNSUPPORTED
+    # 本身的拒絕理由。
     "ods_order_api_log": ("_store <= 0", "分店未填"),
 }
 

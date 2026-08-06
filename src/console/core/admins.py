@@ -51,7 +51,7 @@ ClickHouse 回傳列的順序，而那個順序沒有被強制 —— 症狀是�
 實測 Order Log 一天的 2,887 個相異 `_admin` **100% 對得到帳號**，而且對出來的是
 POS 與串接金鑰帳號（`cp07_pos`、`kbk_298_pos_order`、`curistacoffee_19`）。
 也就是說 Order Log 的「操作者」是**哪一支整合程式／哪一台 POS**，不是哪個人。
-這一句寫在 `queries/explorer.SOURCE_LIMITS["order"]` 與
+這一句寫在 `queries/health._NOTES["order"]` 與
 `api/routes._LIMITATIONS_BY_SOURCE["order"]`，畫面上要說出來。
 
 帳號名屬營運資訊、依 `core/masking.py` 的政策**原樣顯示**，不需遮罩。

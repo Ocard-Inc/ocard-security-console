@@ -228,6 +228,104 @@ def filter_support(field: str, source: str) -> str | None:
     return f"未知篩選欄位 {field!r}"
 
 
+# 全部分析方式。**順序即前端下拉的順序** —— 前端只拿 key，標籤仍在
+# `web/pages/explorer.js` 的 `ANALYSES`（`web/pages/event-detail.js` 也 import 它）。
+#
+# 標籤刻意留在前端：標籤錯了是**看得見**的（畫面上寫錯字），而「這個分析在這張表
+# 到底跑不跑得起來」錯了是**靜靜的**（一個永遠回 400 的下拉選項）。
+# 只把會靜靜出錯的那一半搬到後端。
+ANALYSES = ("trend", "endpoint", "brand", "source", "actor",
+            "error", "unique_resource", "detail")
+
+# 排名類分析 → `GROUP_BY` 的維度名。一對一。
+# （`GROUP_BY` 還有 `store` 維度，但 Explorer 目前沒有分店排名的分析方式，
+#   所以它不在這裡 —— `ranking(f, "store")` 仍然可用，只是前端不提供入口。）
+_RANKING_DIMENSION = {"endpoint": "endpoint", "brand": "brand",
+                      "source": "source", "actor": "actor"}
+
+# 只有 api_log 做得到的分析（其餘四張表沒有對應欄位）：
+# `error` 要 `has_error`、`unique_resource` 要 `order_number`。
+_API_ONLY_ANALYSES = ("error", "unique_resource")
+
+
+def supported_analyses(source: str) -> list[str]:
+    """這個來源真的跑得起來的分析方式。**唯一真相，前端不自己列一份。**
+
+    回傳順序與 `ANALYSES` 相同，前端可以直接照順序渲染下拉。
+    `tests/test_explorer_source_meta.py` 兩個方向都守：列出來的都跑得起來、
+    沒列的都真的跑不起來。
+    """
+    out = ["trend"]                       # 只需要 create_time，五張表都做得到
+    out += [a for a, dim in _RANKING_DIMENSION.items() if source in GROUP_BY[dim]]
+    if source == "api":
+        out += list(_API_ONLY_ANALYSES)
+    if source in _DETAIL_COLUMNS:
+        out.append("detail")
+    # 依 ANALYSES 的順序排回去（上面是分段 append，順序剛好但不要靠巧合）
+    return [a for a in ANALYSES if a in out]
+
+
+# Explorer 的 endpoint 篩選欄位標籤與範例值。
+#
+# **`api/allowlist_routes.py` 有一組看起來很像但不可合併的對照表**
+# （`_ENDPOINT_LABEL` / `_ENDPOINT_PLACEHOLDER`）：那裡的 endpoint 是**完全相等**
+# 比對（見 `store/allowlist.py`），這裡是**前綴**比對，所以標籤刻意都寫「前綴」。
+# 合併會讓其中一邊的說明變成謊話。
+#
+# 鍵必須與 `FILTER_COLUMN` 完全相同（有篩選就有標籤，沒篩選就沒有），
+# 由 tests/test_explorer_source_meta.py 綁著。
+ENDPOINT_FILTER_META = {
+    "api": ("Controller/Function 前綴", "Api2/TransDetail"),
+    "backend": ("Route 前綴", "orderlist/detail"),
+    "admin": ("Function 前綴", "Boss_initial/auth_v2"),
+    "order": ("URL 前綴", "v1/order/active/deny"),
+}
+
+# **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
+# 搬到這裡，但渲染它的那一欄（Log Explorer 最右側的「欄位說明與資料限制」）
+# 已於 2026-08-07 移除（commit 4365a8e，使用者要求）。加一個沒有消費端的欄位
+# 正是這個模組要消滅的形狀 —— 前端與後端各留一份、其中一份沒人讀、
+# 然後兩份慢慢不一致。
+#
+# 那些資訊沒有消失，只是各自去了更好的地方：
+#   - 「這個來源不支援某個篩選、為什麼」→ 下面的 `unsupported_filters`，
+#     顯示在**那個篩選欄位旁邊**（使用者被擋住的地方，不是側欄）
+#   - 事件詳細頁的資料限制 → `api/routes._LIMITATIONS_BY_SOURCE`
+#   - 資料來源健康卡的說明 → `queries/health._NOTES`
+#   - 遮罩政策 → `detail()` 回的 `masked_note`，渲染在明細表格下方
+#
+# `tests/test_explorer_source_meta.py::test_meta_does_not_ship_a_field_nobody_renders`
+# 反向守著這件事。
+
+# Explorer 篩選器實際提供的欄位。`source_meta()` 逐一問 `filter_support()`，
+# 前端據此隱藏欄位並說明原因。
+_FILTER_FIELDS = ("endpoint", "source_ip", "actor", "brand", "store")
+
+
+def source_meta() -> list[dict]:
+    """Explorer 的來源清單與每個來源的能力。**前端不自己列一份。**"""
+    out = []
+    for key, src in settings()["data_sources"].items():
+        endpoint_meta = ENDPOINT_FILTER_META.get(key)
+        unsupported = {}
+        for field in _FILTER_FIELDS:
+            reason = filter_support(field, key)
+            if reason is not None:
+                unsupported[field] = reason
+        out.append({
+            "key": key,
+            "label": src["label"],
+            "sensitive": bool(src.get("sensitive")),
+            "analyses": supported_analyses(key),
+            "endpoint_label": endpoint_meta[0] if endpoint_meta else None,
+            "endpoint_placeholder": endpoint_meta[1] if endpoint_meta else None,
+            # 欄位 → 為什麼不支援。前端據此隱藏那個輸入框並顯示原因，
+            # 而不是讓人填一個永遠回 400 的值。
+            "unsupported_filters": unsupported,
+        })
+    return out
+
+
 @dataclass(frozen=True)
 class ExplorerFilter:
     source: str = "api"
@@ -295,7 +393,9 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
         clauses.append(f"{_ENTITY_FILTER[field][f.source]} = %({field})s")
         params[field] = str(value).strip()
     if f.only_error and f.source == "api":
-        clauses.append("has_error = 1")
+        # 唯一真相是 `exprs.API_HAS_ERROR`（`= 1` 在欄位變成 Nullable(String)
+        # 之後會拋 code 386 NO_COMMON_TYPE，見該常數的說明）。
+        clauses.append(exprs.API_HAS_ERROR)
     return f"FROM {table} WHERE " + " AND ".join(clauses), params
 
 
@@ -463,7 +563,7 @@ def error_analysis(f: ExplorerFilter) -> dict:
     where, params = where_clause(f)
     df = query(
         f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS total,"
-        f" countIf(has_error = 1) AS errors {where} GROUP BY endpoint"
+        f" countIf({exprs.API_HAS_ERROR}) AS errors {where} GROUP BY endpoint"
         f" HAVING errors > 0 ORDER BY errors DESC LIMIT 20", params)
     return {"rows": [
         {"endpoint": r["endpoint"], "total": int(r["total"]), "errors": int(r["errors"]),
@@ -546,7 +646,10 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             # api_log 沒有 acc 欄位，操作者以 _admin 識別（同 GROUP_BY 的做法）。
             # 0 代表非後台操作（一般 API 呼叫），不是「查不到」。
             "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
-            "result": "錯誤" if r.get("has_error") == 1 else "成功",
+            # `== 1` 在欄位變成 Nullable(String) 之後永遠是 False（實際值是
+            # `'1'` 字串或 `'verify failed'`），會讓每一筆錯誤都顯示「成功」。
+            # 唯一真相同 exprs.API_HAS_ERROR：非 NULL 才是有錯誤。
+            "result": "錯誤" if r.get("has_error") is not None else "成功",
             "params": masking.payload_summary(r.get("params")),
             "resource": masking.resource(r.get("order_number")),
         })
@@ -576,7 +679,8 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "endpoint": str(r.get("url") or ""),
             "platform": r.get("platform"),
             # 這張表沒有 ip 也沒有 headers。None 讓前端渲染成「—」，
-            # 而「為什麼沒有」由 explorer.SOURCE_LIMITS 的第一句說出來。
+            # 而「為什麼沒有」由 source_meta()["order"]["unsupported_filters"]["source_ip"]
+            # 說出來（渲染在 Explorer 該來源的來源 IP 輸入框旁邊）。
             "source_ip": None,
             "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
             # 沒有 status／error 欄位，無法區分成功與失敗
