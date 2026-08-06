@@ -149,3 +149,20 @@ def test_every_async_loader_is_gated():
             assert "isStale" in body, (
                 f"{path.name} 的 {fn}() 沒有經過 requestGate —— "
                 f"晚到的舊回應會覆蓋新的，症狀是圖有時候跑不出來")
+
+
+def test_payloads_that_can_say_unsupported_are_checked_before_rendering():
+    """回應可能是 HTTP 200 + `supported: false` 的地方，渲染前一律要先問 supported。
+
+    `/entity/trend` 與 `/entity/breakdown` 在 `ChQueryError`（以及對象不可追蹤）時
+    **回 200 加 `{supported: false, reason}`**，那時候沒有 `rows` / `dims`。
+    只判「物件存在」就渲染的話，series 是空的 —— 畫面上是一張**平的空圖，
+    而且沒有任何說明**。那與「這段時間真的沒有活動」在畫面上一模一樣，
+    正是這個專案一再警告的「把查不到說成沒有發生」。
+
+    2026-08-07 實測踩到：trend 只判了 `v-else-if="trend"`。
+    """
+    src = (ROOT / "web" / "components" / "entity-panels.js").read_text(encoding="utf-8")
+    for key in ("trend", "parts"):
+        assert f"{key}.supported === false" in src, (
+            f"{key} 沒有處理 supported: false —— 那會渲染成一張平的空圖而不說原因")

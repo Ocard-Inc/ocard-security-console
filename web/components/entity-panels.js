@@ -193,7 +193,12 @@ export default {
     trendIsSlow() {
       return (this.trend?.slow_ranges || []).includes(this.trendMinutes);
     },
-    trendRows() { return this.trend?.rows || []; },
+    // **`/entity/trend` 可以回 HTTP 200 + `supported: false`**（例如 ChQueryError
+    // 的降級分支），那時候沒有 `rows`。只判 `v-if="trend"` 的話 series 會是空的，
+    // 畫面上是一張**平的空圖而且沒有任何說明** —— 正是這個專案一再警告的
+    // 「把查不到說成沒有發生」。所以渲染前一律先問 supported。
+    trendOk() { return !!(this.trend && this.trend.supported !== false); },
+    trendRows() { return this.trendOk ? (this.trend.rows || []) : []; },
     trendSeries() {
       const rows = this.trendRows;
       return [
@@ -606,7 +611,14 @@ export default {
             趨勢載入失敗：{{ trendError }}
           </div>
           <div v-else-if="trendLoading && !trend" class="skel" style="height:220px"></div>
-          <template v-else-if="trend">
+          <!-- 後端明說不支援（對象不可追蹤、查詢失敗…）時給原因，**不畫圖** ——
+               畫出來會是一條平的 0 線，而那與「這段時間真的沒有活動」
+               在畫面上一模一樣。 -->
+          <div v-else-if="trend && trend.supported === false" class="muted"
+               style="font-size:12.5px;line-height:1.7;padding:8px 0">
+            這個對象的趨勢查不出來：{{ trend.reason }}
+          </div>
+          <template v-else-if="trendOk">
             <ApexChart :series="trendSeries" :options="trendOptions"
                        :signature="trendSignature" :height="220"
                        :style="trendLoading ? 'opacity:.55' : ''"
@@ -635,6 +647,11 @@ export default {
            style="font-size:12px;margin-top:14px">拆解載入失敗：{{ partsError }}</div>
       <div v-else-if="partsLoading && !parts" class="skel"
            style="height:160px;margin-top:14px"></div>
+      <!-- 同 trend：supported: false 時要說原因，不是整塊靜靜消失 -->
+      <div v-else-if="parts && parts.supported === false" class="muted"
+           style="font-size:12.5px;border-top:1px solid var(--line-soft);margin-top:14px;padding-top:12px">
+        這個對象的組成查不出來：{{ parts.reason }}
+      </div>
       <div v-else-if="parts && parts.supported"
            style="border-top:1px solid var(--line-soft);margin-top:14px;padding-top:12px">
         <div class="card-h" style="margin-bottom:2px">
