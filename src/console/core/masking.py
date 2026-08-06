@@ -130,6 +130,27 @@ DISPLAY_FUNCS = {
 }
 
 
+def echoable(kind: str | None, value: str) -> bool:
+    """這個原始值的對外呈現是否等於它本身 —— 也就是回送它會不會多洩漏東西。
+
+    事件詳細頁的母體排名可以點任一列往下拆，而「那一列是誰」必須以原始值回送
+    後端（它要拿去組 WHERE）。IP、endpoint、品牌編號、一般長度的帳號名在
+    2026-08 的政策下都是**原樣顯示**，所以回送它們不會多洩漏任何東西；
+    但 API token 的呈現是指紋（`token_fp()`），而 `actor()` 對超長帳號名會截斷
+    並附 HMAC 摘要 —— 那兩種回送等於用主控台把不可逆的東西還原。
+
+    **刻意用執行期比對，不是靜態的「哪些 kind 是單向的」清單**：
+    `actor` 是否單向取決於**值的長度**，靜態清單一定會漂移，而漂移的方向是
+    靜靜地把指紋當原值送出去。未知的 kind 一律回 False（往安全的方向倒）。
+    """
+    if kind is None:
+        return True
+    fn = DISPLAY_FUNCS.get(kind)
+    if fn is None:
+        return False
+    return fn(value) == value
+
+
 def scrub_text(text: object, max_len: int = 300) -> str:
     """清洗自由文字（params/headers/error）：遮罩憑證鍵值與個資樣式後截斷。
 

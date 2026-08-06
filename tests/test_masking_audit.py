@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import re
 
+from console.core import masking
+
 # 消費者個資樣式：台灣手機、Email
 PHONE = re.compile(r"\b09\d{8}\b")
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
@@ -55,13 +57,28 @@ INTERNAL_DOMAIN = re.compile(r"@olis\.com\.tw$")
 # 出現在 R05 事件的母體排名裡）。政策明定帳號**原樣顯示** —— 那是這個工具存在的
 # 目的，不是外流；上面第 2 條「該顯示的真的顯示」守的正是同一件事。
 #
-# 這條路徑用的是 `_scan_entity_panel()` 的結構性豁免：**只**放行對象標籤欄位、
-# **只**放行內部網域，而且標籤仍然要過手機與憑證值的檢查。消費者的 gmail 出現在
-# 標籤裡照樣失敗。這不是放寬 `EMAIL`，理由同 OPERATOR_KEYS 那段。
+# 這條路徑用的是 `_scan_entity_panel()` 的結構性豁免：**只**放行對象標籤欄位，
+# 而且標籤仍然要過手機與憑證值的檢查。這不是放寬 `EMAIL`，理由同 OPERATOR_KEYS 那段。
 #
 # `ocard.co` 與 `olis.com.tw` 分別是產品端與公司端的內部網域；消費者不會有這兩個
 # 網域的位址（消費者的 Email 在 `params` 裡，由 `masking.scrub_text()` 清掉）。
 ACCOUNT_DOMAIN = re.compile(r"@(?:olis\.com\.tw|ocard\.co)$")
+
+# **商家的後台帳號就是他自己的 gmail。** 內部網域那條只涵蓋 Ocard 員工
+# （`hetty@ocard.co`），而 `ods_admin_log.acc` 有大量商家自己註冊的位址
+# —— 實測 EVT-0034（R07A、source=admin、對象維度是 actor）的母體排名第 10 名是
+# `a092011100@gmail.com`。政策明定**後台帳號原樣顯示**，那是這個工具唯一的用途。
+#
+# 所以豁免改成掛在**維度**上而不是掛在網域上：這一格顯示的是 `actor`
+# （帳號欄位本身），裡面的 email 形式就是帳號，不是消費者位址。
+# 逐筆把帳號加進 `EMAIL_ALLOW` 是另一條路，但那會讓這個測試每來一個新商家就紅一次，
+# 而「加一行就好」的習慣會把這個檔案的意義掏空。
+#
+# 這個豁免**放棄**了一種偵測：消費者 Email 出現在**帳號標籤**裡不會再被抓到。
+# 換來的邊界是明確的 —— 其餘每一個維度（endpoint／brand／store／source_ip）
+# 的標籤仍然嚴格，手機與憑證值在帳號標籤裡也照樣失敗。
+# `auth`／`api` 的 actor 是不可逆的 token 指紋，不會是 email 形式。
+ACTOR_FIELDS = {"actor"}
 
 
 def _strip_operator_fields(value):
@@ -94,45 +111,101 @@ def _scan(payload: str, where: str) -> None:
     assert leak is None, f"{where} payload 內的憑證值未清洗：{leak.group(0)[:60] if leak else ''}"
 
 
-def _pop_labels(value) -> tuple[list[str], object]:
-    """遞迴抽出所有 `label` 欄位的字串值，回傳 (被抽出的值, 其餘結構)。"""
-    labels: list[str] = []
+def _pop_labels(value) -> tuple[list[str], list[str], object]:
+    """抽出對象標籤，回傳 (帳號維度的標籤, 其餘標籤, 剩下的結構)。
 
-    def walk(node):
+    「這個標籤是不是帳號」由**結構**決定，不是由字串長相決定：
+
+    - `/entity` 的頂層有 `dims: [{field, label, value}]`，那是這個事件的對象
+      維度。其中有 `actor` 時，`peers.top[].label`（同一組維度算出來的其他對象）
+      與 `keys[]`（回送用的原始值）就是帳號。
+      **只有 `peers` 繼承這個範圍**：同一份回應裡的 `share.rows[].label` 是
+      **來源 IP** 清單、`profile` 是時段分布，那些不是帳號欄位，
+      整包一起豁免等於把 email 檢查從半個回應上拿掉。
+    - `/entity/breakdown` 的 `dims[]` 每一格自己帶 `field`，`field == 'actor'`
+      的那一格，它的 `rows[].label` 是帳號。
+
+    複合維度（例如 actor + endpoint）的 label 是一整串 `帳號 · 端點`，
+    沒辦法只豁免前半段 —— 但 endpoint 不會是 email 形式，代價可接受。
+    """
+    accounts: list[str] = []
+    others: list[str] = []
+
+    def take(node, bucket):
+        """把這棵子樹裡的 label / keys 全部收進指定的桶。"""
         if isinstance(node, dict):
             out = {}
             for k, v in node.items():
-                if k == "label" and isinstance(v, str):
-                    labels.append(v)
+                if k in ("label", "value") and isinstance(v, str):
+                    bucket.append(v)
                     continue
-                out[k] = walk(v)
+                if k == "keys" and isinstance(v, list):
+                    bucket.extend(x for x in v if isinstance(x, str))
+                    continue
+                out[k] = take(v, bucket)
             return out
         if isinstance(node, list):
-            return [walk(v) for v in node]
+            return [take(v, bucket) for v in node]
         return node
 
-    return labels, walk(value)
+    def walk(node, actor_scope=False):
+        if isinstance(node, dict):
+            # breakdown 的一格：自己宣告了 field，由它決定這一格算不算帳號
+            field = node.get("field")
+            if isinstance(field, str):
+                return take(node, accounts if field in ACTOR_FIELDS else others)
+            out = {}
+            for k, v in node.items():
+                if k in ("label", "value") and isinstance(v, str):
+                    (accounts if actor_scope else others).append(v)
+                    continue
+                if k == "keys" and isinstance(v, list):
+                    (accounts if actor_scope else others).extend(
+                        x for x in v if isinstance(x, str))
+                    continue
+                # **只有母體排名進入帳號範圍**（白名單，不是排除法）。同一份回應裡
+                # 的 `share` 是來源 IP 清單、`profile` 是時段分布 —— 一起豁免等於把
+                # email 檢查從半個回應上拿掉，而那不是這個豁免要換的東西。
+                # 用白名單是因為新增區塊時預設要落在「嚴格」那一邊。
+                out[k] = walk(v, actor_scope or (in_actor and k == "peers"))
+            return out
+        if isinstance(node, list):
+            return [walk(v, actor_scope) for v in node]
+        return node
+
+    dims = value.get("dims") if isinstance(value, dict) else None
+    in_actor = bool(dims) and any(
+        isinstance(d, dict) and d.get("field") in ACTOR_FIELDS for d in dims)
+    return accounts, others, walk(value, False)
 
 
 def _scan_entity_panel(body, where: str) -> None:
-    """對象面板專用：標籤裡的帳號可以是內部網域的 email，其餘一律最嚴格。
+    """對象面板專用：帳號維度的標籤可以是任何 email 形式，其餘一律最嚴格。
 
-    母體排名列的是**其他**對象，而 backend 的對象就是帳號（見 ACCOUNT_DOMAIN）。
-    豁免的範圍刻意只有「label 欄位 × 內部網域 × email」這一格：
-    標籤仍要過手機與憑證值檢查，結構的其他部分仍走原本的 `_scan()`。
+    母體排名列的是**其他**對象，而 admin／backend 的對象就是帳號
+    （見 ACTOR_FIELDS 那段：Ocard 員工是內部網域，商家是自己的 gmail）。
+    豁免的範圍是「**`actor` 維度的**標籤 × email」這一格：
+    標籤仍要過手機與憑證值檢查，其他維度的標籤仍只放行內部網域，
+    結構的其他部分仍走原本的 `_scan()`。
     """
     import json
-    labels, cleaned = _pop_labels(body)
+    accounts, others, cleaned = _pop_labels(body)
     _scan(json.dumps(cleaned, ensure_ascii=False), where)
 
-    blob = " · ".join(labels)
+    # 帳號標籤：email 不限網域（帳號本來就是它），其餘規則完全不變
+    acct = " · ".join(accounts)
+    assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"
+    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的帳號標籤含未清洗的憑證值"
+
+    blob = " · ".join(others)
     assert not PHONE.search(blob), f"{where} 的對象標籤洩漏消費者手機號碼"
     leak = CREDENTIAL_LEAK.search(blob)
     assert leak is None, f"{where} 的對象標籤含未清洗的憑證值"
     for mail in EMAIL.findall(blob):
         assert mail in EMAIL_ALLOW or ACCOUNT_DOMAIN.search(mail), (
             f"{where} 的對象標籤出現非內部網域的 Email {mail} —— "
-            "「帳號原樣顯示」的政策只涵蓋內部帳號，消費者位址仍是外流")
+            "「帳號原樣顯示」的政策只涵蓋帳號維度（actor），"
+            "其他維度出現消費者位址仍是外流")
 
 
 def _scan_json(body, where: str) -> None:
@@ -181,7 +254,12 @@ def test_event_entity_panels_are_clean(client):
     evts = [e["evt_no"] for e in client.get("/api/events").json()["events"]][:6]
     assert evts, "DB 裡沒有事件，這個測試會變成空跑"
     for evt in evts:
+        # 拆解與趨勢是 2026-08 新增的**新外流面**：`breakdown` 逐維度列出
+        # 這個對象打了哪些 endpoint／品牌／分店／帳號，那是四份新的對象清單。
+        # 漏掉的話新面板可以外流而整個檔案照樣全綠。
         for path in (f"/api/events/{evt}/entity",
+                     f"/api/events/{evt}/entity/breakdown",
+                     f"/api/events/{evt}/entity/trend?minutes=180",
                      f"/api/events/{evt}/entity/timeline?days=3"):
             r = client.get(path)
             assert r.status_code == 200, f"{path} → {r.status_code} {r.text[:200]}"
@@ -191,7 +269,7 @@ def test_event_entity_panels_are_clean(client):
 # --- 對象標籤豁免的反向測試（不需要 ClickHouse）--------------------------------
 
 def test_entity_panel_exemption_still_rejects_a_consumer_email():
-    """豁免只涵蓋內部網域。放寬 ACCOUNT_DOMAIN 必須在這裡失敗。
+    """沒有帳號維度時，豁免只涵蓋內部網域。放寬 ACCOUNT_DOMAIN 必須在這裡失敗。
 
     沒有這條反向測試的話，有人為了讓某個端點變綠而多加一個網域，
     或乾脆改成 `@` 就放行，都不會有任何測試失敗 —— 而這個檔案存在的理由
@@ -206,13 +284,61 @@ def test_entity_panel_exemption_still_rejects_a_consumer_email():
         _scan_entity_panel(leaked, "消費者位址")
 
 
+def test_account_exemption_is_keyed_on_the_dimension_not_on_the_string():
+    """同一個 gmail：在 `actor` 維度是帳號（放行），在別的維度是外流（失敗）。
+
+    這是「A 案」的核心 —— 豁免掛在**這一格顯示的是什麼欄位**上，
+    不是掛在值長什麼樣。把 `ACTOR_FIELDS` 加進 `source_ip`／`endpoint`
+    之類的欄位，或改成不看 `field` 一律放行，都必須在這裡失敗。
+    """
+    import pytest
+    mail = "a092011100@gmail.com"
+
+    # ① 事件的對象維度是 actor → 母體排名列的是別的帳號，放行
+    ok = {"dims": [{"field": "actor", "label": "操作者", "value": "vibesktv"}],
+          "peers": {"top": [{"label": mail, "keys": [mail]}]}}
+    _scan_entity_panel(ok, "帳號維度")
+
+    # ② 同一份結構，維度換成來源 IP → 那一格不該出現 email
+    leaked = {"dims": [{"field": "source_ip", "label": "來源 IP", "value": "1.2.3.4"}],
+              "peers": {"top": [{"label": mail, "keys": [mail]}]}}
+    with pytest.raises(AssertionError, match="非內部網域"):
+        _scan_entity_panel(leaked, "IP 維度")
+
+    # ③ **同一份回應裡的其他區塊不繼承。** `share` 列的是來源 IP，
+    #    帳號維度的豁免不可以順手把那半個回應的 email 檢查也關掉。
+    spread = {"dims": [{"field": "actor", "label": "操作者", "value": "vibesktv"}],
+              "share": {"rows": [{"label": mail, "count": 3}]}}
+    with pytest.raises(AssertionError, match="非內部網域"):
+        _scan_entity_panel(spread, "帳號維度不可外溢到來源清單")
+
+    # ④ breakdown 逐格自己宣告 field：actor 那格放行、brand 那格不放行
+    _scan_entity_panel(
+        {"dims": [{"field": "actor", "label": "操作者",
+                   "rows": [{"label": mail, "count": 3}]}]}, "拆解的帳號那格")
+    with pytest.raises(AssertionError, match="非內部網域"):
+        _scan_entity_panel(
+            {"dims": [{"field": "brand", "label": "品牌",
+                       "rows": [{"label": mail, "count": 3}]}]}, "拆解的品牌那格")
+
+
 def test_entity_panel_exemption_does_not_cover_phones_or_credentials():
-    """標籤被抽出去單獨掃，但手機與憑證值的規則完全不變。"""
+    """標籤被抽出去單獨掃，但手機與憑證值的規則完全不變 —— 帳號維度也一樣。"""
     import pytest
     with pytest.raises(AssertionError, match="手機"):
         _scan_entity_panel({"label": "0912345678"}, "標籤裡的手機")
     with pytest.raises(AssertionError, match="憑證"):
         _scan_entity_panel({"label": '"authorization": "Bearer abcdef123456"'}, "標籤裡的憑證")
+    # 帳號維度只豁免 email，手機與憑證值照樣要炸
+    with pytest.raises(AssertionError, match="帳號標籤洩漏消費者手機"):
+        _scan_entity_panel(
+            {"dims": [{"field": "actor", "label": "操作者", "value": "a"}],
+             "peers": {"top": [{"label": "0912345678"}]}}, "帳號維度裡的手機")
+    with pytest.raises(AssertionError, match="帳號標籤含未清洗的憑證值"):
+        _scan_entity_panel(
+            {"dims": [{"field": "actor", "label": "操作者", "value": "a"}],
+             "peers": {"top": [{"label": '"authorization": "Bearer abcdef123456"'}]}},
+            "帳號維度裡的憑證")
 
 
 def test_explorer_detail_is_clean(client):
@@ -478,3 +604,63 @@ def _is_ip(ipaddress_mod, value) -> bool:
         return True
     except ValueError:
         return False
+
+
+# --- 回送閘門（`masking.echoable`）------------------------------------------
+
+def test_echoable_says_yes_only_when_display_equals_the_raw_value():
+    """點擊母體排名要把那一列的原始值回送後端，而回送的閘門是「呈現 == 原值」。
+
+    **刻意用執行期比對，不是靜態的「哪些 kind 是單向的」清單**：`actor` 是否
+    單向取決於帳號長度（超長會 HMAC 截斷），清單一定會漂移，而漂移的方向是
+    靜靜地把指紋當原值送出去。
+    """
+    # mask 為 None 的維度（endpoint、品牌編號、分店編號）本來就是原樣顯示
+    assert masking.echoable(None, "Api2/GetProfile") is True
+    assert masking.echoable(None, "1180") is True
+
+    # IP 與一般長度的帳號名：2026-08 的政策是原樣顯示，所以可以回送
+    assert masking.echoable("src", "203.0.113.55") is True
+    assert masking.echoable("actor", "andrew_c") is True
+
+    # API token 永遠是指紋 —— 這是「還有效的憑證」，絕不可回送
+    assert masking.echoable("token", "abcdef0123456789") is False
+
+    # 超長帳號名會被截斷 + 附 HMAC 摘要，也是不可逆的
+    assert masking.echoable("actor", "a" * 300) is False
+
+    # 未知的 kind 一律當成不可回送（要炸就往安全的方向倒）
+    assert masking.echoable("不存在的種類", "x") is False
+
+
+def test_peer_keys_never_carry_a_credential(client):
+    """`peers.top[].keys` 是回送用的原始值 —— 裡面不可以有憑證。
+
+    `keys` 存在就等於「這個值的呈現等於它本身」（`masking.echoable()` 的閘門），
+    所以逐段串起來必須等於 label。對不上代表有人把閘門拆掉了，而症狀是
+    **主控台把不可逆的指紋還原成原始 token**，畫面上完全正常。
+
+    只在維度全部原樣顯示時才比對 label —— 品牌與分店的 label 是「名稱（編號）」
+    而 keys 是裸編號，那個差異是刻意的（見 test_event_entity 的
+    `test_peer_keys_are_the_raw_values_not_the_named_labels`）。
+    """
+    named_kinds = {"brand", "store"}
+    checked = 0
+    for e in client.get("/api/events").json()["events"][:8]:
+        p = client.get(f"/api/events/{e['evt_no']}/entity").json()
+        if not p.get("supported"):
+            continue
+        fields = [d["field"] for d in p["dims"]]
+        for row in p["peers"]["top"]:
+            assert "keys" in row, f"{e['evt_no']} 少了 keys 鍵"
+            if row["keys"] is None:
+                continue
+            checked += 1
+            for v in row["keys"]:
+                assert not v.startswith("token_"), \
+                    f"{e['evt_no']} 的 keys 裡出現了 token 指紋：{v}"
+            if not (named_kinds & set(fields)):
+                assert " · ".join(row["keys"]) == row["label"], (
+                    f"{e['evt_no']} 的 keys 與 label 不一致 —— "
+                    f"echoable() 的閘門可能被拆掉了")
+    assert checked, "沒有任何一列有 keys，這條測試等於沒有執行"
