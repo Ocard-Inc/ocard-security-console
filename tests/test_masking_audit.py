@@ -218,7 +218,7 @@ def test_entity_panel_exemption_does_not_cover_phones_or_credentials():
 
 
 def test_explorer_detail_is_clean(client):
-    for source in ("api", "backend", "admin", "auth"):
+    for source in ("api", "backend", "admin", "auth", "order"):
         r = client.post("/api/explorer", json={
             "source": source, "analysis": "detail",
             "start": "2026-08-01 12:00:00", "end": "2026-08-01 12:10:00", "limit": 50})
@@ -291,7 +291,7 @@ def test_endpoints_response_is_clean(client):
     # 這個端點的 start/end 沒有預設值（空字串會被 FilterError 擋成 400），
     # 必須帶區間。
     window = {"start": "2026-08-01 12:00:00", "end": "2026-08-01 13:00:00"}
-    for source in ("api", "backend", "admin"):
+    for source in ("api", "backend", "admin", "order"):
         r = client.get("/api/endpoints", params={"source": source, **window})
         assert r.status_code == 200, r.text
         _scan(r.text, f"GET /api/endpoints?source={source}")

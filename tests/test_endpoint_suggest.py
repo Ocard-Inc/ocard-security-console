@@ -15,7 +15,7 @@ from console.queries import explorer
 # 有實際流量的區間（依 README 記錄的資料特性）
 START, END = "2026-08-01 00:00:00", "2026-08-02 00:00:00"
 
-FILTERABLE = ("api", "backend", "admin")
+FILTERABLE = ("api", "backend", "admin", "order")
 
 
 @pytest.fixture(autouse=True)

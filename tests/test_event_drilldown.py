@@ -157,7 +157,7 @@ def test_every_entity_shape_is_accounted_for():
 def test_mapped_fields_are_supported_on_their_own_source():
     """對照表指到的篩選欄位，在該規則的資料來源上必須真的可用（否則永遠被丟掉）。"""
     for rule in _rules():
-        if rule.source not in ("api", "backend", "admin", "auth"):
+        if rule.source not in ("api", "backend", "admin", "auth", "order"):
             continue
         for f in rule.entity:
             field = (drilldown._FILTER_BY_FP.get(f.fp) if f.fp

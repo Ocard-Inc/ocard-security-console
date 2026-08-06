@@ -104,6 +104,9 @@ FILTER_COLUMN = {
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
     "admin": "function",
+    # 完整 url。實測 180 天只有 46 個相異值、沒有動態段，所以不必像 backend
+    # 那樣截前 2 段（那是為了避免上千個一次性選項）。
+    "order": "url",
 }
 
 # 產生 endpoint 候選值的 GROUP BY 運算式（queries/endpoint_suggest.py 用）。
@@ -119,6 +122,10 @@ SUGGEST_EXPR = {
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
     "admin": "function",
+    # 與 FILTER_COLUMN 同一個運算式，所以「建議值必須是篩選欄位的合法前綴」
+    # 這個不變量天生成立。順帶實測過：`concat(controller,'/',function)` 在 7 天
+    # 853 萬列中 100% 是 `url` 的合法前綴、0 例外，所以日後真要改回粗粒度也安全。
+    "order": "url",
 }
 
 # 依「對象」反查的欄位（來源 IP、帳號）。
@@ -178,6 +185,14 @@ def entity_expr(field: str, source: str) -> str | None:
 _ENTITY_FILTER_UNSUPPORTED = {
     ("actor", "auth"): "Auth Log 的操作者是 API token，畫面上為不可逆指紋，"
                        "無法用指紋反查原始 token。請改用來源 IP 或品牌篩選。",
+    # Order Log 完全沒有來源 IP 欄位（`ip` 與 `headers` 兩個都沒有），
+    # 這與 auth 的情況不同：那裡是「有值但不可逆」，這裡是「根本沒有這個欄位」。
+    #
+    # 現有的通用文案（「Order Log 不支援依來源 IP 篩選」）讀起來像「我們還沒做」，
+    # 使用者會去等一個永遠不會來的功能。說出是資料本身的限制，並指出改用什麼。
+    ("source_ip", "order"): "Order Log 沒有 ip 也沒有 headers 欄位，"
+                            "無法推導來源 IP —— 這是資料本身的限制，"
+                            "不是本主控台未支援。請改用操作者、品牌或分店篩選。",
 }
 
 

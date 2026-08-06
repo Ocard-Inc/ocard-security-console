@@ -25,7 +25,7 @@ import pytest
 
 from console.queries import entity, explorer
 
-SOURCES = ("api", "backend", "admin", "auth")
+SOURCES = ("api", "backend", "admin", "auth", "order")
 
 # 品牌 1180 / 分店 27681：2026-08-01 有 171,966 次 Api2/GetProfile
 # （長期持續的單店濫用，本輪調查發現，到 8/03 仍在跑）。
