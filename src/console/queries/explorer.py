@@ -43,6 +43,16 @@ _ALL_SOURCES = ("api", "backend", "admin", "auth", "order")
 # auth 的是 token 指紋，兩者都不該再對照一次。
 NUMERIC_ACTOR_SOURCES = ("api", "order")
 
+# `_admin = 0` 是「非後台操作（一般 API／POS 呼叫）」的哨兵值，不是「查無此帳號」——
+# 同 `_mask_detail_row` 對 api／order 的註解。`admins.accounts()` 對 0 一樣會查表
+# 查不到、回 `admins.UNKNOWN_NAME`（查無帳號），那個說法是錯的：0 從來就不是一個
+# 曾經存在又被刪掉的帳號編號。實測 api log 5 天有 470 筆 `_admin = 0`，窄視窗查詢
+# 時足以擠進排名一列，讀的人會去追一個不存在的帳號，而它其實是「這批請求跟後台
+# 帳號無關」。這裡選擇顯示一個明確說出語意的字串，而不是像明細那樣整個 actor 欄位
+# 回 None（明細的 None 會讓前端整行不渲染，但排名的 `name` 欄位本來就已經顯示
+# 原始值 "0"，讓 account 也一起消失反而看起來像「這個 0 沒有任何解釋」）。
+NON_ADMIN_ACCOUNT = "（非後台操作）"
+
 # 分組維度 → (SQL 運算式, 遮罩種類, 顯示名稱)
 GROUP_BY = {
     "endpoint": {
@@ -215,7 +225,7 @@ def filter_support(field: str, source: str) -> str | None:
         return f"未知資料來源 {source!r}"
     label = settings()["data_sources"][source]["label"]
     if field in ("brand", "store"):
-        return None                      # 四張表都有 _brand 與 _store
+        return None                      # 五張表都有 _brand 與 _store
     if field == "endpoint":
         return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
     if field in _ENTITY_FILTER:
@@ -400,8 +410,10 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
         clauses.append(f"{_ENTITY_FILTER[field][f.source]} = %({field})s")
         params[field] = str(value).strip()
     if f.only_error and f.source == "api":
-        # 唯一真相是 `exprs.API_HAS_ERROR`（`= 1` 在欄位變成 Nullable(String)
-        # 之後會拋 code 386 NO_COMMON_TYPE，見該常數的說明）。
+        # **一律走 exprs 的唯一真相**（`exprs.API_HAS_ERROR`）。has_error 在
+        # 2026-08-05 重建後是 Nullable(String)，寫死 `= 1` 會讓 ClickHouse 拋
+        # code 386 NO_COMMON_TYPE 而整個查詢 502 —— 畫面上是「查詢失敗」而不是圖。
+        # 實測那個壞法對**所有**區間都成立，不只近期。
         clauses.append(exprs.API_HAS_ERROR)
     return f"FROM {table} WHERE " + " AND ".join(clauses), params
 
@@ -532,13 +544,23 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
             name = "（空）"
         else:
             name = masking.DISPLAY_FUNCS[fp_kind](raw) if fp_kind else str(raw)
+        actor_id = brands.coerce_id(raw)
+        is_non_admin_sentinel = (
+            dimension == "actor" and f.source in NUMERIC_ACTOR_SOURCES and actor_id == 0)
+        if is_non_admin_sentinel:
+            account = NON_ADMIN_ACCOUNT
+        elif accounts:
+            account = accounts.get(actor_id)
+        else:
+            account = None
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
                      "brand_top": [] if is_brand_dim else brands.breakdown(r["brand_map"]),
                      "share": round(int(r["cnt"]) / total, 4) if total else 0,
                      # None = 這個來源的 actor 本來就是名字（backend）或指紋（auth）。
                      # 前端據此決定要不要渲染那一行，不可以當成「查不到」。
-                     "account": accounts.get(brands.coerce_id(raw)) if accounts else None})
+                     # `_admin = 0` 是另一種情況，見 NON_ADMIN_ACCOUNT 的說明。
+                     "account": account})
     return {"dimension": dimension, "label": label, "total": total, "rows": rows}
 
 
@@ -653,9 +675,10 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             # api_log 沒有 acc 欄位，操作者以 _admin 識別（同 GROUP_BY 的做法）。
             # 0 代表非後台操作（一般 API 呼叫），不是「查不到」。
             "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
-            # `== 1` 在欄位變成 Nullable(String) 之後永遠是 False（實際值是
-            # `'1'` 字串或 `'verify failed'`），會讓每一筆錯誤都顯示「成功」。
-            # 唯一真相同 exprs.API_HAS_ERROR：非 NULL 才是有錯誤。
+            # **與 SQL 同一個定義（非 NULL = 有錯誤），同 exprs.API_HAS_ERROR。**
+            # 實際值是字串 `'1'` 或 `'verify failed'`，跟整數 1 比永遠 False ——
+            # 那個版本不會報錯，只會讓每一筆都顯示「成功」，包括真正出錯的那些。
+            # 這一處是三個 has_error 消費端裡唯一「不報錯、只給錯結論」的，最危險。
             "result": "錯誤" if r.get("has_error") is not None else "成功",
             "params": masking.payload_summary(r.get("params")),
             "resource": masking.resource(r.get("order_number")),

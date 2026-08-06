@@ -94,7 +94,7 @@ def _build(rule: Rule | None, event: dict) -> dict:
     if source not in settings()["data_sources"]:
         # `all`（R12 資料管線失速）沒有對應的單一資料表。這裡明確給原因，
         # 不要讓它走到 Explorer 才換來一個 400。
-        return _no(f"{rule.name}沒有對應的單一資料表（涵蓋全部四張表），"
+        return _no(f"{rule.name}沒有對應的單一資料表（涵蓋全部資料來源），"
                    "無法在 Log Explorer 重現。請改用「資料健康」頁。")
 
     ctx = event.get("context") or {}
@@ -240,7 +240,7 @@ def _analysis(source: str, filters: dict, constant_entity: bool) -> str:
     if "actor" in filters or "source_ip" in filters:
         # 事件頁的趨勢圖是**整個資料來源**的量（routes.py 明寫「非僅該異常對象的
         # 請求量」）。該對象自己的時序正是事件頁結構上給不出的東西，也最便宜，
-        # 而且四張表都支援（error / unique_resource 只有 api 有）。
+        # 而且每一張表都支援 trend（error / unique_resource 只有 api 有）。
         return "trend"
     if "endpoint" in filters:
         return _ANALYSIS_FOR_ENDPOINT_ONLY.get(source, "trend")

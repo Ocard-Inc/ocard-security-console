@@ -114,7 +114,7 @@ def _segment(skipped: list, name: str):
     為什麼一段失敗會全毀：11 段的結果累積在 `all_rows`，**最後才一次性
     upsert**。第 7 段炸掉時，前 6 段已經算好的一萬多列跟著被丟掉 ——
     包括與 api_log 完全無關的 backend / admin / auth 基線。
-    症狀是「一張表的 schema 變了，四張表的基線一起停止更新」。
+    症狀是「一張表的 schema 變了，全部表的基線一起停止更新」。
 
     **只吃 `ChQueryError`，不吃 `ChConnectionError`。** 連不上 ClickHouse 不是
     某一段的問題，而是整個監測中斷；把它吞掉會寫出一份幾乎空的基線並回報成功，
@@ -140,7 +140,8 @@ def calibrate() -> dict:
     # 否則「基線少了幾段」與「基線正常」在畫面上長得一模一樣。
     skipped: list[str] = []
 
-    # 1. 四表各粒度總量（overview 趨勢 / 資料健康）
+    # 1. 各表各粒度總量（overview 趨勢 / 資料健康；表的數量依 data_sources 設定，
+    #    目前五張，含 Order Log）
     #    每個粒度都要算一份 —— 前端的分桶會隨時間區間變（見 trends.BUCKET_LADDER），
     #    拿錯粒度的基線去比就會產生假的倍數。
     for n in GRANULARITIES:

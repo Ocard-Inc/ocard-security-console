@@ -26,9 +26,9 @@ const RANK_TABS = [
   { key: 'failed_actors', label: '高失敗來源', col: '來源 IP' },
 ];
 
-// 四個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
+// 五個小倍數面板。顏色一律由 --chart-* token 取得（見 app.css 的說明與驗證指令）。
 //
-// 為什麼是四個面板而不是一張圖：四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），
+// 為什麼是五個面板而不是一張圖：五條線的量級差到 1000 倍以上（API 776 vs 登入失敗 1），
 // 單一 y 軸下小的那幾條永遠被壓在底部；雙軸是最容易誤導人的做法，不能用。
 // 每個面板自己一個 y 軸，再各自對照自己的 28 天同時段基線 ——
 // 這正好是本專案的核心命題（門檻 = 基線 × 倍數）。
@@ -37,22 +37,23 @@ const PANELS = [
   { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
   { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
   { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
+  { key: 'order', label: 'Order request', tokenName: '--chart-order' },
 ];
 
 // ★ 這裡刻意「不」用 ApexCharts 的 chart.group。
 //
 // group 原本是為了同步準星，但它同時做了兩件我們不要的事：
-//   1. 一次秀出四個 tooltip —— 四個浮動視窗同時彈出，各自貼在自己的小面板上。
-//   2. **把 updateOptions 廣播給同群組的所有圖表。** 切換時間區間時四個面板會
-//      依序 update，最後一個（登入失敗）的設定就覆蓋掉全部，包含 tooltip.custom。
-//      症狀：切過區間之後，四個面板的 tooltip 全部顯示「登入失敗」的數字。
+//   1. 一次秀出五個 tooltip —— 五個浮動視窗同時彈出，各自貼在自己的小面板上。
+//   2. **把 updateOptions 廣播給同群組的所有圖表。** 切換時間區間時五個面板會
+//      依序 update，最後一個的設定就覆蓋掉全部，包含 tooltip.custom。
+//      症狀：切過區間之後，五個面板的 tooltip 全部顯示同一個面板的數字。
 //      實測 07/30 08:00 那一桶，API 面板的 tooltip 顯示 22 —— 那是 login_failed
 //      的值（median 12／P95 23 也完全吻合），API 真正的值是 49,974。
 //
 // 初次載入不會壞，因為那時走的是 new ApexCharts()、沒有廣播；所以這個 bug
 // 只在「切換過區間之後」才出現，正好對應回報的現象。
 //
-// 四個面板的 x 類別與寬度本來就一致，視覺上已經對齊；為了同步準星換來四個
+// 五個面板的 x 類別與寬度本來就一致，視覺上已經對齊；為了同步準星換來五個
 // 互相打架又會顯示錯誤資料的 tooltip，並不划算。
 
 export default {
@@ -88,7 +89,7 @@ export default {
     buckets() { return this.data?.trend.buckets || []; },
 
     /**
-     * 四個小倍數面板的資料。每個面板兩條序列：資料線 + 同時段 median 虛線。
+     * 五個小倍數面板的資料。每個面板兩條序列：資料線 + 同時段 median 虛線。
      *
      * 刻意「只畫 median 參考線、不畫 median–P95 帶」：P95 的上緣比實際流量高一個量級
      * （實測 P95 8,323 vs API 776），畫成帶會把面板的 y 軸撐到 8,800、資料線只佔 9% 高，
@@ -384,10 +385,23 @@ export default {
         </template>
       </div>
     </div>
-    <div v-if="noP0P1 && !pending.total && !data.freshness.banner && data.monitor.label === '正常'"
+    <!-- 注意：這整段 template 是 JS 的 template literal，**註解裡不可以出現反引號**
+         —— 它會提早終止字串，整個 SPA 不渲染而且只有 console 看得到一行
+         「Uncaught SyntaxError」。2026-08-07 這裡就是這樣壞過一次
+         （同樣的坑也在 web/pages/explorer.js 的 template 註解裡記過）。
+
+         !data.freshness.failed.length 是必要的第二個閘門，不是 !data.freshness.banner
+         就夠了 —— health.source_health() 對查詢失敗的來源仍會 append 一張卡
+         （status 是「查詢失敗」），而 freshness_summary().banner 只在「有延遲」時
+         產生，查詢失敗算在 failed 清單裡但原本沒有反映在 banner 上。結果是查詢失敗時
+         這句話仍成立，橫幅寫著「N 個資料來源均正常更新」，而下方「資料來源健康」
+         卡片同時顯示某張表「查詢失敗」—— 兩者互相矛盾。失敗清單本身已經在下方卡片
+         顯示（非靜默），這裡只需要不要說謊，不必再重複一份錯誤訊息。 -->
+    <div v-if="noP0P1 && !pending.total && !data.freshness.banner && !data.freshness.failed.length
+               && data.monitor.label === '正常'"
          class="banner banner-ok">
       目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
-      {{ clockTime(data.last_five_min_check) }}，四個 ClickHouse 資料來源均正常更新。
+      {{ clockTime(data.last_five_min_check) }}，{{ data.health.length }} 個 ClickHouse 資料來源均正常更新。
       <template v-if="selfDisabled">
         <br><span style="font-weight:500">但請一併看上方：有部分監測目前被關閉或抑制。</span>
       </template>
@@ -449,9 +463,12 @@ export default {
       </div>
 
       <template v-if="!showTable">
-        <!-- 2×2 小倍數：四條線量級差 1000 倍，同一個 y 軸畫不下（雙軸則會誤導）。
-             每個面板自己一個軸、自己一條同時段 median 虛線；chart.group 讓四個面板
-             的準星同步，滑鼠移一張、四張一起動。 -->
+        <!-- 兩欄小倍數（五個面板、第三列右邊留白）：五條線量級差 1000 倍以上，
+             同一個 y 軸畫不下（雙軸則會誤導）。每個面板自己一個軸、自己一條
+             同時段 median 虛線。**刻意不用 chart.group** —— 它會把 updateOptions
+             廣播給整個群組，切換時間區間後最後一個面板的設定會覆蓋掉全部，
+             症狀是每個面板的 tooltip 都顯示同一個面板的數字（見上方 PANELS
+             旁的註解）。 -->
         <div class="panel-grid">
           <div v-for="p in panels" :key="p.key" class="panel">
             <div class="panel-head">
@@ -471,7 +488,7 @@ export default {
         <div class="muted" style="font-size:11px;margin-top:8px">
           灰虛線 = 該序列自己的 28 天同時段 median（逐時間桶）。P95 在標頭與 hover 的
           tooltip 裡 —— 它比實際流量高一個量級，畫進圖裡會把線壓扁到看不見。
-          四個面板的縱軸各自獨立，不可跨面板比較高度。
+          五個面板的縱軸各自獨立，不可跨面板比較高度。
         </div>
       </template>
 

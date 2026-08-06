@@ -42,7 +42,7 @@ def _post(client, **overrides):
 
 
 def test_store_filter_is_supported_on_every_source():
-    """四張表都有 `_store` 欄位，所以沒有任何一張該拒絕這個篩選。"""
+    """五張表都有 `_store` 欄位，所以沒有任何一張該拒絕這個篩選。"""
     for source in SOURCES:
         assert explorer.filter_support("store", source) is None, (
             f"{source} 不支援 store 篩選，但該表有 _store 欄位")

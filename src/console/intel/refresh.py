@@ -36,9 +36,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DAYS = 90
 
-# 四張表裡「來源 IP」的位置。admin/backend/auth 有 ip 欄位；
-# api 的來源要從 headers 推導，成本高（3.4 億列解 JSON），預設不掃 ——
-# 需要時用 --include-api。
+# 五張 log 表裡「來源 IP」的位置 —— 這裡只列得出 admin/backend/auth 三張，
+# 不是漏了兩張：api 的來源要從 headers 推導，成本高（3.4 億列解 JSON），
+# 預設不掃（需要時用 --include-api）；order 這張表沒有 ip 也沒有 headers，
+# 完全沒有來源 IP 可推導，不是「忘了加」。
 _IP_SOURCES = (
     ("ods_backend_sys_log", "coalesce(ip, '')"),
     ("ods_admin_log", "ip"),

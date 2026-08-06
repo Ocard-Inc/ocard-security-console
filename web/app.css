@@ -33,9 +33,12 @@
      要加深色模式時，把整段複製到 [data-theme="dark"] 換值 → resetTokens()，
      JS 不用改任何一行。
 
-     序列色已通過 dataviz validator 的「全配對」檢查（4 條線互相重疊，
-     adjacent 不夠誠實）。重跑指令：
-       node scripts/validate_palette.js "#175CD3,#027A48,#9E77ED,#B42318" \
+     序列色已通過 dataviz validator 的「全配對」檢查（5 條線互相重疊，
+     adjacent 不夠誠實）。重跑指令 —— **validator 由 dataviz skill 提供，
+     不在本 repo 的 scripts/ 底下**（2026-08-06 有人照著這段註解在 scripts/
+     找了半天那個不存在的檔案）：
+       <dataviz skill 的 scripts/validate_palette.js> \
+         "#175CD3,#027A48,#9E77ED,#B42318,#DD2590" \
          --mode light --surface "#FFFFFF" --pairs all
      動到任何序列色都必須重跑。 */
   --chart-api:        #175CD3;   /* API request */
@@ -45,6 +48,15 @@
   --chart-login-fail: #B42318;   /* 登入失敗。與 --chart-login-ok 的 deutan ΔE 只有 6.2，
                                     依 dataviz 規則必須搭配第二編碼 —— 虛線筆畫、圖例、
                                     tooltip 標籤、表格檢視四者缺一不可 */
+  --chart-order:      #DD2590;   /* Order request（POS／oboss 訂單操作）。2026-08-06 加入。
+                                    brief 原候選 #0E7090／#C11574／#B54708 全部 all-pairs FAIL
+                                    （分別敗在 chroma floor、與 --chart-login-fail 的 normal ΔE
+                                    12.5、與 --chart-login-fail 的 normal ΔE 6.1）。實測 #DD2590
+                                    五色全配對：最小 normal ΔE 17.5（對 --chart-login-fail）、
+                                    最小 deutan ΔE 11.5（對 --chart-login-ok）、
+                                    contrast 4.43:1 vs #FFFFFF。既有 WARN（--chart-login-fail↔
+                                    --chart-login-ok 的 deutan ΔE 6.2）與這次無關，維持原有
+                                    第二編碼緩解 */
   --chart-explorer:   #DC6803;   /* Log Explorer 單線 */
   --chart-event:      #B42318;   /* 事件詳細單線 */
 

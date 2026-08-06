@@ -1,7 +1,7 @@
 # Ocard Security Log Console
 
 ClickHouse log 即時異常監測主控台與稽查查詢平台。監測 `ods_admin_log`、
-`ods_backend_sys_log`、`ods_api_log`、`ods_auth_log` 四張表。
+`ods_backend_sys_log`、`ods_api_log`、`ods_auth_log`、`ods_order_api_log` 五張表。
 
 ## 快速開始
 
@@ -33,7 +33,7 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 - **ClickHouse 伺服器時區為 UTC，但 `create_time` 存台北牆鐘時間。** 所有查詢邊界
   由 Python 端算好以完整字串（含秒）傳參，絕不在 SQL 端用 `now()`。
 - 資料由 MongoDB 同步，**落地延遲約 5 分鐘**；監測視窗右界固定退 6 分鐘。
-- 四張表的 sorting key 都不含時間，僅有月分區 → 查詢一律必須帶 `create_time` 範圍。
+- 五張表的 sorting key 都不含時間，僅有月分區 → 查詢一律必須帶 `create_time` 範圍。
 - `ods_backend_sys_log` 的 `_new` / `_new2` 變體已於 7/30 停寫，不可使用。
 - `orderlist/detail` 的訂單識別在 POST body 而非 URL，該 route 的 unique 路徑比例
   恆為 0，**不可作為遍歷判定依據**。
@@ -41,6 +41,33 @@ uv run python -m console.checker.calibrate --seed-known-sources   # 首次基線
 - `ods_admin_log` 約 14% 登入紀錄沒有 IP；登入事件以 `acc` 識別、操作事件以 `_admin` 識別。
 - API 來源 IP 由 forwarded header（`X-real-ip` / `X-forwarded-for`，X 大寫）推導，
   屬「未驗證來源」。
+- **`ods_order_api_log`（Order Log，2026-08 接入）**：POS 與 oboss 的訂單操作
+  （接單／拒單／完成／改庫存）。實測（2026-08-06）2.45 億列、6.91 GiB、約 123 萬
+  筆/日、2026-01-01 起 218 天（比 `api_log` 的 179 天更長）、落地延遲約 5 分鐘、
+  重複率 3.2%。列寬僅 30 bytes/列（`api_log` 是 155），查詢成本遠低於其他四張表：
+
+  | 分析（180 天全區間） | 實測耗時 |
+  |---|---|
+  | Request 趨勢（1 天分桶） | 1.4 s |
+  | Endpoint 排名（完整 `url`） | 4.5 s |
+  | 品牌排名 | 0.4 s |
+  | Actor 排名（`_admin` 對照帳號名） | 2.4 s |
+  | 逐筆明細 | 10.9 s |
+
+  **180 天最貴的分析（逐筆明細）也在 13 秒內，不需要為它另設較短的區間上限**
+  —— 這與 `api_log` 恰好相反：兩者共用同一個全域 `max_range_days: 180`，
+  但 `api_log` 的來源排名與逐筆明細在同樣的 178 天全區間都會撞上 ClickHouse
+  55 秒的執行上限直接失敗（來源排名甚至在 90 天就已逼近上限），這是已知、
+  刻意接受的代價（詳見 `config/settings.yaml` 的 `audit_export` 註解），
+  不是另外設了較短上限。Order Log 列寬只有 `api_log` 的五分之一
+  （30 vs 155 bytes），所以同一個 180 天上限對它完全沒有這個問題。
+
+  這張表有四個結構性缺口，不是「還沒做」：
+  ① **沒有 `ip` 也沒有 `headers`** → 完全沒有來源 IP 維度，來源排名／依 IP 反查／
+  回看查詢對它都不成立。② **沒有 `acc`** → 操作者只有 `_admin`（整數），帳號名由
+  `core/admins.py` 查 ClickHouse `ods_user_admin` 補上。③ **沒有 `status`／
+  `error`／`has_error`** → 沒有錯誤分析。④ **沒有 `order_number`** → 沒有
+  unique resource 分析。
 
 ## 規則集
 

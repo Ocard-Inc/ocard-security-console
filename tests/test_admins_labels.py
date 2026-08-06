@@ -1,8 +1,10 @@
 """`_admin` 編號 → 帳號名的對照。
 
 三件事必須守住，違反了都不會報錯：
-① ReplacingMergeTree 的舊版本要被 FINAL 去掉，否則同一個編號回兩列、
-   dict 被後到的舊版本蓋掉；
+① 去重鍵是 `(_brand, idx)` 不是 `idx`：`FINAL` 只在同一個 `(_brand, idx)`
+   之內去重，跨 `_brand` 的同一個 `idx`（改過帳號名的那 4 個）仍會回兩列，
+   單靠 `FINAL` 不夠，要靠 `argMax(acc, _version)` + `GROUP BY idx` 收斂並
+   取版本最新的那一列；
 ② 查不到不可以假裝（回一個看起來像帳號的值）；
 ③ 查詢失敗要降級、不可以往上拋 —— 名稱是輔助資訊，不該讓整個明細 500。
 """
@@ -68,7 +70,25 @@ def test_collapses_idx_that_spans_multiple_brands():
     跨 `_brand` 收斂成一列、且取 `_version` 最新的那個值 —— 不是退回
     `FINAL` + `iterrows()` 覆寫（那個版本的最終值取決於 ClickHouse 回傳列的
     順序，順序沒有被強制，症狀是帳號名不穩定且不會報錯）。
+
+    下面兩則 SQL 結構斷言不是多餘的裝飾：光靠上面的行為斷言（結果值是否正確）
+    抓不住這個回歸。實測把 `_SQL_TEMPLATE` 改回沒有 `argMax`／`GROUP BY` 的
+    舊版本（`SELECT idx, acc FROM ods_user_admin FINAL WHERE idx IN %(ids)s`），
+    這則測試依然通過 —— 因為 ClickHouse *目前*對 `idx=30058` 的回傳順序碰巧讓
+    「後到的那列蓋掉先到的」得到正確答案。那個順序沒有被 SQL 強制，
+    ClickHouse 換版、part 合併，或那張表多一列都可能讓順序反過來，
+    到時 `ocardjack` 與 `jack@ocard.co` 會在兩個值之間跳動、不會有任何錯誤，
+    而排名與明細上的操作者身分因此不穩定。所以這裡改成直接斷言 SQL 文字
+    本身用了正確的收斂方式，不依賴「這次跑出來的順序恰好對」。
     """
+    assert "argMax" in admins._SQL_TEMPLATE, (
+        "查詢沒有用 argMax(acc, _version) 收斂 —— 跨 _brand 的同一個 idx "
+        "會退回『後到的列蓋掉先到的』，最終值取決於 ClickHouse 未被強制的"
+        "回傳順序，帳號名可能不穩定且不會報錯")
+    assert "GROUP BY idx" in admins._SQL_TEMPLATE, (
+        "查詢沒有用 GROUP BY idx 跨 _brand 收斂 —— 同一個 idx 會回多列，"
+        "批次組 dict 時後到的會蓋掉先到的，結果取決於未被強制的回傳順序")
+
     out = admins.accounts([BRAND_SPANNING_ADMIN])
     assert len(out) == 1
     assert out[BRAND_SPANNING_ADMIN] == BRAND_SPANNING_ACCOUNT

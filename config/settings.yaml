@@ -74,7 +74,8 @@ brands:
   max_cached: 20000
 
 sparklines:
-  # 統計卡迷你趨勢線：四張表最近 N 小時的每小時筆數（一個 UNION ALL，實測 0.19 秒）。
+  # 統計卡迷你趨勢線：各 log 表最近 N 小時的每小時筆數（一個 UNION ALL；
+  # 四張表時實測 0.19 秒，加入 Order Log 後五張表實測 0.41 秒）。
   # 前端每 30 秒輪詢，但每小時桶的邊界一小時才移動一次，120 秒過時完全看不出來。
   hours: 24
   cache_ttl_seconds: 120
@@ -155,8 +156,10 @@ audit_export:
   # **兩個會失敗的查詢刻意不另設較短上限**（已知取捨，2026-08-03 決定）：
   # 選了長區間再跑這兩種分析，會等 55 秒然後拿到「查詢超時」。
   #   - 來源排名貴在 API_SRC_IP 對 headers 逐列 JSONExtract。
-  #   - 逐筆明細貴在四張表的 sorting key 不含時間、只有月分區，
+  #   - 逐筆明細貴在五張表的 sorting key 不含時間、只有月分區，
   #     所以 ORDER BY create_time DESC 必須讀完全部列才能排序，LIMIT 救不了。
+  #     （Order Log 是唯一的例外性好消息：列寬只有 30 bytes，180 天全區間仍在
+  #     13 秒內，見下面 data_sources.order 的註解，不需要另設較短上限。）
   # 62 天對這兩種都實測穩定（23.0 s / 23.5 s），那是它一直沒出事的原因。
   max_range_days: 180
   detail_row_limit: 500000
@@ -174,6 +177,17 @@ allowlist:
   # 系統不會寄信也不會發 Slack 通知任何人（沒有那個管道）。
   expiring_soon_days: 7
 
+# **目前沒有任何程式讀這段設定。** `grep -rn "sql_console" src/ web/` 只命中這個檔案
+# 自己；唯一長得像會用到它的地方是 `rules/loader._allowed_tables()`，但那個函式讀的是
+# `data_sources`，不是這裡。前端 NAV 有一個「SQL Console」頁面入口，但那頁目前顯示
+# 「尚未實作」（見 `web/app.js`）——這段設定看起來像是為那個未完成的功能預先寫的白名單，
+# 但頁面沒做出來，這裡也就沒有消費端。
+# 2026-08 接入 Order Log 時，設計文件曾把這段稱為「獨立的第二份白名單」並要求
+# `allowed_tables` 跟著 `data_sources` 一起加 `ods_order_api_log`——那句話已經修正
+# （見 `docs/superpowers/specs/2026-08-06-order-log-integration-design.md`）：加了只是
+# 為了與 `data_sources` 的清單保持一致，不構成任何實際的白名單保護。
+# **不要因為看起來沒用就刪掉這段**：SQL Console 可能是未完成或已移除的功能，
+# 刪掉設定會讓下一個人更難判斷究竟是哪一種。留言的目的只是不要讓人誤以為它在保護什麼。
 sql_console:
   auto_limit: 1000
   timeout_seconds: 30

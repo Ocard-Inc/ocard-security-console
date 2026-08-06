@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 專案概要
 
 ClickHouse log 即時異常監測主控台（`ods_admin_log` / `ods_backend_sys_log` /
-`ods_api_log` / `ods_auth_log`）。單一 FastAPI process 同時提供 API、SPA 靜態檔，
+`ods_api_log` / `ods_auth_log` / `ods_order_api_log`）。單一 FastAPI process
+同時提供 API、SPA 靜態檔，
 以及在 lifespan 內常駐的五分鐘檢查排程。設計稿為 `docs/design/security_log_console.dc.html`
 （150KB，程式碼註解常以「設計稿 N 節」引用它）。README.md 記錄實測得到的資料特性與回測結果。
 
@@ -106,16 +107,66 @@ R13 的對象是 (品牌 × 分店)，而 `_store` 有兩個哨兵值：`-1` 是
 `tests/test_rule_store_volume.py` 用行為驗證這件事（規則不可吐出 `_store <= 0`，
 且 top 對象的 metric 必須等於母體單位下的計數），不比對 SQL 字串。
 
+**第四種：粒度都對，但取錯了桶。基線的小時一律由「視窗涵蓋的時間」決定，
+不是 `window_end`**（2026-08-06 修）。基線的桶是 `toStartOfHour(create_time)`，
+而規則的視窗是 `[window_end - window_minutes, window_end)` —— **往回看的**。
+`engine._resolve_threshold()` 一度直接用 `window_end.hour`，於是**每小時必有一個
+tick 的 window_end 落在整點**，那時 60 分鐘視窗的內容剛好是前一個完整整點小時、
+卻查到**下一個**小時的分位數。
+
+實測（正式環境 2026-08-06，20 筆 R04 事件裡 19 筆）：傍晚流量逐小時陡降，
+`Api2/GivePoint` 在 21:00~22:00 的正常量 2,117（前七天同時段 1,768~2,097）
+拿 h22 的門檻 2,000 來比就命中；它自己 h21 的門檻是 5,083。整批事件的
+metric/threshold 比值全部落在 1.00~1.14、同一組 endpoint 每天重複 ——
+**「每天固定發、而且都只超過一點點」就是這種偏差的指紋**。
+`Api2/MixTrans` 在 h21 只要 **0.58 倍**於自己的中位數就告警（設計上 2.88 倍）。
+
+**反方向是漏抓，而且那半邊沒有任何告警會提醒人。** 掃過 `api_endpoint_60m`
+全部 182 個動態門檻真正生效的格子：44 格偏低（誤報）、39 格偏高 ——
+`Api2/GetProfile` 在 h07 要 9.22 倍才叫（應該 3.04 倍）。
+跨午夜的視窗還會連 `day_class` 一起取錯（週一 00:00 的 tick 看的是**週日**的
+23 點，母體該是 weekend）。
+
+唯一真相是 `baseline.window_point(window_end, window_minutes)` = **視窗中點**。
+不用視窗起點：起點在 window_end 不落整點時會反過來錯（22:40 的 tick 視窗
+`[21:40, 22:40)` 有 40 分鐘在 h22，起點會給 h21）。中點對 60 分鐘以內的視窗
+永遠落在涵蓋分鐘數最多的那一小時。
+
+**實際受影響的規則比「有 baseline_key 的規則」少很多，因為只有三個 metric
+家族真的有逐小時的列**：`api_endpoint_60m:`（R04、R11）與 `backend_route_60m:`
+（R14）是 60 分鐘視窗、原本 100% 錯一小時；`boss_login_success_10m`（R06）
+只在 window_end 落整點的那個 tick 錯。其餘（R03 的 `api_src_ep_60m`、
+R15 的 `backend_ip_60m`、R13 的 `brand_store_60m`、R10A/B、R01、R09）
+在 calibrate 裡**只寫全域的 `(-1,'all')` 一列**（母體分布刻意不分小時，見下一段），
+`baseline.get()` 的回退鏈本來就落在同一列，取哪個小時都一樣 —— 那些規則沒有被這個
+bug 影響過。**改動門檻邏輯前先問「這個 key 有逐小時的列嗎」**，答案決定了要不要回測。
+
+`replay` 的實測（2026-08-05 週三正常日，24 個整點 tick）：
+R04 **5 → 0** 次命中（消失的正是 EVT-0070／0073／0077／0078／0079 那五筆）、
+R14 14 → 14（21:00 視窗少一件、07:00 視窗多一件，那件是原本被抬高的門檻漏抓的）、
+R11／R06 兩邊都是 0。**修正沒有製造新的噪音。**
+`Explorer` 快速範本的 `_win()` 也回這個點（第三個元素**刻意不是視窗右界**，
+免得又有人拿它的 `.hour`）—— 那裡的症狀不是告警而是畫面上的 median 與倍數，
+而使用者正是拿那個數字判斷「這個量正不正常」。
+`tests/test_baseline_window_hour.py` 用逐分鐘的獨立 oracle 守這一整組，
+並對所有帶 `baseline_key` 的規則斷言「取樣點必須落在自己的視窗內」。
+**反過來也守**：把它改成「一律減一小時」會在 22:45 的 tick 上失敗。
+
+一律用 **bucket 的起點或視窗的中點**去查基線，不要用「現在」——
+`trends.py`／`entity_history.py`／`routes.py` 的 zero-fill 迴圈傳的是 bucket 起點
+（正確）；`health.py` 傳 `now` 也是正確的，因為那裡呈現的是「當下這個 10 分鐘
+桶的參考值」而不是某個往回看的視窗。
+
 **母體分布刻意不做 (hour, day_class)**：實測 `api_src_ep_60m` 逐小時的結果是
 凌晨 04:00 只有 518 個樣本、p99 = 6,060，而全域 443,391 個樣本的 p99 = 148 ——
 低流量時段活著的幾乎只有機器整合，它們撐高了自己的門檻。逐小時會讓 04:00 的
 門檻變成 18,180（全域是 504），在最該敏感的時段把規則關掉。低流量端的保護
 交給 `static_floor`。
 
-**時間**：ClickHouse 伺服器時區是 UTC，但四張表的 `create_time` 存的是**台北牆鐘時間**。
+**時間**：ClickHouse 伺服器時區是 UTC，但五張表的 `create_time` 存的是**台北牆鐘時間**。
 所有邊界一律由 `core/timewin.py` 在 Python 端算好、以含秒的完整字串傳參，
 **絕不在 SQL 裡用 `now()`**（缺秒會 `CANNOT_PARSE_DATETIME`）。監測視窗右界固定退
-`lag_buffer_minutes`（6 分）補資料落地延遲。四張表的 sorting key 不含時間、只有月分區，
+`lag_buffer_minutes`（6 分）補資料落地延遲。五張表的 sorting key 不含時間、只有月分區，
 所以**每個查詢都必須帶 `create_time` 範圍**。
 
 **API 端點一律是同步 `def`，不是 `async def`**（2026-08 全站統一）。裡面的
@@ -180,6 +231,39 @@ clickhouse client（thread-local 是為了避開 clickhouse-connect 同 session 
 那是程式錯誤而且原本完全靜默），不擋人。前端 `web/app.js` 的 NAV 只是隱藏，
 不算保護；**也不要把權限清單加回 `/session`** ——
 `tests/test_api_smoke.py` 反向守著它，沒有分級時那是假的保護。
+
+**新增資料來源會靜靜壞掉三個地方。** `config/settings.yaml` 的 `data_sources`
+加一個 key，五處自動吃到（`sparklines` 的 UNION ALL、`calibrate` 的
+`table_{n}m:{key}`、R12 新鮮度、`rules/loader` 的表白名單、`explorer.validate`），
+但三處是 **`KeyError`** —— 不是 `ChQueryError`，`health.source_health()` 的
+`except` 接不到：`health._MISSING_EXPR[table]`、`explorer._DETAIL_COLUMNS[source]`、
+`explorer._PAYLOAD_COLUMNS[source]`。症狀是 `/api/health`、`/api/overview`、
+`/api/explorer` **三個端點一起 500**，而 `/healthz` 不碰它們、照樣回 200，
+**部署看起來成功**。`tests/test_data_source_coverage.py` 擋這件事（含
+`routes._LIMITATIONS_BY_SOURCE` 與 `GROUP_BY` 的四個維度）。
+它**刻意不含** `GROUP_BY["source"]`、`FILTER_COLUMN`、`SUGGEST_EXPR` ——
+那三張合法地不覆蓋全部來源（Order Log 真的沒有來源 IP、`auth` 真的沒有
+`function` 欄位），漏了的症狀是可讀的 400 或面板降級，不是 500。
+
+**Order Log（`ods_order_api_log`）沒有來源 IP，這不是「還沒做」。**
+它沒有 `ip` 也沒有 `headers`，所以來源排名、依 IP 反查、`entity_extent`
+對它都不成立。三個地方各說一次原因（`health._NOTES`、
+`routes._LIMITATIONS_BY_SOURCE`、`explorer._ENTITY_FILTER_UNSUPPORTED`
+—— 後者經 `explorer.source_meta()` 的 `unsupported_filters` 顯示在
+**那個篩選欄位旁邊**）—— 只說「不支援」會讓人去等一個
+永遠不會來的功能。它的 endpoint 維度是**完整 `url`** 而不是
+`controller/function`：`url` 在 180 天只有 46 個相異值、沒有動態段，
+而 `controller/function` 會把 accept／deny／complete 全部收進 `v1/order` 一格，
+「誰在大量拒單」就從排名上消失。操作者是 `_admin` 整數，
+`core/admins.py` 查 ClickHouse `ods_user_admin FINAL` 補帳號名
+（**走 ClickHouse 而不是 MySQL** 是刻意的：`mysql_config()` 可以回 None，
+而這個名稱不是輔助標示 —— `_admin` 整數本身沒有任何調查價值）。
+
+**「哪個分析在哪張表可用」的唯一真相是 `explorer.supported_analyses()`。**
+原本前端 `ANALYSES` 不分來源全部列出，於是 backend 選「Unique resource 分析」、
+Order Log 選「來源排名」都是**永遠回 400 的下拉選項**，而畫面上看起來是正常功能。
+現在前端只拿 key，標籤仍在前端（標籤錯了看得見，可用性錯了是靜靜的）。
+`tests/test_explorer_source_meta.py` 兩個方向都守。
 
 ## SQLite 欄位遷移（`src/console/store/migrate.py`）
 
@@ -324,7 +408,8 @@ ClickHouse，兩邊無法在 SQL 裡 join，所以只能在拿到原始 IP 之�
 ## 規則系統
 
 規則是 `config/rules/*.yaml`，`rules/loader.py` 解析並驗證：SQL 必須 SELECT/WITH 開頭、
-不可含分號、必須同時出現 `%(start)s` 與 `%(end)s`、只能引用四張白名單表、至少一個
+不可含分號、必須同時出現 `%(start)s` 與 `%(end)s`、只能引用白名單表（`_allowed_tables()`
+由 `data_sources` 推導，目前五張，Order Log 也已經是可以寫規則的表）、至少一個
 `entity` 欄位。SQL 需輸出名為 `metric` 的欄位；`brands`、`total`（給 `ratio`）等為選用。
 
 門檻 = `max(threshold.static_floor, baseline[stat] × factor)`。基線由
@@ -673,6 +758,70 @@ bug：`goto()` 只在有帶 filter 時寫它、從來不清空，所以從總覽
 連五分鐘排程一起卡住。時序那支因為 5–7 秒而**獨立端點 + 前端點了才載入** ——
 綁進事件詳細頁的主查詢會讓每次開頁都多等那麼久。
 
+2026-08 起這一頁的排名區塊是**全寬的左右兩欄**：左欄是母體前 12 名的橫條圖
+（圖下方原本那張「對象／次數」表格已移除 —— 與圖同一份資料，而兩份相同內容
+佔掉的高度讓作息被擠到半個寬度；代價是精確值只剩 hover tooltip，
+「用鍵盤選到第 N 名」由右欄的下拉選單承接），右欄與下方的拆解列
+**永遠只在講一個對象**（預設本事件的對象，點左欄任一長條就換成那一列）。
+24 小時作息與端點集中度只是移到下方全寬，內容不變。
+
+| 問題 | 在哪 | 端點 |
+|---|---|---|
+| 這個量是持續的還是剛冒出來的 | `entity_history.recent_trend()` | `.../entity/trend?minutes=` |
+| 它在打什麼、誰在用、影響誰 | `entity.breakdown()` | `.../entity/breakdown` |
+
+四個會靜靜給錯結論的地方：
+
+- **趨勢的錨點是事件的 `last_seen`，不是 `now()`。** 用 `now()` 的話同一個事件
+  在隔天會變成一張與它無關的圖，而且不會有任何錯誤。錨點比已落地的資料還新時
+  右界被夾住並**整段往前滑**（不是截短），「最近 24 小時」這個標籤才仍然是真的；
+  夾了就回 `window_note`。
+- **回應的 `anchor` 與 `last_seen` 是兩個不同的時刻，畫面兩個都要寫。**
+  `anchor` 是「含事件那一刻的整個分桶」的右界，120 分鐘分桶下它比事件晚將近
+  兩小時（實測 last_seen 22:05 → 右界 08-07 00:00）。只寫右界並標
+  「（事件最後出現）」的話，那句話在指一個事件根本沒有發生過的時刻。
+- **`recent_trend()` 的分桶階梯（`TREND_RANGES`）刻意不共用
+  `trends.BUCKET_LADDER`。** 後者的每一格都必須出現在 `calibrate.GRANULARITIES`
+  裡（那是 calibrate 基線的耦合），而這裡的比較基準是同一趟查詢現算的前期。
+  取的值仍是既有的 5/10/30/120，不引入新粒度。**每個區間都必須是分桶的整數倍**
+  —— 前期是「往回位移一個區間長度」，而 `toStartOfInterval` 的格線固定在
+  1970-01-01，位移量不是分桶的倍數時前期那條線會整條錯位而畫面完全正常
+  （`tests/test_entity_recent_trend.py` 用行為驗證）。
+- **點一列往下拆要把原始值回送，閘門是 `masking.echoable()`。**
+  它比對「呈現 == 原值」，**刻意不是靜態的「哪些 kind 是單向的」清單** ——
+  `actor` 是否單向取決於帳號長度（超長會 HMAC 截斷），清單一定會漂移，
+  而漂移的方向是靜靜地把 `auth` 的 API token 指紋當原值送出去。
+  不可回送時 `peers.top[].keys` 是 `None`（那一列點不動並說出原因），
+  整個鍵不存在則代表後端還是舊版、整塊降級成唯讀。
+  `keys` 一律是**裸編號**而不是解過名稱的 label（回送「wa10 瓦城（1180）」去比對
+  `toString(_brand)` 永遠 0 筆，而畫面會顯示一個空的拆解面板）。
+  守門的是 `tests/test_event_entity.test_token_peers_are_never_echoable` ——
+  它**直接建一個 token 維度的 ref**，刻意不依賴「DB 裡剛好有 auth 事件」：
+  原本那條掃描式的版本在把 `echoable()` 改成 `return True` 之後照樣全綠，
+  而一條永遠不會紅的反向測試就只是裝飾。
+
+`breakdown()` 與 `peers()` 是**不同的範圍**（帶對象條件 vs 不帶），
+所以兩塊各自說出自己的範圍。`breakdown()` 刻意**不吃區間參數**：它固定用規則的
+`window_minutes`，這樣左欄那根長條的長度就等於右邊各維度 `rows` 的總和 +
+`blank`。前 N 名排除空值那一組，因此 **`blank` 一定要回** ——
+不回的話「沒有帳號的那些筆」會靜靜藏在分母裡，而佔比看起來只是剛好不到 100%。
+品牌的哨兵值（`-1` 品牌層級、`0` 未填）照實列出，不過濾（過濾等於偷偷改分母）。
+
+**趨勢的成本分級走 `entity_history.slow_ranges()`，形狀與
+`explorer.extent_lookback_days()` 相同**（同一個事實的另一面）：只有 `api` 的
+來源 IP 在 7d 慢（掃 14 天、要對 `headers` 做 JSONExtract，**實測 11.8 秒**），
+`admin` 的 actor 也帶 JSONExtract 但只要 3.9 秒、`backend` 的 IP 是真欄位只要
+0.1 秒。所以**只標 api/source_ip 的 7d** —— 「含 JSONExtract 就算慢」會讓一個
+仍然快的組合被貼上警語，而警語貼滿了就沒有人讀。回的是「要標註」而不是
+「不給選」：使用者選了 7d 就該拿到 7d 的圖，偷偷降級成 3d 是最糟的結果。
+
+**右欄那張趨勢圖必須 `compact: true`。** 它只有半個欄寬，而 24h 有 48 個點、
+標籤是「08/05 22:00」共 11 字 —— 非 compact 的 8 個刻度在約 380px 寬的欄位裡
+會疊成一團完全讀不出是什麼時間（實測「08/05 2208/06 0108/06 03」）。
+
+**拆解列的四張小圖各自一個 `rowsRef`**（`syncPartRows()`）。共用一份的話
+tooltip 會互相蓋掉，而畫面上只是「數字怪怪的」。
+
 **`EntityRef` 一律由 `drilldown.build()` 的結果推導，不從規則 entity 直接推。**
 「規則 entity → 篩選欄位」的唯一真相在 `drilldown`（含 legacy 指紋、被清洗的值、
 該表不支援的欄位這三種逐欄位剔除），「篩選欄位 → SQL」的唯一真相是
@@ -775,6 +924,15 @@ SQLite WAL 單檔 `state/monitor.db`，schema 是 `store/db.py` 內的 `_SCHEMA`
     monkeypatch **改不到端點實際寫入的檔案**。
   - `tests/test_db_isolation.py` 斷言 `db.DB_PATH` 不等於真實路徑 ——
     隔離靜靜失效的症狀是「測試全過，只是資料庫每次多幾百列」。
+- **`tests/test_web_modules_parse.py` 用 `node --check` 解析 `web/` 的每一個模組。**
+  前端沒有建置流程，所以**沒有任何一步會在瀏覽器之外看過那些檔案** ——
+  語法錯誤的症狀是 `Uncaught SyntaxError` + **整頁空白**，而 `/healthz`、
+  每一支 API 與 pytest 全部照樣綠燈，唯一的痕跡在瀏覽器 console 裡。
+  實測踩到兩次的形狀完全相同：Vue 元件的 `template:` 是一個 **backtick 樣板
+  字串**，而在裡面的 HTML 註解寫反引號（引用某個檔名時很自然就會寫）會
+  **提前結束那個字串**，於是後面整段 HTML 被當成 JavaScript 解析，
+  錯誤訊息指向註解裡的一個中文詞。同理 `${...}` 在樣板字串裡是插值。
+  沒有 node 時這個檔案自動 skip（CI 不跑測試，見「正式部署」）。
 - `test_masking_audit.py` 是驗收條件的自動化檢查：掃描各端點實際回應，比對已知真實識別值
   與 IP／手機／Email 樣式。
   **`EMAIL_ALLOW` 與 `EMAIL` regex 永遠不放寬。** `/api/audit`、`/api/allowlist`、
@@ -922,9 +1080,29 @@ CI 只驗證映像建得起來、容器啟動得了。
   指紋，只有它變才 `updateOptions`）。x 值放在 series 裡（`data:[{x,y}]`），
   **不要用 `xaxis.categories`** —— 否則滾動視窗每 30 秒都會改到軸設定。
   tooltip 要用到但沒進 series 的欄位，透過非響應式的 `this._rows = {current: rows}` 持有者傳遞。
+- **`animations.enabled: true` + `dynamicAnimation.enabled: false` 是非法組合，
+  它會讓每一次 `updateSeries()` 之後的圖變成一條貼在 0 的平線。** ApexCharts 6.7.0
+  的 `renderPaths()` 在資料變動時**先畫動畫起點**（`pathFrom`，全部貼在零線），
+  再由 `dataChanged && dynamicAnimation.enabled && …` 那一行 morph 到 `pathTo`
+  —— 關掉後者只拿掉 morph，起點照畫，於是畫面停在起點。軸、標籤、tooltip
+  走的是另一條路徑、全部是**新資料的正確值**，所以看起來就是
+  「這個對象在這段時間完全沒有活動」，console 一個字都沒有。
+  實測（CDP 量 SVG）：點左欄長條前 `48 個點、bbox 高 141`，點完
+  `49 個點、bbox 高 0、y 值全部 148.3`，而 y 軸已正確從 38 換成 14。
+  **首頁受害最重** —— 30 秒自動更新走的就是這條熱路徑，實測載入後 30 秒
+  五張圖（四條線 + 一張長條）全部變平/消失。長條也一樣（`renderPaths` 共用）。
+  「更新時不要重播動畫」的支援做法是**呼叫端的第二個參數**
+  `updateSeries(next, false)`（`shouldAnimate=false` → morph 長度 1ms，瞬間到位），
+  不是關設定。合法組合只有兩個：整段 `animations.enabled: false`
+  （`sparkline.js`、`time-series.js` 的 dense 模式、`prefers-reduced-motion`
+  —— 那些使用者從來沒踩到這個 bug），或兩者都開。
+  `tests/test_chart_animation_contract.py` 掃原始碼擋這件事：症狀只在真的瀏覽器
+  裡看得到，而前端沒有建置流程也沒有 headless 測試環境。
 - **顏色只能來自 `app.css` `:root` 的 `--chart-*`，透過 `charts/tokens.js` 讀取**，
-  JS 裡不得出現色碼字面值。序列色已通過 dataviz validator 全配對檢查，
-  改色必須重跑（指令寫在 app.css 的註解裡）。登入失敗的虛線筆畫是紅綠色盲下的
+  JS 裡不得出現色碼字面值。五條序列色已通過 dataviz validator 的「全配對」檢查
+  （`--pairs all`），改色必須重跑（指令寫在 app.css 的註解裡）——
+  **validator 由 dataviz skill 提供，不在本 repo 的 `scripts/` 底下**，
+  照著舊註解在 `scripts/` 找那個檔案會找不到。登入失敗的虛線筆畫是紅綠色盲下的
   必要第二編碼，不是裝飾。
 - **tooltip 內容一律用 `charts/tooltip.js`**（createElement + textContent 組 DOM 再序列化）。
   ApexCharts 的 `tooltip.custom` 必須回傳 HTML 字串，而 endpoint 與品牌名稱來自
@@ -961,34 +1139,37 @@ CI 只驗證映像建得起來、容器啟動得了。
 - **不要自己包一層 `.chart-frame`。** `ApexChart.js` 的 template 自己就渲染一個，
   並以 `:height` prop 設高度。外面再包一層的結果是兩個嵌套的 frame（外層你設的高度、
   內層預設 260px），症狀是圖與下一個元素之間一大塊空白。高度一律走 `:height`。
-- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（四張表的量
+- **`y` 軸刻度的格式化走 `timeSeriesOptions` 的 `yFormatter`**。預設是整數（五張表的量
   都是計數），但百分比序列（24 小時作息的兩條線）四捨五入成整數會讓所有刻度變成同一個
   數字，圖要傳達的結論就從畫面上消失了。
 - **比例值一律以小數（0..1）在 API 與 series 裡流動**，顯示時才經 `lib.js` 的 `pct()`。
   那個函式會乘 100 —— 傳百分比進去等於乘兩次（實測 97.47 顯示成 9747.0%）。
 
-### 首頁趨勢是 2×2 小倍數，不是一張四線圖
+### 首頁趨勢是兩欄小倍數，不是一張五線圖
 
-四條線的量級差到 1000 倍（API 776 vs 登入失敗 1），單一 y 軸下小的那幾條被壓在底部，
-而**雙軸是最容易誤導人的圖表做法，禁用**。所以拆成四個面板，每個自己一個 y 軸、
-自己一條同時段 median 虛線（`overview.js` 的 `PANELS` 與 `panels()`）。
+五條線的量級差可達 1000 倍以上（API 776 vs 登入失敗 1），單一 y 軸下小的那幾條被壓在
+底部，而**雙軸是最容易誤導人的圖表做法，禁用**。所以拆成五個面板，每個自己一個 y 軸、
+自己一條同時段 median 虛線（`overview.js` 的 `PANELS` 與 `panels()`）。版面維持兩欄，
+五個面板排成三列、**第三列右邊刻意留白**（`charts/charts.css` 的 `.panel-grid`）——
+不讓第五格跨兩欄：跨欄會讓它的 y 軸比其他四個寬，與下面「面板的縱軸各自獨立、
+不可跨面板比較高度」自相矛盾，一個更寬的面板會暗示它更重要。
 
-- **不要用 `chart.group`。** 它看起來是同步準星的正解，但會做兩件壞事：一次彈出四個
-  tooltip；而且**把 `updateOptions` 廣播給整個群組** —— 切換時間區間時四個面板依序
-  update，最後一個（登入失敗）的設定就覆蓋掉全部，包含 `tooltip.custom`。
-  症狀是「切過區間之後每個面板的 tooltip 都顯示登入失敗的數字」，初次載入卻正常
+- **不要用 `chart.group`。** 它看起來是同步準星的正解，但會做兩件壞事：一次彈出五個
+  tooltip；而且**把 `updateOptions` 廣播給整個群組** —— 切換時間區間時五個面板依序
+  update，最後一個（Order request）的設定就覆蓋掉全部，包含 `tooltip.custom`。
+  症狀是「切過區間之後每個面板的 tooltip 都顯示同一個面板的數字」，初次載入卻正常
   （那時走 `new ApexCharts()`，沒有廣播）。只有在同群組圖表的設定**完全一樣**時才可用。
 - **小面板只畫 median 參考線，不畫 median–P95 帶**：P95 比實際流量高一個量級
   （8,323 vs 776），畫成帶會把軸撐到 8,800、線只剩 9% 高，換成小倍數也沒解決。
   只畫 median 的話線佔 55%。P95 在面板標頭與 tooltip 裡都是精確數字。
   帶**保留在事件詳細頁** —— 那裡是單一序列，帶就是重點。
 - 面板標頭是 HTML 不是 ApexCharts 的 `title`，才帶得動即時數字與倍數。
-- 四個面板的縱軸各自獨立，**不可跨面板比較高度**，說明文字要寫出來。
+- 五個面板的縱軸各自獨立，**不可跨面板比較高度**，說明文字要寫出來。
 
-`queries/trends.py` 的 `baseline_keys` 是四條線 → metric key 的對照。四個基線都由
+`queries/trends.py` 的 `baseline_keys` 是五條線 → metric key 的對照。五個基線都由
 `calibrate.py` 算好（`table_10m:api`／`table_10m:backend`／`login_success_10m`／
-`login_failed_10m`），以前只讀了兩個。`baseline.get()` 每次都是一趟 SQLite，
-所以在 `request_trend` 內用 dict memoize（相異鍵最多 4 × 24 × 2）。
+`login_failed_10m`／`table_10m:order`），以前只讀了兩個。`baseline.get()` 每次都是一趟
+SQLite，所以在 `request_trend` 內用 dict memoize（相異鍵最多 5 × 24 × 2）。
 
 `web/app.js` 的 30 秒自動更新走 `reloadToken` **prop**，不是 `:key` —— 進 `:key` 會讓
 Vue 每半分鐘卸載重建整頁，圖表實例跟著被銷毀。`sessionKey` 才是給 `:key` 的

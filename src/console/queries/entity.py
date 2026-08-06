@@ -28,10 +28,11 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from console.core import brands, masking, stores, timewin
 from console.core.ch import query
@@ -51,6 +52,14 @@ SHARE_LIMIT = 6
 # 而且對 api 表（來源 IP 要對 headers 做 JSONExtract）實測仍在 1.5 秒內；
 # 28 天要 15 秒，那是 `entity_history` 的工作。
 PROFILE_DAYS = 7
+
+# 「這個對象還可以往下拆成什麼」的候選維度，順序固定成
+# 「打什麼 → 誰 → 影響誰」—— 同一條規則的事件每次讀起來都一樣。
+BREAKDOWN_FIELDS = ("endpoint", "actor", "brand", "store")
+
+# 每個拆解維度取幾名。6 是「一眼看出有沒有一個壓倒性的值」與
+# 「四張小圖並排放得下」的折衷；真正的相異值個數由 `groups` 說出來。
+BREAKDOWN_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -267,6 +276,19 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
             # 長得一模一樣 —— 用標籤比對的話高亮會落在錯的長條上、或一次亮好幾條，
             # 而畫面看起來完全正常。
             "is_self": values == own_values,
+            # 點這一列往下拆時要回送的**原始值**（順序同 `ref.dims`）。
+            #
+            # 品牌與分店的 `label` 是「名稱（編號）」，而這裡一律是裸編號 ——
+            # 回送 label 的話後端拿「wa10 瓦城（1180）」去比對
+            # `toString(_brand)` 永遠 0 筆，而畫面會顯示一個空的拆解面板，
+            # 看起來像這個對象沒有活動。
+            #
+            # **不可回送時給 None，不是省略這個鍵**：前端要能分辨「這一列點不動」
+            # 與「後端還是舊版」（後者整個 top 都沒有這個鍵，前端據此把整塊降級
+            # 成唯讀，見 CLAUDE.md 關於「前端新、後端舊」的那一段）。
+            "keys": list(values) if all(
+                masking.echoable(d.mask, v)
+                for d, v in zip(ref.dims, values)) else None,
         })
 
     comparable = expected is None or abs(own - float(expected)) < 1
@@ -302,6 +324,120 @@ def peers(ref: EntityRef, start: datetime, end: datetime,
         "expected": float(expected) if expected is not None else None,
         "note": note,
     }
+
+
+def with_values(ref: EntityRef, values: Sequence[str]) -> EntityRef:
+    """把 `ref` 的維度值換成 `values`，維度定義不變。
+
+    母體排名可以點**任何一列**往下拆，不只本事件的對象 —— 實際調查時最有價值的
+    往往是「排在我前面那幾名是誰」。那一列的原始值經 `masking.echoable()` 的
+    閘門回送（見 `peers()` 的 `keys`），到這裡組成新的 ref。
+
+    `EntityRef` / `Dim` 是 frozen dataclass，所以這裡必然產生**新物件** ——
+    就地改掉會污染同一個請求裡其他面板共用的 ref（同 `rules/effective.py`
+    用 `dataclasses.replace()` 的理由）。
+
+    個數不符一律拋 `ValueError`：少一個維度就是在查一個**範圍更大**的對象，
+    數字會比左欄那根長條大，而且不會有任何錯誤訊息。
+    """
+    if len(values) != len(ref.dims):
+        raise ValueError(
+            f"對象值的個數（{len(values)}）與維度數（{len(ref.dims)}）不符；"
+            f"維度依序是 {[d.field for d in ref.dims]}")
+    return dataclasses.replace(ref, dims=tuple(
+        dataclasses.replace(d, value=str(v)) for d, v in zip(ref.dims, values)))
+
+
+def breakdown_fields(ref: EntityRef) -> list[str]:
+    """這個對象還可以往下拆的維度 —— 候選減掉「已經被拿去排序的」。
+
+    對 (來源 IP × endpoint) 的對象再按 endpoint 拆只會得到一列，那不是資訊，
+    而是一塊看起來壞掉的面板。
+
+    「這張表有沒有這個分組運算式」問的是 `explorer.entity_meta()` ——
+    **不是** `filter_support()`。後者管的是「使用者能不能用這個欄位反查」
+    （auth 的 actor 是指紋，貼回去查不到），而這裡只是分組顯示，
+    指紋當標籤是正確的呈現。
+    """
+    used = {d.field for d in ref.dims}
+    return [f for f in BREAKDOWN_FIELDS
+            if f not in used and explorer.entity_meta(f, ref.source) is not None]
+
+
+def breakdown(ref: EntityRef, start: datetime, end: datetime,
+              limit: int = BREAKDOWN_LIMIT) -> dict:
+    """這個對象在此區間的活動，按每個「還沒被拿去排序的」維度分組的前 N 名。
+
+    ## 與 `peers()` 是**不同的範圍**，兩者不可混讀
+
+    `peers()` 問「我在母體的哪裡」（**不帶**對象條件的 GROUP BY）；
+    這一支問「我自己打了哪些 endpoint／帳號／品牌／分店」（**帶**對象條件）。
+    同一張卡的兩塊必須各自說出自己的範圍 —— 同一個數字兩種母體是這個專案
+    一再出事的形狀（見 CLAUDE.md 的 `by_judgement`）。
+
+    ## 區間必須與 `peers()` 相同
+
+    呼叫端一律傳規則的 `window_minutes`，這樣左欄那根長條的長度就等於
+    右邊各維度 `rows` 的總和 + `blank`。刻意**不吃自訂區間**就是為了維持
+    這個對帳關係（趨勢那支才吃區間，見 `entity_history.recent_trend()`）。
+
+    ## 查詢數是 1 + 維度數
+
+    一支把 `count()` 與每個維度的 `uniqExact` / `countIf(= '')` 一次算完，
+    剩下每個維度一支 top-N。欄位別名是程式產生的常數（`g0` / `b0`），
+    運算式來自 `explorer.GROUP_BY`，沒有注入面。
+    條件是「單一對象在 60 分鐘內」，非常選擇性。
+
+    ## `blank` 一定要回
+
+    前 N 名刻意**排除空值那一組**（標籤是空字串的長條沒有人讀得懂），
+    所以佔比加不到 100%。不回 `blank` 的話「沒有帳號的那些筆」會靜靜藏在
+    分母裡，而畫面看起來只是「剛好不到 100%」。
+
+    品牌的 `_brand` 有兩個哨兵值（`-1` 是品牌層級操作、`0` 是未填），
+    **照實列出**，不過濾 —— 過濾等於偷偷改分母。
+    """
+    params = {"start": timewin.fmt(start), "end": timewin.fmt(end), **ref.params}
+    base = f"FROM {ref.table} WHERE {exprs.time_filter()} AND {ref.where}"
+    shape = {"window_start": params["start"], "window_end": params["end"]}
+
+    fields = breakdown_fields(ref)
+    if not fields:
+        total = int(query(f"SELECT count() AS c {base}", params).iloc[0]["c"] or 0)
+        return {**shape, "total": total, "dims": [], "note": (
+            "這個事件的對象已經用掉全部可拆的維度"
+            f"（{'、'.join(d.label for d in ref.dims)}），沒有可以再往下拆的欄位。")}
+
+    metas = [(f, explorer.entity_meta(f, ref.source)) for f in fields]
+    agg = ", ".join(
+        f"uniqExact({expr}) AS g{i}, countIf({expr} = '') AS b{i}"
+        for i, (_, (expr, _, _)) in enumerate(metas))
+    s = query(f"SELECT count() AS total, {agg} {base}", params).iloc[0]
+    total = int(s["total"] or 0)
+
+    dims = []
+    for i, (field, (expr, mask, label)) in enumerate(metas):
+        df = query(f"SELECT {expr} AS d, count() AS c {base} AND {expr} <> ''"
+                   f" GROUP BY d ORDER BY c DESC LIMIT {int(limit)}", params)
+        pairs = [(str(r["d"]), int(r["c"])) for _, r in df.iterrows()]
+        # 品牌與分店要一次批次查名稱（逐列呼叫單值版就是 6 趟 MySQL）
+        names = _names(field, [v for v, _ in pairs])
+        dims.append({
+            "field": field,
+            "label": label,
+            "groups": int(s[f"g{i}"] or 0),
+            "blank": int(s[f"b{i}"] or 0),
+            "rows": [{
+                # **不回原始值。** 這一層不再往下鑽所以不需要它，
+                # 而 auth 的 actor 原始值是**還有效的憑證**。
+                "label": names.get(v) or _display(Dim(field, expr, v, mask, label)),
+                "count": c,
+                # 小數（0..1），不是百分比 —— 前端的 pct() 會乘 100
+                "share": round(c / total, 6) if total else None,
+            } for v, c in pairs],
+        })
+
+    return {**shape, "total": total, "dims": dims, "note": None}
 
 
 def hour_profile(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS) -> dict:

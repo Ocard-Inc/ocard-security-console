@@ -68,7 +68,7 @@ def test_payload_columns_cover_every_source(source):
 def test_data_limitations_cover_every_source(source):
     assert source in routes._LIMITATIONS_BY_SOURCE, (
         f"routes._LIMITATIONS_BY_SOURCE 少了 {source} —— 事件詳細頁的「資料限制」"
-        "只會有四張表通用的兩句，說不出這張表自己的缺口。")
+        "只會有五張表通用的兩句，說不出這張表自己的缺口。")
 
 
 @pytest.mark.parametrize("dimension", REQUIRED_DIMENSIONS)

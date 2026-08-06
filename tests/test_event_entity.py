@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import pytest
 
-from console.core import brands, stores, timewin
+from console.core import brands, masking, stores, timewin
 from console.queries import entity, entity_history, explorer, exprs
 
 
@@ -71,6 +73,56 @@ def test_entity_meta_carries_the_masking_kind():
     assert label
     # endpoint 不是識別值，不該有遮罩種類
     assert explorer.entity_meta("endpoint", "api")[1] is None
+
+
+def test_with_values_swaps_values_and_keeps_the_dimensions():
+    """點母體排名的第 N 列 → 用那一列的值組一個新的 EntityRef。
+
+    `EntityRef`／`Dim` 是 frozen dataclass，所以這裡一定是產生新物件 ——
+    就地改掉的話會污染同一個請求裡其他面板用的 ref（同 `rules/effective` 用
+    `dataclasses.replace()` 的理由）。
+    """
+    ref = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                      "endpoint": "Api2/GetProfile"})
+    other = entity.with_values(ref, ["5.6.7.8", "Api2/Login"])
+
+    assert [d.value for d in other.dims] == ["5.6.7.8", "Api2/Login"]
+    # 維度定義（欄位、運算式、遮罩、名稱）完全不變 —— 只有值換了
+    assert [(d.field, d.expr, d.mask) for d in other.dims] == \
+           [(d.field, d.expr, d.mask) for d in ref.dims]
+    # 原物件沒有被就地改掉
+    assert [d.value for d in ref.dims] == ["1.2.3.4", "Api2/GetProfile"]
+
+    # 個數不符要拋，不可以靜靜少比一個維度 —— 那會組出一個範圍更大的對象，
+    # 數字比左邊那根長條大而且不會有任何錯誤
+    with pytest.raises(ValueError):
+        entity.with_values(ref, ["5.6.7.8"])
+    with pytest.raises(ValueError):
+        entity.with_values(ref, ["5.6.7.8", "Api2/Login", "多的"])
+
+
+def test_breakdown_fields_excludes_what_is_already_the_ranking_unit():
+    """拆解維度 = 四個候選減掉「已經被拿去排序的」。
+
+    對 (來源 IP × endpoint) 的對象再按 endpoint 拆只會得到一列 —— 那不是資訊，
+    而是一塊看起來壞掉的面板。順序固定成「打什麼 → 誰 → 影響誰」，
+    同一條規則的事件每次讀起來才一樣。
+    """
+    both = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                       "endpoint": "Api2/GetProfile"})
+    assert entity.breakdown_fields(both) == ["actor", "brand", "store"]
+
+    only_src = entity.from_filters("api", {"source_ip": "1.2.3.4"})
+    assert entity.breakdown_fields(only_src) == \
+        ["endpoint", "actor", "brand", "store"]
+
+    # auth 的 endpoint 是 `action`、actor 是 API token，兩者都有運算式，
+    # 所以四個維度都在 —— 「能不能拿來反查」是 filter_support() 的事，
+    # 這裡只問「這張表有沒有這個分組運算式」（拆解只是分組顯示，
+    # 而 token 的指紋當標籤是正確的呈現）。
+    auth = entity.from_filters("auth", {"source_ip": "1.2.3.4"})
+    assert entity.breakdown_fields(auth) == \
+        ["endpoint", "actor", "brand", "store"]
 
 
 def test_flatness_refuses_to_invent_a_ratio_when_an_hour_is_empty():
@@ -359,3 +411,255 @@ def test_peer_self_detection_still_uses_the_raw_values():
     result = _named_peers()
     assert sum(1 for r in result["top"] if r["is_self"]) == 1, (
         "本對象必須剛好命中一列")
+
+
+def test_peer_rows_carry_raw_keys_only_when_they_are_echoable():
+    """母體排名的每一列都要能被點來往下拆，而那需要**原始值**。
+
+    `keys` 的順序同 `ref.dims`，而且**只在可回送時才給** —— `auth` 的 actor 是
+    API token，畫面上是不可逆指紋，回送等於用主控台把它還原
+    （閘門是 `masking.echoable()`，見 tests/test_masking_audit.py）。
+
+    不可回送時給 `None` 而不是省略這個鍵：前端要能分辨「這一列點不動」與
+    「後端還是舊版、沒有這個功能」（後者整個 top 都沒有 `keys` 這個鍵，
+    前端據此把整塊降級成唯讀）。
+    """
+    ref = entity.from_filters("api", {"source_ip": "1.2.3.4",
+                                      "endpoint": "Api2/GetProfile"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.peers(ref, start, end)
+    assert out["top"], "這個區間應該有母體資料"
+
+    for row in out["top"]:
+        assert "keys" in row, "每一列都必須有 keys 鍵（不可回送時是 None）"
+        assert row["keys"] is not None, (
+            f"來源 IP 與 endpoint 在 2026-08 的政策下都是原樣顯示，"
+            f"應該可回送：{row['label']}")
+        assert len(row["keys"]) == len(ref.dims), (
+            "keys 的長度必須等於維度數，否則回送後組出的 WHERE 範圍更大，"
+            "數字會比那根長條大而且不會有任何錯誤")
+        # 這兩個維度都是原樣顯示，所以逐段串起來就是 label
+        assert " · ".join(row["keys"]) == row["label"]
+        for dim, value in zip(ref.dims, row["keys"]):
+            assert masking.echoable(dim.mask, value)
+
+
+def test_peer_keys_are_the_raw_values_not_the_named_labels():
+    """品牌與分店的 label 是「名稱（編號）」，但 `keys` 必須是**裸編號**。
+
+    回送 label 的話後端拿「wa10 瓦城（1180）」去比對 `toString(_brand)`
+    永遠 0 筆 —— 而畫面會顯示一個空的拆解面板，看起來像這個對象沒有活動。
+    """
+    result = _named_peers()
+    self_row = next((r for r in result["top"] if r["is_self"]), None)
+    assert self_row is not None, "本對象必須命中一列"
+    assert self_row["keys"] == [str(_NAMED["brand"]), str(_NAMED["store"])]
+    # 反向：label 確實已經解過名稱（兩者刻意不同）
+    assert self_row["keys"] != [self_row["label"]]
+    assert brands.label(_NAMED["brand"]) in self_row["label"]
+
+
+def test_breakdown_accounts_for_every_record_it_did_not_show():
+    """拆解的前 N 名加不到 100% 時，畫面要說得出剩下的去哪了。
+
+    `blank`（該維度是空字串的筆數）**一定要回**：不回的話「沒有帳號的那些筆」
+    會靜靜藏在分母裡，而佔比看起來只是「剛好不到 100%」。
+    這是這個專案一再警告的「把沒有資料說成沒有發生」的同一種錯。
+    """
+    ref = entity.from_filters("api", {"endpoint": "Api2/GetProfile"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.breakdown(ref, start, end)
+
+    assert out["total"] > 0, "這個時段這個 endpoint 沒有資料，換一個已知有量的"
+    # endpoint 已經是排序單位，所以不會出現在拆解裡
+    assert [d["field"] for d in out["dims"]] == ["actor", "brand", "store"]
+    assert out["note"] is None
+
+    for d in out["dims"]:
+        where = d["field"]
+        assert d["label"], f"{where} 少了顯示名稱"
+        assert len(d["rows"]) <= entity.BREAKDOWN_LIMIT
+        # 相異值個數不可能少於列出的名次 —— 反了就是母體與明細不同來源
+        assert d["groups"] >= len(d["rows"]), where
+        # 前 N 名 + 空值 不可能超過總數（前 N 名刻意排除空值那一組）
+        assert sum(r["count"] for r in d["rows"]) + d["blank"] <= out["total"], where
+        # 由高到低
+        assert [r["count"] for r in d["rows"]] == \
+            sorted((r["count"] for r in d["rows"]), reverse=True), where
+        for r in d["rows"]:
+            # 比例一律是小數（0..1）。回百分比的話前端的 pct() 會再乘 100
+            # ——實測 97.47 顯示成 9747.0%
+            assert 0 <= r["share"] <= 1, f"{where} 的 share 不是小數"
+            assert r["label"], f"{where} 有一列沒有標籤"
+            # 原始值不可以出現在拆解裡（這一層不再往下鑽，不需要它，
+            # 而 auth 的 actor 原始值是有效憑證）
+            assert "value" not in r, f"{where} 洩漏了原始值"
+
+
+def test_breakdown_says_so_when_there_is_nothing_left_to_split():
+    """四個維度全部被拿去排序時，回空清單 + 一句說明，不是一塊空白面板。"""
+    ref = entity.from_filters("api", {
+        "source_ip": "1.2.3.4", "endpoint": "Api2/GetProfile",
+        "actor": "andrew_c", "brand": "1180", "store": "27681"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.breakdown(ref, start, end)
+    assert out["dims"] == []
+    assert out["note"], "沒有可拆維度時必須說出原因"
+
+
+# --- 選中對象的兩個端點（拆解、趨勢）-----------------------------------------
+
+def _first_supported(client) -> tuple[dict, dict]:
+    """第一個「對象可追蹤」的事件與它的對象面板回應。"""
+    for e in _events(client):
+        p = client.get(f"/api/events/{e['evt_no']}/entity").json()
+        if p.get("supported"):
+            return e, p
+    pytest.skip("DB 裡沒有對象可追蹤的事件")
+
+
+def _picked(payload: dict) -> dict | None:
+    """母體排名裡第一個可回送的列。"""
+    return next((r for r in payload["peers"]["top"] if r["keys"]), None)
+
+
+def _vq(keys: list[str]) -> str:
+    return "&".join(f"v={quote(v, safe='')}" for v in keys)
+
+
+def test_breakdown_endpoint_defaults_to_the_events_own_object(client):
+    """`v` 省略 = 本事件的對象。
+
+    預設載入**不可以**依賴 `keys`：本事件的對象可能根本不在前 12 名裡，
+    那時前端手上沒有任何可回送的值。
+    """
+    e, p = _first_supported(client)
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["supported"] is True
+    assert d["is_self"] is True
+    assert d["label"] == p["label"], "預設對象必須就是面板標頭那一個"
+    # 與 peers 同一個區間、同一個對象，所以總數必須一致 —— 不一致就是兩邊的
+    # 視窗或條件漂移了，而那會讓左邊的長條與右邊的拆解對不起來
+    assert d["total"] == p["peers"]["own"]
+
+
+def test_breakdown_endpoint_follows_a_selected_peer(client):
+    """點母體排名的任一列 → 拆解跟著換對象。"""
+    e, p = _first_supported(client)
+    picked = _picked(p)
+    if picked is None:
+        pytest.skip("這個事件的母體沒有可回送的列（例如 auth 的 token 對象）")
+
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?{_vq(picked['keys'])}")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["label"] == picked["label"], "換了對象但標頭沒跟著換"
+    assert d["is_self"] is picked["is_self"]
+    # 拆解的總數必須等於那一列長條的長度，否則畫面上兩者對不起來
+    assert d["total"] == picked["count"]
+
+
+def test_breakdown_endpoint_rejects_a_wrong_number_of_values(client):
+    """`v` 的個數與維度數不符一律 400。
+
+    少一個維度就是在查一個**範圍更大**的對象 —— 數字會比那根長條大，
+    而且不會有任何錯誤訊息。
+    """
+    e, p = _first_supported(client)
+    n = len(p["dims"])
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?"
+                   + "&".join(["v=x"] * (n + 1)))
+    assert r.status_code == 400, r.text[:300]
+    if n > 1:
+        r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?v=x")
+        assert r.status_code == 400, r.text[:300]
+
+
+def test_breakdown_endpoint_404_for_unknown_event(client):
+    assert client.get("/api/events/EVT-9999/entity/breakdown").status_code == 404
+
+
+def test_trend_endpoint_defaults_to_the_events_own_object(client):
+    """趨勢預設畫本事件的對象，且錨點是事件的 last_seen 而不是現在。
+
+    用 `now()` 的話同一個事件在隔天會變成一張與它無關的圖，而且不會報錯 ——
+    所以右界必須貼著 `last_seen`（同一個桶內）。
+    """
+    e, p = _first_supported(client)
+    r = client.get(f"/api/events/{e['evt_no']}/entity/trend?minutes=1440")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["supported"] is True
+    assert d["is_self"] is True
+    assert d["label"] == p["label"]
+    assert len(d["rows"]) == 1440 // d["bucket_minutes"]
+    # 區間清單與「較慢」標註都由後端給，前端不列第二份
+    assert sorted(d["ranges"]) == sorted(entity_history.TREND_RANGES)
+    assert set(d["slow_ranges"]) <= set(d["ranges"]), \
+        "被標成較慢的區間必須真的是可選的區間，否則警語永遠不出現"
+
+    # 錨點貼著 last_seen（除非被夾到已落地的資料，那時要有 window_note）
+    last = timewin.parse(e["last_seen"])
+    anchor = timewin.parse(d["anchor"])
+    if not d["window_note"]:
+        gap = (anchor - last).total_seconds()
+        assert 0 < gap <= d["bucket_minutes"] * 60, \
+            f"錨點沒有貼著事件的 last_seen（差 {gap} 秒）"
+
+
+def test_trend_endpoint_rejects_a_range_outside_the_closed_set(client):
+    """`minutes` 是封閉集合，打錯一律 400。
+
+    靜靜挑一個分桶的話畫面會寫「最近 5 小時」而圖是別的長度 ——
+    「值不存在」與「這段時間沒有活動」必須分得開。
+    """
+    e, _ = _first_supported(client)
+    for bad in (300, 0, -60, 999999):
+        r = client.get(f"/api/events/{e['evt_no']}/entity/trend?minutes={bad}")
+        assert r.status_code == 400, f"minutes={bad} → {r.status_code}"
+
+
+def test_trend_endpoint_follows_a_selected_peer(client):
+    """點母體排名的任一列 → 趨勢跟著換對象。"""
+    e, p = _first_supported(client)
+    picked = _picked(p)
+    if picked is None:
+        pytest.skip("這個事件的母體沒有可回送的列")
+    r = client.get(f"/api/events/{e['evt_no']}/entity/trend"
+                   f"?minutes=60&{_vq(picked['keys'])}")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["label"] == picked["label"]
+    assert d["is_self"] is picked["is_self"]
+
+
+def test_token_peers_are_never_echoable(client):
+    """`auth` 的對象是 API token，母體排名的每一列都必須是 `keys: None`。
+
+    **這條刻意不依賴 DB 裡剛好有 auth 事件。** 本檔案原本用「掃前 8 個事件」
+    的方式驗這件事，而本機 DB 裡沒有 auth 對象的事件 —— 實測把
+    `masking.echoable()` 整個改成 `return True`（等於拆掉閘門），那個掃描
+    **照樣全綠**。一條永遠不會紅的反向測試就只是裝飾，而它守的正是
+    「主控台把不可逆的指紋還原成原始 token」。
+
+    這裡直接建一個 token 維度的 ref 來問 `peers()`，所以閘門被拆掉時一定會紅。
+    """
+    ref = entity.from_filters("auth", {"actor": "任何值都可以"})
+    assert ref is not None
+    assert [d.mask for d in ref.dims] == ["token"], \
+        "auth 的操作者必須是 token 種類，否則這條測試守不到東西"
+
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.peers(ref, start, end)
+    assert out["top"], "這個區間 auth 表應該有資料，換一個已知有量的區間"
+    for row in out["top"]:
+        assert row["keys"] is None, (
+            f"token 的原始值被回送了：{row['keys']} —— "
+            f"那是還有效的憑證，顯示等於任何有主控台讀取權的人都能冒用")
+        # 顯示值本身仍然是指紋（不是空的），排名才讀得懂是「幾個不同的憑證」
+        assert row["label"].startswith("token_"), row["label"]

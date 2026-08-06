@@ -3,7 +3,7 @@ import { api } from '../lib.js';
 
 const STEPS = [
   ['資料來源與保存範圍', [
-    '四個 ClickHouse 資料來源：Admin Log（ocard.ods_admin_log）、Backend System Log（ods_backend_sys_log）、API Log（ods_api_log）、Auth Log（ods_auth_log）。',
+    '五個 ClickHouse 資料來源：Admin Log（ocard.ods_admin_log）、Backend System Log（ods_backend_sys_log）、API Log（ods_api_log）、Auth Log（ods_auth_log）、Order Log（ods_order_api_log，2026-08 接入）。',
     '各來源的用途、資料起始日與敏感等級在「資料健康」頁逐一列出。',
     'Auth Log 為最高敏感等級，可能含 token 與登入 secret，僅提供遮罩摘要。',
   ], 'health'],

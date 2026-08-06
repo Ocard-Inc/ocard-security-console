@@ -10,6 +10,9 @@
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from console.core.config import settings
@@ -137,3 +140,56 @@ def test_meta_does_not_ship_a_field_nobody_renders():
 def test_endpoint_filter_meta_matches_filter_column():
     """有 endpoint 篩選的來源就要有標籤與範例，反之也不該有。"""
     assert set(explorer.ENDPOINT_FILTER_META) == set(explorer.FILTER_COLUMN)
+
+
+def test_frontend_endpoint_field_shows_a_reason_instead_of_vanishing():
+    """`unsupportedFilters.endpoint` 拿到原因卻不顯示（fix round 2，reviewer 抓到）。
+
+    `onSourceChange()` 只用 `unsupportedFilters.endpoint` 清值，template 判斷
+    endpoint 欄位要不要顯示看的是 `endpointLabel` —— 選 Auth Log 時整個輸入框
+    直接消失，而「Auth Log 不支援 endpoint 篩選（該表沒有對應欄位）」這句話
+    已經在前端手上，只是沒有渲染出來。帳號／來源 IP 兩欄都做對了
+    （`v-if="unsupportedFilters.X"` 顯示原因），endpoint 沒有。
+
+    這裡只驗證 template 原始碼裡「不支援時顯示原因」的結構存在，不驅動真的
+    Vue 渲染（這個專案沒有 JS 測試框架）。"""
+    src = (Path(__file__).resolve().parents[1] / "web" / "pages" / "explorer.js").read_text(
+        encoding="utf-8")
+    assert "unsupportedFilters.endpoint" in src, (
+        "explorer.js 的 template 沒有讀 unsupportedFilters.endpoint —— "
+        "endpoint 欄位在不支援時只會整個消失，沒有說明原因")
+    # 同 actor／source_ip 的做法：欄位在有 unsupported 原因時要有一個會顯示
+    # 那段文字的 v-if，不是只把值存起來卻沒有任何地方渲染。
+    assert re.search(r"v-if=\"[^\"]*unsupportedFilters\.endpoint[^\"]*\"", src), (
+        "explorer.js 讀到了 unsupportedFilters.endpoint，但沒有對應的 "
+        "v-if 條件把它渲染出來")
+
+
+def test_frontend_analyses_label_table_covers_every_backend_key():
+    """`web/pages/explorer.js` 的 `ANALYSES` 是後端 `explorer.ANALYSES` 的第二份字彙。
+
+    後端註解說「標籤留在前端是刻意的，標籤錯了是看得見的」——但這份測試補的
+    不是「標籤錯了」，是**標籤不存在**：後端加第九種分析並列進
+    `supported_analyses()`（假設加了新的 `_RANKING_DIMENSION` 或
+    `_API_ONLY_ANALYSES`），若忘了同步前端這份 dict，`availableAnalyses` 的
+    `ANALYSES.filter(a => ok.has(a.key))` 會把它濾掉 —— 那個分析永遠不會出現在
+    下拉選單裡，而畫面完全正常、沒有任何錯誤訊息。同時
+    `web/pages/event-detail.js` 的 `ANALYSIS_LABEL[analysis]` 對那個 key 回
+    `undefined`，drilldown 的「會用哪一種分析」提示條會直接渲染出字面上的
+    `undefined`。
+
+    這裡沒有 JS 測試框架，用讀檔 + regex 從原始碼抽出 key 是這個專案既有的做法
+    （見 `test_session_identity.py` 讀 `web/lib.js` / `web/app.js` 的先例）。
+    只驗證 key 的集合，不驗證標籤文字本身 —— 標籤內容錯了會被人看見，
+    key 集合對不上不會。
+    """
+    src = (Path(__file__).resolve().parents[1] / "web" / "pages" / "explorer.js").read_text(
+        encoding="utf-8")
+    m = re.search(r"export const ANALYSES = \[(.*?)\n\];", src, re.S)
+    assert m, "explorer.js 找不到 `export const ANALYSES = [...]` —— 是否被改名或搬走？"
+    frontend_keys = set(re.findall(r"key:\s*'([a-z_]+)'", m.group(1)))
+    assert frontend_keys == set(explorer.ANALYSES), (
+        f"web/pages/explorer.js 的 ANALYSES 缺少 {set(explorer.ANALYSES) - frontend_keys} 、"
+        f"多了 {frontend_keys - set(explorer.ANALYSES)}"
+        "——後端新增或移除分析方式時，前端這份標籤字彙沒有同步更新。"
+        "少掉的那個分析會從下拉選單靜靜消失，畫面不會有任何錯誤。")

@@ -84,8 +84,12 @@ data_sources:
     table: ods_order_api_log
 ```
 
-`sql_console.allowed_tables` 也要加 `ods_order_api_log` —— 那是**獨立的第二份白名單**，
-不是從 `data_sources` 推導的。
+`sql_console.allowed_tables` 也要加 `ods_order_api_log`，讓它跟 `data_sources` 的清單
+保持一致。**修正（final fix wave，2026-08-07）**：這裡原本寫「那是獨立的第二份白名單」，
+暗示它在保護什麼——事後查證 `grep -rn "sql_console" src/ web/` 完全沒有命中，
+`rules/loader._allowed_tables()` 讀的是 `data_sources` 不是這裡。這段設定目前**沒有任何
+消費端**，加或不加 `ods_order_api_log` 都不影響任何實際行為，只是保持設定檔內部一致。
+真正會生效的白名單是 `rules/loader._allowed_tables()`（見下表）。
 
 ### 加完之後自動正確的四處
 

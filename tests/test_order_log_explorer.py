@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from console.core import admins
 from console.queries import endpoint_suggest, explorer
 
 # Order Log 從 2026-01-01 起有資料，這個區間實測約 5 萬筆
@@ -138,6 +139,24 @@ def test_api_log_actor_also_gets_the_account_name():
     assert rows
     # api_log 的 _admin 有 0（非後台操作的一般 API 呼叫），那不是「查不到」
     assert all("account" in r for r in rows)
+
+
+def test_admin_zero_is_not_admin_not_unknown():
+    """`_admin = 0` 是「非後台操作」的哨兵值，排名不可以說成「查無帳號」。
+
+    2026-08-05 16:00–16:10 這個視窗實測有 14 筆 `_admin = 0`（排名第 96 名），
+    `limit=200` 才撈得到它 —— 這裡刻意撈大一點，不是為了排名本身，
+    是為了拿到那一列驗證 `account` 的說法。
+    """
+    f = explorer.ExplorerFilter(source="api", start="2026-08-05 16:00:00",
+                                end="2026-08-05 16:10:00", limit=10)
+    rows = explorer.ranking(f, "actor", limit=200)["rows"]
+    zero_rows = [r for r in rows if r["name"] == "0"]
+    assert zero_rows, "這個視窗實測有 _admin = 0 的請求，排名應該撈得到"
+    assert zero_rows[0]["account"] == explorer.NON_ADMIN_ACCOUNT
+    # 與明細（_mask_detail_row）的語意保持一致：0 從來不是一個「被刪掉的帳號」，
+    # 不可以有任何一列的 account 說成「查無帳號」。
+    assert all(r["account"] != admins.UNKNOWN_NAME for r in rows)
 
 
 def test_sources_without_numeric_actor_get_none():

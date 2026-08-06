@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Callable
 
 from console.core import brands, timewin
@@ -28,13 +28,22 @@ class Template:
     run: Callable
 
 
-def _win(params: dict, default_minutes: int = 60) -> tuple[str, str, object]:
+def _win(params: dict, default_minutes: int = 60) -> tuple[str, str, datetime]:
+    """回傳 (start 字串, end 字串, 基線取樣點)。
+
+    第三個元素**刻意不是視窗右界**，而是 `baseline.window_point()` 的中點 ——
+    基線的桶是整點小時，拿右界的小時去查對任何往回看的視窗都是錯的
+    （預設的 60 分鐘視窗在整點的 tick 上會查到下一小時，理由與實測症狀見
+    `rules/baseline.window_point()`）。這裡回中點是為了讓呼叫端**沒有**
+    window_end 的 datetime 可以誤用；需要右界字串的話用第二個元素。
+    """
     if params.get("start") and params.get("end"):
         s, e = timewin.parse(params["start"]), timewin.parse(params["end"])
     else:
         e = timewin.align_tick(timewin.effective_now())
         s = e - timedelta(minutes=default_minutes)
-    return timewin.fmt(s), timewin.fmt(e), e
+    at = baseline.window_point(e, (e - s).total_seconds() / 60)
+    return timewin.fmt(s), timewin.fmt(e), at
 
 
 def _result(columns, rows, interpretation, **extra):
@@ -42,7 +51,7 @@ def _result(columns, rows, interpretation, **extra):
 
 
 def _top_endpoints(p: dict) -> dict:
-    s, e, end_dt = _win(p)
+    s, e, at = _win(p)
     df = query(
         f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS cnt, uniq(_brand) AS brands,"
         f" {exprs.BRAND_MAP} AS brand_map"
@@ -50,8 +59,8 @@ def _top_endpoints(p: dict) -> dict:
         f" ORDER BY cnt DESC LIMIT 15", {"start": s, "end": e})
     rows = []
     for _, r in df.iterrows():
-        b = baseline.get(f"api_endpoint_60m:{r['endpoint']}", hour=end_dt.hour,
-                         day_class=baseline.day_class_of(end_dt))
+        b = baseline.get(f"api_endpoint_60m:{r['endpoint']}", hour=at.hour,
+                         day_class=baseline.day_class_of(at))
         rows.append({
             "endpoint": r["endpoint"], "count": int(r["cnt"]), "brands": int(r["brands"]),
             "brand_top": brands.breakdown(r["brand_map"]),
@@ -86,7 +95,8 @@ def _top_brands(p: dict) -> dict:
 
 
 def _top_sources(p: dict) -> dict:
-    s, e, end_dt = _win(p)
+    # 第三個元素用不到：api_src_60m 是跨對象的全域分布，沒有分小時
+    s, e, _ = _win(p)
     df = query(
         f"SELECT src, count() AS cnt, uniq(_brand) AS brands,"
         f" {exprs.BRAND_MAP} AS brand_map,"
@@ -244,7 +254,7 @@ def _post_login_api(p: dict) -> dict:
 
 
 def _cell_lookup(p: dict) -> dict:
-    s, e, end_dt = _win(p)
+    s, e, at = _win(p)
     df = query(
         f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS cnt, uniq(_brand) AS brands,"
         f" {exprs.BRAND_MAP} AS brand_map,"
@@ -253,8 +263,8 @@ def _cell_lookup(p: dict) -> dict:
         f" GROUP BY endpoint ORDER BY cnt DESC", {"start": s, "end": e})
     rows = []
     for _, r in df.iterrows():
-        b = baseline.get(f"api_endpoint_60m:{r['endpoint']}", hour=end_dt.hour,
-                         day_class=baseline.day_class_of(end_dt))
+        b = baseline.get(f"api_endpoint_60m:{r['endpoint']}", hour=at.hour,
+                         day_class=baseline.day_class_of(at))
         rows.append({"endpoint": r["endpoint"], "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
                      "brand_top": brands.breakdown(r["brand_map"]),
@@ -267,7 +277,7 @@ def _cell_lookup(p: dict) -> dict:
 
 
 def _orderlist_traversal(p: dict) -> dict:
-    s, e, end_dt = _win(p)
+    s, e, at = _win(p)
     df = query(
         f"SELECT {exprs.ROUTE2} AS route2, acc, count() AS cnt, uniq(_brand) AS brands,"
         f" {exprs.BRAND_MAP} AS brand_map,"
@@ -277,8 +287,8 @@ def _orderlist_traversal(p: dict) -> dict:
         f" GROUP BY route2, acc ORDER BY cnt DESC LIMIT 15", {"start": s, "end": e})
     rows = []
     for _, r in df.iterrows():
-        b = baseline.get(f"backend_route_60m:{r['route2']}", hour=end_dt.hour,
-                         day_class=baseline.day_class_of(end_dt))
+        b = baseline.get(f"backend_route_60m:{r['route2']}", hour=at.hour,
+                         day_class=baseline.day_class_of(at))
         cnt = int(r["cnt"])
         rows.append({"route": r["route2"], "actor": masking.actor(r["acc"]), "count": cnt,
                      "brands": int(r["brands"]),

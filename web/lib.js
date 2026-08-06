@@ -51,6 +51,47 @@ export async function api(path, options = {}) {
 export const post = (path, payload) =>
   api(path, { method: 'POST', body: JSON.stringify(payload || {}) });
 
+/**
+ * 「這個回應還是最新的嗎」——**每一支把回應寫進共用狀態的 async 載入函式都要用它。**
+ *
+ * 實測抓到的問題（2026-08-07）：Log Explorer 連續換分析方式時，`/api/explorer`
+ * 的回應**會亂序到達**（#7 送出較晚卻先回、#6 較早卻後回），而 `run()` 無條件
+ * 把每個回應寫進 `this.result` —— 最後落地的是**舊的那一個**。實測結束時畫面上
+ * 寫著「失敗／錯誤分析」，圖上卻是 endpoint 排名的 20 根長條。
+ *
+ * 使用者看到的症狀是**「圖有時候跑不出來，再切一次又出現」**：舊 payload 的形狀
+ * 與新分析對不上，`hasTrend` / `hasRanking` / `hasError` 全 false，整張圖連
+ * `.chart-frame` 都不存在（實測 6 次切換裡 2 次完全沒有圖）。再切一次通常沒有
+ * 亂序，於是又正常了 —— 這就是它為什麼看起來像「偶發」。
+ *
+ * 用法：
+ *
+ *     const token = this._gate.begin();
+ *     try {
+ *       const r = await post('/explorer', this.f);
+ *       if (this._gate.isStale(token)) return;   // 有更新的請求在飛，丟掉這個
+ *       this.result = r;
+ *     } catch (e) {
+ *       if (this._gate.isStale(token)) return;   // 錯誤也要擋，否則舊的失敗會
+ *       this.error = e.message;                  // 清掉新請求畫好的畫面
+ *     }
+ *
+ * **gate 要放在非響應式的地方**（`created()` 裡的 `this._gate = requestGate()`）：
+ * 它是流程控制，不是畫面狀態，進 `data()` 只會每次 begin() 都觸發重繪。
+ *
+ * **`catch` 也必須擋。** 只擋成功路徑的話，一個晚到的失敗會把 `result` 設成 null
+ * 而畫面上正好是新請求剛畫好的圖 —— 圖消失，而且沒有任何錯誤訊息可循。
+ */
+export function requestGate() {
+  // 從 1 開始，所以 token 永遠是 truthy —— 0 或 undefined 會讓「不知道哪來的
+  // token」被誤判成新鮮的，而那正是這個 gate 要擋的事。
+  let latest = 0;
+  return {
+    begin() { return ++latest; },
+    isStale(token) { return token !== latest; },
+  };
+}
+
 export function num(v, digits = 0) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
   return Number(v).toLocaleString('zh-TW', {

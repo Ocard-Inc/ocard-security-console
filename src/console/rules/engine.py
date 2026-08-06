@@ -132,6 +132,15 @@ def _sql_params(rule: Rule, start: str, end: str) -> dict:
     return params
 
 
+def _baseline_at(rule: Rule, window_end: datetime) -> datetime:
+    """這條規則在這個 tick 該查哪一小時的基線。
+
+    **不是 window_end** —— 視窗是 `[window_end - window_minutes, window_end)`，
+    往回看的。理由與實測症狀見 `baseline.window_point()`。
+    """
+    return baseline.window_point(window_end, rule.window_minutes)
+
+
 def _resolve_threshold(rule: Rule, row: dict, window_end: datetime):
     t = rule.threshold
     if t is None:
@@ -139,8 +148,9 @@ def _resolve_threshold(rule: Rule, row: dict, window_end: datetime):
     key = t.baseline_key
     if key and "{" in key:
         key = key.format(**{k: row.get(k) for k in row})
-    base = baseline.get(key, hour=window_end.hour,
-                        day_class=baseline.day_class_of(window_end)) if key else None
+    at = _baseline_at(rule, window_end)
+    base = baseline.get(key, hour=at.hour,
+                        day_class=baseline.day_class_of(at)) if key else None
     dynamic = 0.0
     if base is not None:
         dynamic = getattr(base, t.stat) * t.factor
