@@ -248,7 +248,10 @@ def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
         clauses.append(f"{_ENTITY_FILTER[field][f.source]} = %({field})s")
         params[field] = str(value).strip()
     if f.only_error and f.source == "api":
-        clauses.append("has_error = 1")
+        # **一律走 exprs 的唯一真相。** has_error 在 2026-08-05 重建後是
+        # Nullable(String)，寫死 `= 1` 會讓 ClickHouse 拋 code 386 而整個查詢 502
+        # —— 畫面上是「查詢失敗」而不是圖。
+        clauses.append(exprs.API_HAS_ERROR)
     return f"FROM {table} WHERE " + " AND ".join(clauses), params
 
 
@@ -408,7 +411,7 @@ def error_analysis(f: ExplorerFilter) -> dict:
     where, params = where_clause(f)
     df = query(
         f"SELECT {exprs.ENDPOINT} AS endpoint, count() AS total,"
-        f" countIf(has_error = 1) AS errors {where} GROUP BY endpoint"
+        f" countIf({exprs.API_HAS_ERROR}) AS errors {where} GROUP BY endpoint"
         f" HAVING errors > 0 ORDER BY errors DESC LIMIT 20", params)
     return {"rows": [
         {"endpoint": r["endpoint"], "total": int(r["total"]), "errors": int(r["errors"]),
@@ -484,7 +487,10 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             # api_log 沒有 acc 欄位，操作者以 _admin 識別（同 GROUP_BY 的做法）。
             # 0 代表非後台操作（一般 API 呼叫），不是「查不到」。
             "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
-            "result": "錯誤" if r.get("has_error") == 1 else "成功",
+            # **與 SQL 同一個定義（非 NULL = 有錯誤）。** 值是字串 `'1'`，
+            # 跟整數 1 比永遠 False —— 那個版本不會報錯，只會讓每一筆都顯示
+            # 「成功」，包括真正出錯的那些。
+            "result": "錯誤" if r.get("has_error") is not None else "成功",
             "params": masking.payload_summary(r.get("params")),
             "resource": masking.resource(r.get("order_number")),
         })
