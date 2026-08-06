@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import pytest
 
 from console.core import brands, masking, stores, timewin
@@ -506,3 +508,77 @@ def test_breakdown_says_so_when_there_is_nothing_left_to_split():
     out = entity.breakdown(ref, start, end)
     assert out["dims"] == []
     assert out["note"], "沒有可拆維度時必須說出原因"
+
+
+# --- 選中對象的兩個端點（拆解、趨勢）-----------------------------------------
+
+def _first_supported(client) -> tuple[dict, dict]:
+    """第一個「對象可追蹤」的事件與它的對象面板回應。"""
+    for e in _events(client):
+        p = client.get(f"/api/events/{e['evt_no']}/entity").json()
+        if p.get("supported"):
+            return e, p
+    pytest.skip("DB 裡沒有對象可追蹤的事件")
+
+
+def _picked(payload: dict) -> dict | None:
+    """母體排名裡第一個可回送的列。"""
+    return next((r for r in payload["peers"]["top"] if r["keys"]), None)
+
+
+def _vq(keys: list[str]) -> str:
+    return "&".join(f"v={quote(v, safe='')}" for v in keys)
+
+
+def test_breakdown_endpoint_defaults_to_the_events_own_object(client):
+    """`v` 省略 = 本事件的對象。
+
+    預設載入**不可以**依賴 `keys`：本事件的對象可能根本不在前 12 名裡，
+    那時前端手上沒有任何可回送的值。
+    """
+    e, p = _first_supported(client)
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["supported"] is True
+    assert d["is_self"] is True
+    assert d["label"] == p["label"], "預設對象必須就是面板標頭那一個"
+    # 與 peers 同一個區間、同一個對象，所以總數必須一致 —— 不一致就是兩邊的
+    # 視窗或條件漂移了，而那會讓左邊的長條與右邊的拆解對不起來
+    assert d["total"] == p["peers"]["own"]
+
+
+def test_breakdown_endpoint_follows_a_selected_peer(client):
+    """點母體排名的任一列 → 拆解跟著換對象。"""
+    e, p = _first_supported(client)
+    picked = _picked(p)
+    if picked is None:
+        pytest.skip("這個事件的母體沒有可回送的列（例如 auth 的 token 對象）")
+
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?{_vq(picked['keys'])}")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["label"] == picked["label"], "換了對象但標頭沒跟著換"
+    assert d["is_self"] is picked["is_self"]
+    # 拆解的總數必須等於那一列長條的長度，否則畫面上兩者對不起來
+    assert d["total"] == picked["count"]
+
+
+def test_breakdown_endpoint_rejects_a_wrong_number_of_values(client):
+    """`v` 的個數與維度數不符一律 400。
+
+    少一個維度就是在查一個**範圍更大**的對象 —— 數字會比那根長條大，
+    而且不會有任何錯誤訊息。
+    """
+    e, p = _first_supported(client)
+    n = len(p["dims"])
+    r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?"
+                   + "&".join(["v=x"] * (n + 1)))
+    assert r.status_code == 400, r.text[:300]
+    if n > 1:
+        r = client.get(f"/api/events/{e['evt_no']}/entity/breakdown?v=x")
+        assert r.status_code == 400, r.text[:300]
+
+
+def test_breakdown_endpoint_404_for_unknown_event(client):
+    assert client.get("/api/events/EVT-9999/entity/breakdown").status_code == 404
