@@ -31,6 +31,8 @@ export default {
     selected: null,
     // 右欄的趨勢
     trendMinutes: 1440, trend: null, trendLoading: false, trendError: null,
+    // 拆解列（選中對象的四個維度組成）
+    parts: null, partsLoading: false, partsError: null,
   }),
   computed: {
     ok() { return !!this.d?.supported; },
@@ -228,6 +230,22 @@ export default {
       return `etrend|${this.evtNo}|${this.trendMinutes}|${this.trendRows.length}`;
     },
 
+    // ── B3. 拆解列：前 N 名沒蓋到的部分 ───────────────────────────────────
+    // `blank` 是「這個維度的值是空字串」的筆數 —— 不說出來的話那些筆會靜靜
+    // 藏在分母裡，而佔比看起來只是「剛好不到 100%」。
+    partRest() {
+      const total = this.parts?.total || 0;
+      return dim => {
+        const shown = dim.rows.reduce((s, r) => s + r.count, 0);
+        return {
+          shown,
+          rest: Math.max(total - shown - dim.blank, 0),
+          blank: dim.blank,
+          more: Math.max(dim.groups - dim.rows.length, 0),
+        };
+      };
+    },
+
     // ── C. 24 小時作息 ────────────────────────────────────────────────────
     profileRows() {
       return (this.profile?.rows || []).map(r => ({
@@ -319,6 +337,7 @@ export default {
         rank: index + 1, isSelf: !!row.is_self, inTop: true,
       };
       this.loadTrend();
+      this.loadParts();
     },
     /**
      * 載入右欄的趨勢。快取鍵是 (對象, 區間) —— 點回上一個對象或切回上一個區間
@@ -347,6 +366,59 @@ export default {
       }
       this.trendLoading = false;
     },
+    /** 載入選中對象的維度拆解。快取鍵只有對象 —— 它刻意不吃區間。 */
+    async loadParts() {
+      const keys = this.focus.keys;
+      const cacheKey = this.peerKey(keys);
+      if (this._partsCache.has(cacheKey)) {
+        this.parts = this._partsCache.get(cacheKey);
+        this.syncPartRows();
+        return;
+      }
+      this.partsLoading = true;
+      this.partsError = null;
+      const qs = keys.map(v => `v=${encodeURIComponent(v)}`).join('&');
+      try {
+        const d = await api(
+          `/events/${this.evtNo}/entity/breakdown${qs ? '?' + qs : ''}`);
+        this._partsCache.set(cacheKey, d);
+        this.parts = d;
+        this.syncPartRows();
+      } catch (err) {
+        this.partsError = err.message;
+        this.parts = null;
+      }
+      this.partsLoading = false;
+    },
+    /**
+     * tooltip 讀的非響應式持有者，**逐維度一份**（見 ApexChart.js 的契約）。
+     * 四張圖共用一份的話 tooltip 會互相蓋掉，而畫面上只是「數字怪怪的」。
+     */
+    syncPartRows() {
+      for (const dim of (this.parts?.dims || [])) {
+        this._partRows[dim.field] = { current: dim.rows };
+      }
+    },
+    partSeries(dim) {
+      const bar = token('--chart-bar');
+      return [{
+        name: dim.label,
+        data: dim.rows.map(r => ({ x: r.label, y: r.count, fillColor: bar })),
+      }];
+    },
+    partOptions(dim) {
+      const bar = token('--chart-bar');
+      const rowsRef = (this._partRows[dim.field] ||= { current: [] });
+      return horizontalBarOptions({
+        rowsRef,
+        tooltipTitle: row => row.label,
+        tooltipRows: row => [
+          { name: '次數', value: num(row.count), color: bar },
+          { name: '佔本對象', value: pct(row.share, 2), muted: true },
+        ],
+      });
+    },
+    partHeight(dim) { return barHeight(dim.rows.length); },
     /** `<select>` 的 change：值是列索引字串。 */
     pickPeer(value) { this.selectPeer(Number(value)); },
     async load() {
@@ -358,7 +430,7 @@ export default {
         this._profileRows.current = this.profileRows;
         this._shareRows.current = this.shareRows;
         // 右欄的預設對象是本事件的對象，這裡才拿得到它的 label 與排名
-        if (this.ok) this.loadTrend();
+        if (this.ok) { this.loadTrend(); this.loadParts(); }
       } catch (err) { this.error = err.message; }
       this.loading = false;
     },
@@ -368,8 +440,10 @@ export default {
     this._profileRows = { current: [] };
     this._shareRows = { current: [] };
     this._trendRows = { current: [] };
+    this._partRows = {};
     // 快取刻意放在非響應式的地方：它是效能的東西，不需要觸發重繪。
     this._trendCache = new Map();
+    this._partsCache = new Map();
   },
   mounted() { this.load(); },
   watch: {
@@ -378,7 +452,10 @@ export default {
     evtNo() {
       this.selected = null;
       this.trend = null;
+      this.parts = null;
       this._trendCache.clear();
+      this._partsCache.clear();
+      this._partRows = {};
       this.load();
     },
     trendMinutes() { this.loadTrend(); },
@@ -528,6 +605,47 @@ export default {
             <div v-if="trend.window_note" class="banner banner-warn"
                  style="font-size:11.5px;margin-top:6px">{{ trend.window_note }}</div>
           </template>
+        </div>
+      </div>
+
+      <!-- 拆解列。橫跨兩欄，四張小橫條圖並排。
+           區間**與左欄完全相同**（規則的 window_minutes），所以左邊那根長條的
+           長度等於這裡各維度 rows 的總和 + blank —— 這個對帳關係就是拆解刻意
+           不吃區間參數的理由。 -->
+      <div v-if="partsError" class="banner banner-danger"
+           style="font-size:12px;margin-top:14px">拆解載入失敗：{{ partsError }}</div>
+      <div v-else-if="partsLoading && !parts" class="skel"
+           style="height:160px;margin-top:14px"></div>
+      <div v-else-if="parts && parts.supported"
+           style="border-top:1px solid var(--line-soft);margin-top:14px;padding-top:12px">
+        <div class="card-h" style="margin-bottom:2px">
+          這個對象的組成
+          <span class="muted" style="font-weight:400;font-size:12px">
+            {{ parts.window_start }} ~ {{ parts.window_end }} · 共
+            {{ num(parts.total) }} 筆</span>
+        </div>
+        <div v-if="parts.note" class="muted" style="font-size:12px">{{ parts.note }}</div>
+        <div v-else
+             style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:8px">
+          <div v-for="dim in parts.dims" :key="dim.field">
+            <div style="font-size:12.5px;font-weight:500">
+              {{ dim.label }}
+              <span class="muted" style="font-weight:400">共 {{ num(dim.groups) }} 個</span>
+            </div>
+            <ApexChart :series="partSeries(dim)" :options="partOptions(dim)"
+                       :signature="'part|'+evtNo+'|'+dim.field+'|'+dim.rows.length"
+                       :height="partHeight(dim)"
+                       :aria-label="'這個對象在此區間的 ' + dim.label + ' 分布前幾名'"/>
+            <!-- 前 N 名加不到 100% 時要說得出剩下的去哪了。 -->
+            <div class="muted" style="font-size:11px;line-height:1.6">
+              <template v-if="partRest(dim).more">
+                另有 {{ num(partRest(dim).more) }} 個未列出（{{ num(partRest(dim).rest) }} 筆）。
+              </template>
+              <template v-if="partRest(dim).blank">
+                其中 <b>{{ num(partRest(dim).blank) }}</b> 筆沒有{{ dim.label }}值。
+              </template>
+            </div>
+          </div>
         </div>
       </div>
     </div>
