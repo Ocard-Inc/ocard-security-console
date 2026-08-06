@@ -48,7 +48,8 @@
 | `config/settings.yaml` | `data_sources.order`、`sql_console.allowed_tables` |
 | `src/console/core/masking.py` | `_SENSITIVE_KEY_RE` 加 `auth` 鍵 |
 | `src/console/queries/health.py` | `_MISSING_EXPR`、`_NOTES` 加 order |
-| `src/console/queries/explorer.py` | `GROUP_BY` 四維度、`FILTER_COLUMN`、`SUGGEST_EXPR`、`_DETAIL_COLUMNS`、`_PAYLOAD_COLUMNS`、`_mask_detail_row`、`_ENTITY_FILTER_UNSUPPORTED`、新增 `ANALYSES`／`supported_analyses()`／`ENDPOINT_FILTER_META`／`SOURCE_LIMITS`／`source_meta()`、`ranking()` 與 `detail()` 接帳號名 |
+| `src/console/queries/explorer.py` | `GROUP_BY` 四維度、`FILTER_COLUMN`、`SUGGEST_EXPR`、`_DETAIL_COLUMNS`、`_PAYLOAD_COLUMNS`、`_mask_detail_row`、`_ENTITY_FILTER_UNSUPPORTED`、新增 `ANALYSES`／`supported_analyses()`／`ENDPOINT_FILTER_META`／`source_meta()`、`ranking()` 與 `detail()` 接帳號名（**`SOURCE_LIMITS` 已取消**，見 Task 6 的計畫修訂） |
+| `web/pages/explorer.js` | 移除最右側「欄位說明與資料限制」欄（已完成，`4365a8e`）、改讀 meta、明細顯示帳號名 |
 | `src/console/queries/trends.py` | `request_trend()` 加 order 序列與 `baseline_keys` |
 | `src/console/api/routes.py` | `_LIMITATIONS_BY_SOURCE` 抽成模組常數並加 order、新增 `GET /explorer/meta` |
 | `web/lib.js` | `SOURCE_LABEL.order` |
@@ -1287,13 +1288,45 @@ git commit -m "feat: Explorer 的排名與明細顯示 _admin 對應的後台帳
 
 ---
 
-## Task 6: `GET /api/explorer/meta` —— 把三份來源字彙搬到後端
+## Task 6: `GET /api/explorer/meta` —— 把來源字彙搬到後端
 
-`web/pages/explorer.js` 目前有三份寫死的來源字彙：來源下拉（376 行）、`LIMITS`（52 行）、`ANALYSES`（41 行，**不分來源全部列出**）。第三個是這次會出事的：Order Log 選「來源排名」必然回 400，而畫面上那個選項看起來是正常功能。同一個 bug 現在就存在（backend 選「Unique resource 分析」也是 400），加第五張表會讓它從邊角變成日常。
+> ## ⚠️ 計畫修訂（2026-08-07，使用者要求後由 controller 裁決）
+>
+> 使用者要求**移除 Log Explorer 最右側的「欄位說明與資料限制」欄**，已完成
+> （commit `4365a8e`，三區版面 → 兩區）。那一欄正是 `LIMITS` 唯一的渲染處。
+>
+> **因此這個 task 不再做 `SOURCE_LIMITS`。** 原設計是把前端的 `LIMITS` 搬到後端
+> 成為 `explorer.SOURCE_LIMITS` 並經 meta 供給前端 —— 現在沒有任何地方渲染它，
+> 做了就是一個沒人讀的後端欄位，那與這個計畫「不要留沒有消費端的字彙」的主張
+> 自相矛盾。
+>
+> 它的內容都已經有更好的去處，一項都沒有消失：
+>
+> | 原本 `LIMITS` 承載的資訊 | 現在在哪 |
+> |---|---|
+> | 「這個來源不支援某個篩選、為什麼」 | `unsupported_filters`（本 task），顯示在**那個篩選欄位旁邊** —— 使用者被擋住的地方 |
+> | 事件詳細頁的資料限制 | `routes._LIMITATIONS_BY_SOURCE`（Task 2 已完成） |
+> | 資料來源健康卡的說明 | `health._NOTES`（Task 2 已完成） |
+> | 遮罩政策（帳號原樣／token 指紋／原文走調閱） | `detail()` 回的 `masked_note`，渲染在明細表格下方（既有） |
+>
+> **本 task 的四項實際改動**（原為五項）：
+> 1. `explorer.ANALYSES`／`_RANKING_DIMENSION`／`supported_analyses()`／`ENDPOINT_FILTER_META`／`source_meta()`
+> 2. `GET /api/explorer/meta`
+> 3. 前端改讀 meta（來源下拉 + 分析下拉 + endpoint 欄位標籤 + 不支援篩選的原因）
+> 4. **順帶修掉三處指向不存在符號的註解**（見 Step 3 末尾）—— Task 2 寫下它們時
+>    `SOURCE_LIMITS` 還在計畫裡，現在不會存在了，留著會讓人 grep 不到定義而
+>    以為漏了東西。
+>
+> **前端的 `LIMITS` 常數與 `limits()` computed 已於 `4365a8e` 一併刪除**，
+> 所以下面 Step 6 的「① 刪掉 `LIMITS`」已經是完成狀態 —— 該步驟只剩「建立
+> `FALLBACK_SOURCES` 降級常數」，而它**不含 `limits` 鍵**。
+
+`web/pages/explorer.js` 原本有三份寫死的來源字彙：來源下拉（376 行）、`LIMITS`（52 行，**已於 `4365a8e` 刪除**）、`ANALYSES`（41 行，**不分來源全部列出**）。第三個是這次會出事的：Order Log 選「來源排名」必然回 400，而畫面上那個選項看起來是正常功能。同一個 bug 現在就存在（backend 選「Unique resource 分析」也是 400），加第五張表會讓它從邊角變成日常。
 
 **Files:**
-- Modify: `src/console/queries/explorer.py`（新增 `ANALYSES`、`_RANKING_DIMENSION`、`supported_analyses()`、`ENDPOINT_FILTER_META`、`SOURCE_LIMITS`、`source_meta()`）
-- Modify: `src/console/api/routes.py`（新增 `GET /explorer/meta`）
+- Modify: `src/console/queries/explorer.py`（新增 `ANALYSES`、`_RANKING_DIMENSION`、`supported_analyses()`、`ENDPOINT_FILTER_META`、`source_meta()`；修一處註解）
+- Modify: `src/console/api/routes.py`（新增 `GET /explorer/meta`；修兩處註解）
+- Modify: `src/console/queries/health.py`（修一處註解）
 - Create: `tests/test_explorer_source_meta.py`
 - Modify: `web/pages/explorer.js`、`web/lib.js`
 
@@ -1302,9 +1335,8 @@ git commit -m "feat: Explorer 的排名與明細顯示 _admin 對應的後台帳
 - Produces:
   - `explorer.ANALYSES: tuple[str, ...]` —— 全部分析方式的 key，順序即前端下拉的順序
   - `explorer.supported_analyses(source: str) -> list[str]`
-  - `explorer.SOURCE_LIMITS: dict[str, list[str]]`
   - `explorer.ENDPOINT_FILTER_META: dict[str, tuple[str, str]]` —— `{來源: (欄位標籤, 範例值)}`
-  - `explorer.source_meta() -> list[dict]` —— 每個 dict 有 `key` / `label` / `sensitive` / `analyses` / `limits` / `endpoint_label` / `endpoint_placeholder` / `unsupported_filters`
+  - `explorer.source_meta() -> list[dict]` —— 每個 dict 有 `key` / `label` / `sensitive` / `analyses` / `endpoint_label` / `endpoint_placeholder` / `unsupported_filters`（**沒有 `limits`**）
   - `GET /api/explorer/meta` → `{"sources": [...]}`
 
 - [ ] **Step 1: 寫失敗的測試**
@@ -1404,12 +1436,20 @@ def test_unsupported_filters_carry_a_reason(client):
                 f"{s['key']} 的 {field} 不支援但沒說原因：{reason!r}")
 
 
-@pytest.mark.parametrize("source", SOURCES)
-def test_every_source_has_limits(source):
-    """每張表都有自己的資料限制要講。空清單代表「這張表沒有任何限制」，
-    那對五張表沒有一張是真的。"""
-    assert explorer.SOURCE_LIMITS.get(source), (
-        f"explorer.SOURCE_LIMITS 少了 {source}")
+def test_meta_does_not_ship_a_field_nobody_renders():
+    """meta 不可以帶 `limits` —— 渲染它的那一欄已於 4365a8e 移除。
+
+    這則測試是反向的：它防的不是「漏了欄位」，而是**有人把一個沒有消費端的
+    欄位加回來**。那正是這個 task 要消滅的形狀（前端與後端各留一份、其中一份
+    沒人讀、然後兩份慢慢不一致）。
+    """
+    for s in explorer.source_meta():
+        assert "limits" not in s, (
+            f"{s['key']} 的 meta 帶了 limits，但沒有任何地方渲染它。"
+            "逐來源的限制說明已分散到 unsupported_filters（本 task）、"
+            "routes._LIMITATIONS_BY_SOURCE（事件詳細頁）與 health._NOTES（健康卡）。")
+    assert not hasattr(explorer, "SOURCE_LIMITS"), (
+        "explorer.SOURCE_LIMITS 不該存在（見 Task 6 的計畫修訂）")
 
 
 def test_endpoint_filter_meta_matches_filter_column():
@@ -1483,37 +1523,21 @@ ENDPOINT_FILTER_META = {
     "order": ("URL 前綴", "v1/order/active/deny"),
 }
 
-# 每個來源的資料限制，渲染在 Explorer 該來源的區塊底下。
+# **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
+# 搬到這裡，但渲染它的那一欄（Log Explorer 最右側的「欄位說明與資料限制」）
+# 已於 2026-08-07 移除（commit 4365a8e，使用者要求）。加一個沒有消費端的欄位
+# 正是這個模組要消滅的形狀 —— 前端與後端各留一份、其中一份沒人讀、
+# 然後兩份慢慢不一致。
 #
-# 原本這份清單寫在 `web/pages/explorer.js` 的 `LIMITS`。搬過來的理由與
-# `supported_analyses()` 相同：加一張表時前端那一份不會有人記得改，
-# 而「少一段限制說明」是靜靜發生的。
+# 那些資訊沒有消失，只是各自去了更好的地方：
+#   - 「這個來源不支援某個篩選、為什麼」→ 下面的 `unsupported_filters`，
+#     顯示在**那個篩選欄位旁邊**（使用者被擋住的地方，不是側欄）
+#   - 事件詳細頁的資料限制 → `api/routes._LIMITATIONS_BY_SOURCE`
+#   - 資料來源健康卡的說明 → `queries/health._NOTES`
+#   - 遮罩政策 → `detail()` 回的 `masked_note`，渲染在明細表格下方
 #
-# 與 `api/routes._LIMITATIONS_BY_SOURCE` 是**兩份，刻意不合併** ——
-# 那一份渲染在事件詳細頁（沒有來源標頭，每句自帶表名），這一份渲染在
-# 該來源的區塊底下（表名已在上方）。合併之後一邊的文案一定會變成謊話。
-SOURCE_LIMITS = {
-    "api": ["來源 IP：多數由 forwarded header 推導，標示為「未驗證來源」，"
-            "不可作為單 IP 判斷依據。",
-            "params：大量非合法 JSON，預設只呈現大小與欄位名稱；原文請用「調閱原文」。",
-            "has_error 僅在請求出錯時設值，NULL 屬正常。"],
-    "backend": ["歷史資料可能重複，已以事件 ID（_id）去重。",
-                "route 含動態段（如 orderlist/detail/<id>），聚合時取前 2 段。"],
-    "admin": ["部分登入紀錄沒有 IP，顯示「來源 IP 不可用」。",
-              "登入事件以帳號（acc）識別，操作事件以 _admin 識別，兩者不重疊。"],
-    "auth": ["token 是有效憑證，一律以 token_ 指紋呈現（顯示原值等於可被冒用）。",
-             "action 欄位在實測期間只有單一值 auth，無法區分認證成功與失敗。"],
-    # 純文字，不用 markdown —— 前端把 limits 當文字渲染，`**` 會原樣顯示出來。
-    "order": ["沒有 ip 也沒有 headers 欄位，因此完全沒有來源 IP —— "
-              "任何「單一來源」的判斷對這張表都不成立，"
-              "來源排名與依 IP 反查因此不提供。",
-              "沒有 status／error 欄位，無法區分成功與失敗的操作。",
-              "操作者是 _admin，實測全部是 POS 或串接金鑰帳號 —— "
-              "它代表哪一支整合程式，不是哪個人。",
-              "歷史資料可能重複（實測 3.2%），已以事件 ID（_id）去重後顯示。",
-              "params 內含 auth session 憑證，預設只呈現大小與欄位名稱；"
-              "原文請用「調閱原文」（會寫入操作稽核）。"],
-}
+# `tests/test_explorer_source_meta.py::test_meta_does_not_ship_a_field_nobody_renders`
+# 反向守著這件事。
 
 # Explorer 篩選器實際提供的欄位。`source_meta()` 逐一問 `filter_support()`，
 # 前端據此隱藏欄位並說明原因。
@@ -1535,7 +1559,6 @@ def source_meta() -> list[dict]:
             "label": src["label"],
             "sensitive": bool(src.get("sensitive")),
             "analyses": supported_analyses(key),
-            "limits": list(SOURCE_LIMITS.get(key, [])),
             "endpoint_label": endpoint_meta[0] if endpoint_meta else None,
             "endpoint_placeholder": endpoint_meta[1] if endpoint_meta else None,
             # 欄位 → 為什麼不支援。前端據此隱藏那個輸入框並顯示原因，
@@ -1574,7 +1597,7 @@ Expected: 全部 PASS。
 
 `test_every_unlisted_analysis_really_cannot_run` 若對某個組合失敗（沒列但其實跑得起來），那是 `supported_analyses()` 太保守 —— **修 `supported_analyses()`，不要放寬測試**。反之若 `test_every_listed_analysis_actually_runs` 失敗，那是列了一個跑不起來的。
 
-- [ ] **Step 6: 前端改讀 meta，刪掉三份字彙**
+- [ ] **Step 6: 前端改讀 meta，刪掉剩下的兩份字彙**
 
 `web/lib.js:100-103`，`SOURCE_LABEL` 加一項（它仍被事件清單的篩選器等處使用）：
 
@@ -1587,20 +1610,23 @@ export const SOURCE_LABEL = {
 
 `web/pages/explorer.js`：
 
-**① 刪掉 `LIMITS`**（52-63 行整段），改成降級常數：
+**① 加降級常數。**（`LIMITS` 常數本身**已於 `4365a8e` 刪除**，不必再刪。）
 
 ```js
 // 後端舊版（沒有 GET /api/explorer/meta）時的降級值。**這不是真相** ——
 // 真相是那個端點。前端是 no-store、重新整理就生效，而 Python 要重啟
-// （scripts/restart_server.ps1 沒有 --reload），所以「前端新、後端舊」是
-// 每次改動的必經中間狀態。
+// （沒有 --reload），所以「前端新、後端舊」是每次改動的必經中間狀態。
 //
-// 降級成「四個來源、全部分析、沒有限制說明」—— 與改動前的行為完全一樣。
-// 少了限制說明與 endpoint 欄位標籤，但頁面完全可用。
+// 降級成「四個來源、全部分析」—— 與改動前的行為完全一樣。少了 endpoint 欄位
+// 標籤與「不支援某個篩選」的說明，但頁面完全可用。
 // **不可以降級成空清單**：那會讓整個資料來源下拉消失，看起來像整頁壞了。
+//
+// 這裡刻意寫死四個而不是五個：它代表的是「後端還沒有 meta 端點」那個舊世界，
+// 而那個舊世界裡沒有 Order Log。寫五個會宣稱一個舊後端給不出來的來源，
+// 使用者選了它只會得到 400。
 const FALLBACK_SOURCES = ['api', 'backend', 'admin', 'auth'].map(key => ({
   key, label: SOURCE_LABEL[key], sensitive: key === 'auth',
-  analyses: ANALYSES.map(a => a.key), limits: [],
+  analyses: ANALYSES.map(a => a.key),
   endpoint_label: null, endpoint_placeholder: null, unsupported_filters: {},
 }));
 ```
@@ -1611,7 +1637,7 @@ const FALLBACK_SOURCES = ['api', 'backend', 'admin', 'auth'].map(key => ({
       sourceMeta: null,      // GET /api/explorer/meta 的 sources；null = 還沒載到
 ```
 
-**③ 新增 computed，取代 `endpointLabel` / `endpointPlaceholder` / `limits`：**
+**③ 新增 computed，取代 `endpointLabel` / `endpointPlaceholder`：**
 
 ```js
     sources() { return this.sourceMeta || FALLBACK_SOURCES; },
@@ -1625,14 +1651,21 @@ const FALLBACK_SOURCES = ['api', 'backend', 'admin', 'auth'].map(key => ({
       const ok = new Set(this.currentSource?.analyses || []);
       return ANALYSES.filter(a => ok.has(a.key));
     },
-    limits() { return this.currentSource?.limits || []; },
     endpointLabel() { return this.currentSource?.endpoint_label || ''; },
     endpointPlaceholder() { return this.currentSource?.endpoint_placeholder || ''; },
     // 欄位 → 不支援的原因。有值就隱藏那個輸入框並顯示原因。
     unsupportedFilters() { return this.currentSource?.unsupported_filters || {}; },
 ```
 
-把原本的 `endpointLabel()` / `endpointPlaceholder()`（各一個寫死的三來源物件）與 `limits()` 整個刪掉。
+把原本的 `endpointLabel()` / `endpointPlaceholder()`（各一個寫死的三來源物件）整個刪掉。（`limits()` computed 已於 `4365a8e` 一併刪除。）
+
+**⑤ 順帶修掉三處指向不存在符號的註解。** Task 2 寫下它們時 `explorer.SOURCE_LIMITS` 還在計畫裡，現在不會存在了 —— 留著會讓人 grep 不到定義而以為漏了東西：
+
+```bash
+grep -rn "SOURCE_LIMITS" src/
+```
+
+預期命中三個檔案（`queries/health.py`、`api/routes.py` 兩處、`queries/explorer.py`）。每一處都把「`explorer.SOURCE_LIMITS`」換成該資訊實際所在的位置：**Explorer 的 `unsupported_filters`（`source_meta()` 產生）**。不要只是刪掉那個符號名 —— 那幾句話的作用是「這件事在四個地方各說一次」，要指到真正說它的那個地方。
 
 **④ `mounted()` 載 meta。** 現有的 `mounted()` 是同步的、而且**有一個 early return**（`applyDrilldown()` 成功時就不套預設區間）—— meta 必須在那個 return 之前拿到，否則從事件跳過來的那條路徑會拿不到 meta。整段換成：
 
@@ -2022,9 +2055,10 @@ Expected: 正常印出統計、沒有 traceback。
 
 **Order Log（`ods_order_api_log`）沒有來源 IP，這不是「還沒做」。**
 它沒有 `ip` 也沒有 `headers`，所以來源排名、依 IP 反查、`entity_extent`
-對它都不成立。四個地方各說一次原因（`health._NOTES`、
-`explorer.SOURCE_LIMITS`、`routes._LIMITATIONS_BY_SOURCE`、
-`explorer._ENTITY_FILTER_UNSUPPORTED`）—— 只說「不支援」會讓人去等一個
+對它都不成立。三個地方各說一次原因（`health._NOTES`、
+`routes._LIMITATIONS_BY_SOURCE`、`explorer._ENTITY_FILTER_UNSUPPORTED`
+—— 後者經 `explorer.source_meta()` 的 `unsupported_filters` 顯示在
+**那個篩選欄位旁邊**）—— 只說「不支援」會讓人去等一個
 永遠不會來的功能。它的 endpoint 維度是**完整 `url`** 而不是
 `controller/function`：`url` 在 180 天只有 46 個相異值、沒有動態段，
 而 `controller/function` 會把 accept／deny／complete 全部收進 `v1/order` 一格，
