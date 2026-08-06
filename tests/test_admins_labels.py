@@ -13,9 +13,17 @@ import pytest
 from console.core import admins
 
 # 2026-08-06 實測：Order Log 一天 2,887 個相異 _admin 100% 對得到帳號。
-# 26465 是當天次數最多的（10,247 次）。
+# 26465 當天出現 10,247 次，排第三多（第一、二名分別是 42990 的 14,535 次、
+# 26361 的 11,531 次）。
 KNOWN_ADMIN = 26465
 KNOWN_ACCOUNT = "cp07_pos"
+
+# 2026-08-06 實測：ods_user_admin 的去重鍵是 (_brand, idx)，FINAL 之後這個
+# idx 仍跨 _brand 回兩列（8649 → 舊的 ocardjack、NULL → _version 較新的
+# jack@ocard.co，create_time 相同、是同一個人）。正確答案是 _version 最新
+# 的那一列。
+BRAND_SPANNING_ADMIN = 30058
+BRAND_SPANNING_ACCOUNT = "jack@ocard.co"
 
 
 @pytest.fixture(autouse=True)
@@ -35,12 +43,41 @@ def test_final_dedupes_replacingmergetree_versions():
 
     不加 FINAL 的話同一個 idx 會回兩列，而批次組 dict 時後到的（可能是舊版本）
     會蓋掉先到的。症狀是「帳號名偶爾是舊的」，沒有任何錯誤訊息。
+
+    `FINAL` 只是其中一半：去重鍵是 `(_brand, idx)` 不是 `idx`，跨 `_brand`
+    的收斂靠 `argMax(acc, _version)` + `GROUP BY idx`（見
+    `test_collapses_idx_that_spans_multiple_brands`）。
     """
     assert "FINAL" in admins._SQL_TEMPLATE, (
         "查詢沒有 FINAL —— ods_user_admin 是 ReplacingMergeTree，"
-        "同一個 idx 會回多列")
+        "同一個 (_brand, idx) 會回多列")
     out = admins.accounts([KNOWN_ADMIN, KNOWN_ADMIN, 26466])
     assert set(out) == {KNOWN_ADMIN, 26466}
+
+
+def test_collapses_idx_that_spans_multiple_brands():
+    """`ods_user_admin` 的去重鍵是 `(_brand, idx)`，不是單獨的 `idx`。
+
+    `FINAL` 只在同一個 `(_brand, idx)` 之內去重，跨 `_brand` 的同一個 `idx`
+    不會被合併 —— 實測全表 `FINAL` 後仍有 4 個 idx 各回 2 列（1、19323、
+    30058、43137）。那不是「兩個不同帳號」：兩列的 create_time 完全相同，
+    是同一個人的兩條 ODS 同步路徑（一條帶 _brand、一條 _brand 是 NULL），
+    帳號改名時只有其中一條抓到。
+
+    這則測試守的是：查詢必須用 `argMax(acc, _version)` + `GROUP BY idx`
+    跨 `_brand` 收斂成一列、且取 `_version` 最新的那個值 —— 不是退回
+    `FINAL` + `iterrows()` 覆寫（那個版本的最終值取決於 ClickHouse 回傳列的
+    順序，順序沒有被強制，症狀是帳號名不穩定且不會報錯）。
+    """
+    out = admins.accounts([BRAND_SPANNING_ADMIN])
+    assert len(out) == 1
+    assert out[BRAND_SPANNING_ADMIN] == BRAND_SPANNING_ACCOUNT
+
+    admins.clear_cache()
+    out_again = admins.accounts([BRAND_SPANNING_ADMIN])
+    assert out_again[BRAND_SPANNING_ADMIN] == BRAND_SPANNING_ACCOUNT, (
+        "呼叫兩次應得到相同結果 —— 穩定性是這個函式的契約，"
+        "不是碰運氣碰到對的那一列")
 
 
 def test_only_selects_idx_and_acc():

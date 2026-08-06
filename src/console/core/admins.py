@@ -15,13 +15,27 @@
 `_admin` 是裸整數，缺了帳號名它本身沒有任何調查價值。所以它不該綁在一個
 可以是 None 的依賴上。
 
-## `FINAL` 是正確性需求，不是優化
+## `FINAL` 不夠：去重鍵是 `(_brand, idx)`，不是 `idx`
 
-`ods_user_admin` 是 ReplacingMergeTree，實測（2026-08-06）**59,293 列只有
-41,300 個相異 `idx`** —— 尚未合併的舊版本還在。不加 `FINAL` 的話同一個
-`_admin` 會回多列，批次組 dict 時後到的（可能是舊版本）會蓋掉先到的。
-症狀是「帳號名偶爾是舊的」，沒有任何錯誤訊息。
-實測 `FINAL` 批次查 10 個 idx 是 0.21 秒。
+`ods_user_admin` 是 `ReplacingMergeTree(_version) ORDER BY (_brand, idx)`。
+`FINAL` 只在同一個 `(_brand, idx)` 之內去重，**跨 `_brand` 的同一個 `idx`
+不會被合併**。實測（2026-08-06）全表加了 `FINAL` 之後仍有 4 個 `idx` 各回
+2 列：`1`、`19323`、`30058`、`43137`。
+
+那不是「兩個不同帳號」的歧義：兩列的 `create_time` 完全相同，是同一個人，
+只是 ODS 同步走了兩條路徑（一條帶 `_brand`、一條 `_brand` 是 `NULL`）；
+帳號被改名（username → email 登入）時只有其中一條抓到，於是兩列的 `acc`
+不同（例如 `idx=30058`：`_brand=8649` 那列是舊的 `ocardjack`、`_brand=NULL`
+那列是 `_version` 更新的 `jack@ocard.co`）。**正確答案是 `_version` 最新的
+那一列**，不是兩者的其中之一碰運氣。
+
+所以查詢用 `argMax(acc, _version) AS acc ... GROUP BY idx` 跨 `_brand` 收斂成
+一列（`FINAL` 保留 —— 它仍在每個 `(_brand, idx)` 之內去重，也維持與
+`queries/brand_search.py`／`store_search.py` 的既有慣例一致）。
+**不可以退回「只靠 `FINAL` + 逐列覆寫 dict」**：那個版本的最終值取決於
+ClickHouse 回傳列的順序，而那個順序沒有被強制 —— 症狀是「帳號名有時是這個、
+有時是那個」，而且不會報錯。
+實測批次查 10 個 idx（含 `GROUP BY`）是 0.21 秒，與單純 `FINAL` 無顯著差異。
 
 ## 只取 `idx` 與 `acc`
 
@@ -60,10 +74,13 @@ UNAVAILABLE_NAME = "（帳號查詢失敗）"
 
 TABLE = "ods_user_admin"
 
-# **`FINAL` 與「只取 idx, acc」都由 tests/test_admins_labels.py 綁著**，
-# 不是可以順手簡化的東西。理由見模組說明。
+# **`FINAL`、`argMax(acc, _version)`、`GROUP BY idx` 與「只取 idx, acc」都由
+# tests/test_admins_labels.py 綁著**，不是可以順手簡化的東西。理由見模組說明：
+# 去重鍵是 `(_brand, idx)` 不是 `idx`，`FINAL` 單獨不足以保證一個 idx 一列，
+# 要靠 `argMax` + `GROUP BY` 跨 `_brand` 收斂並取 `_version` 最新的那一列。
 _SQL_TEMPLATE = (
-    f"SELECT idx, acc FROM {TABLE} FINAL WHERE idx IN %(ids)s"
+    f"SELECT idx, argMax(acc, _version) AS acc FROM {TABLE} FINAL"
+    f" WHERE idx IN %(ids)s GROUP BY idx"
 )
 
 # 一次查幾個。`idx` 是 sorting key，等值剪枝很有效（實測 10 個 0.21 秒），
