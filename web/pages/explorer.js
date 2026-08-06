@@ -508,11 +508,18 @@ export default {
         <div v-if="result && result.meta.store_filter" class="muted" style="font-size:11.5px;margin-top:3px">
           本次結果：{{ result.meta.store_filter }}</div></div>
       <!-- Auth Log 沒有可篩的 endpoint 維度：action 半年來只有一個值（auth），
-           篩了等於沒篩。後端也會拒絕（400），所以這裡直接不顯示。 -->
-      <div v-if="endpointLabel"><div class="muted" style="margin-bottom:3px">{{ endpointLabel }}</div>
-        <EndpointPicker v-model="f.endpoint" :source="f.source"
+           篩了等於沒篩、後端也會拒絕（400）。原本整個欄位直接消失（fix round 2，
+           reviewer 抓到）——帳號／來源 IP 兩欄不支援時都改成顯示原因而不是隱藏，
+           這裡漏改成了三欄裡唯一不說話的一個。改成同一種做法：欄位一律顯示，
+           不支援時顯示 unsupportedFilters.endpoint 的原因文字而不是輸入框。 -->
+      <div><div class="muted" style="margin-bottom:3px">{{ endpointLabel || 'Endpoint' }}</div>
+        <EndpointPicker v-if="endpointLabel" v-model="f.endpoint" :source="f.source"
                         :start="f.start" :end="f.end"
-                        :placeholder="endpointPlaceholder" /></div>
+                        :placeholder="endpointPlaceholder" />
+        <div v-if="!endpointLabel && unsupportedFilters.endpoint" class="muted" style="font-size:11px">
+          {{ unsupportedFilters.endpoint }}
+        </div>
+      </div>
       <label v-if="f.source==='api'" class="inline"><input type="checkbox" v-model="f.only_error">只看有 error</label>
       <div><div class="muted" style="margin-bottom:3px">明細筆數上限</div>
         <input type="number" v-model.number="f.limit" style="width:100%"></div>

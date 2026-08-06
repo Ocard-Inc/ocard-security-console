@@ -43,6 +43,16 @@ _ALL_SOURCES = ("api", "backend", "admin", "auth", "order")
 # auth 的是 token 指紋，兩者都不該再對照一次。
 NUMERIC_ACTOR_SOURCES = ("api", "order")
 
+# `_admin = 0` 是「非後台操作（一般 API／POS 呼叫）」的哨兵值，不是「查無此帳號」——
+# 同 `_mask_detail_row` 對 api／order 的註解。`admins.accounts()` 對 0 一樣會查表
+# 查不到、回 `admins.UNKNOWN_NAME`（查無帳號），那個說法是錯的：0 從來就不是一個
+# 曾經存在又被刪掉的帳號編號。實測 api log 5 天有 470 筆 `_admin = 0`，窄視窗查詢
+# 時足以擠進排名一列，讀的人會去追一個不存在的帳號，而它其實是「這批請求跟後台
+# 帳號無關」。這裡選擇顯示一個明確說出語意的字串，而不是像明細那樣整個 actor 欄位
+# 回 None（明細的 None 會讓前端整行不渲染，但排名的 `name` 欄位本來就已經顯示
+# 原始值 "0"，讓 account 也一起消失反而看起來像「這個 0 沒有任何解釋」）。
+NON_ADMIN_ACCOUNT = "（非後台操作）"
+
 # 分組維度 → (SQL 運算式, 遮罩種類, 顯示名稱)
 GROUP_BY = {
     "endpoint": {
@@ -532,13 +542,23 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
             name = "（空）"
         else:
             name = masking.DISPLAY_FUNCS[fp_kind](raw) if fp_kind else str(raw)
+        actor_id = brands.coerce_id(raw)
+        is_non_admin_sentinel = (
+            dimension == "actor" and f.source in NUMERIC_ACTOR_SOURCES and actor_id == 0)
+        if is_non_admin_sentinel:
+            account = NON_ADMIN_ACCOUNT
+        elif accounts:
+            account = accounts.get(actor_id)
+        else:
+            account = None
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
                      "brand_top": [] if is_brand_dim else brands.breakdown(r["brand_map"]),
                      "share": round(int(r["cnt"]) / total, 4) if total else 0,
                      # None = 這個來源的 actor 本來就是名字（backend）或指紋（auth）。
                      # 前端據此決定要不要渲染那一行，不可以當成「查不到」。
-                     "account": accounts.get(brands.coerce_id(raw)) if accounts else None})
+                     # `_admin = 0` 是另一種情況，見 NON_ADMIN_ACCOUNT 的說明。
+                     "account": account})
     return {"dimension": dimension, "label": label, "total": total, "rows": rows}
 
 

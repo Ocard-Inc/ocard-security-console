@@ -358,7 +358,8 @@ ClickHouse，兩邊無法在 SQL 裡 join，所以只能在拿到原始 IP 之�
 ## 規則系統
 
 規則是 `config/rules/*.yaml`，`rules/loader.py` 解析並驗證：SQL 必須 SELECT/WITH 開頭、
-不可含分號、必須同時出現 `%(start)s` 與 `%(end)s`、只能引用四張白名單表、至少一個
+不可含分號、必須同時出現 `%(start)s` 與 `%(end)s`、只能引用白名單表（`_allowed_tables()`
+由 `data_sources` 推導，目前五張，Order Log 也已經是可以寫規則的表）、至少一個
 `entity` 欄位。SQL 需輸出名為 `metric` 的欄位；`brands`、`total`（給 `ratio`）等為選用。
 
 門檻 = `max(threshold.static_floor, baseline[stat] × factor)`。基線由

@@ -177,6 +177,17 @@ allowlist:
   # 系統不會寄信也不會發 Slack 通知任何人（沒有那個管道）。
   expiring_soon_days: 7
 
+# **目前沒有任何程式讀這段設定。** `grep -rn "sql_console" src/ web/` 只命中這個檔案
+# 自己；唯一長得像會用到它的地方是 `rules/loader._allowed_tables()`，但那個函式讀的是
+# `data_sources`，不是這裡。前端 NAV 有一個「SQL Console」頁面入口，但那頁目前顯示
+# 「尚未實作」（見 `web/app.js`）——這段設定看起來像是為那個未完成的功能預先寫的白名單，
+# 但頁面沒做出來，這裡也就沒有消費端。
+# 2026-08 接入 Order Log 時，設計文件曾把這段稱為「獨立的第二份白名單」並要求
+# `allowed_tables` 跟著 `data_sources` 一起加 `ods_order_api_log`——那句話已經修正
+# （見 `docs/superpowers/specs/2026-08-06-order-log-integration-design.md`）：加了只是
+# 為了與 `data_sources` 的清單保持一致，不構成任何實際的白名單保護。
+# **不要因為看起來沒用就刪掉這段**：SQL Console 可能是未完成或已移除的功能，
+# 刪掉設定會讓下一個人更難判斷究竟是哪一種。留言的目的只是不要讓人誤以為它在保護什麼。
 sql_console:
   auto_limit: 1000
   timeout_seconds: 30

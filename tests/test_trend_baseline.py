@@ -6,16 +6,22 @@
 後端資料本來就是逐 bucket 正確的，錯的是前端。這些測試把「基線會隨時間變化」
 這件事釘住 —— 一開始若有這個測試，那個假設就不會成立那麼久。
 
-首頁改成 2×2 小倍數之後，四條線各自都要有自己的同時段基線（以前只有 api 與
+首頁改成 2×2 小倍數之後，每條線各自都要有自己的同時段基線（以前只有 api 與
 login_success 被讀出來，backend 與 login_failed 明明算好了卻沒用），所以下面
-一律對四條線都驗。
+一律對每條線都驗。
+
+**Order Log 接入後是五條線，不是四條**（`queries/trends.request_trend()` 的
+`baseline_keys["order"]`）。原本這裡的 `SERIES` 沒跟著加，症狀是 order 的
+5m/10m/30m 基線完全沒有測試守著（只有 `test_api_smoke.py` 覆蓋到 120m 那一格），
+少一個粒度的後果是那個區間的面板不畫 median 虛線 —— 正確的降級，但沒有任何
+訊號說「這是退化」還是「本來就沒有」。
 """
 from __future__ import annotations
 
 import pytest
 
-# 四條線與其對應的基線欄位前綴
-SERIES = ["api", "backend", "login_success", "login_failed"]
+# 五條線與其對應的基線欄位前綴
+SERIES = ["api", "backend", "login_success", "login_failed", "order"]
 
 
 # 必須是 function scope：conftest 的 _offline_auth 是 autouse 的 function fixture，

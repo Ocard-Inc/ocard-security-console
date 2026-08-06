@@ -271,6 +271,23 @@ def test_audit_mode_page_lists_the_new_write_endpoints():
     assert "P03" in text, "audit-mode.js 漏了 P03（敏感路由大量存取）"
 
 
+def test_audit_mode_page_lists_every_clickhouse_data_source():
+    """稽查人員的第一步驟要列出全部資料來源表，漏一張跟寫錯可寫端點是同一種問題。
+
+    2026-08 加入 Order Log 之後，`audit-mode.js` 的「資料來源與保存範圍」那一步
+    仍然只列了 Admin／Backend／API／Auth 四張表、說「四個 ClickHouse 資料來源」——
+    對稽查人員來說，這頁等於在說 Order Log 不存在。這裡逐表名比對，不是只驗
+    數量字樣：只改數字不改清單一樣會漏。
+    """
+    from pathlib import Path
+
+    from console.core.config import settings
+    text = Path("web/pages/audit-mode.js").read_text(encoding="utf-8")
+    for source in settings()["data_sources"].values():
+        assert source["table"] in text, (
+            f"audit-mode.js 的資料來源清單少了 {source['table']}")
+
+
 def test_overview_banner_counts_survive_rule_yaml_failure(client, monkeypatch):
     """`_suppression_summary()` 的降級分支（規則 YAML 讀取失敗）一樣要帶
 

@@ -385,7 +385,20 @@ export default {
         </template>
       </div>
     </div>
-    <div v-if="noP0P1 && !pending.total && !data.freshness.banner && data.monitor.label === '正常'"
+    <!-- 注意：這整段 template 是 JS 的 template literal，**註解裡不可以出現反引號**
+         —— 它會提早終止字串，整個 SPA 不渲染而且只有 console 看得到一行
+         「Uncaught SyntaxError」。2026-08-07 這裡就是這樣壞過一次
+         （同樣的坑也在 web/pages/explorer.js 的 template 註解裡記過）。
+
+         !data.freshness.failed.length 是必要的第二個閘門，不是 !data.freshness.banner
+         就夠了 —— health.source_health() 對查詢失敗的來源仍會 append 一張卡
+         （status 是「查詢失敗」），而 freshness_summary().banner 只在「有延遲」時
+         產生，查詢失敗算在 failed 清單裡但原本沒有反映在 banner 上。結果是查詢失敗時
+         這句話仍成立，橫幅寫著「N 個資料來源均正常更新」，而下方「資料來源健康」
+         卡片同時顯示某張表「查詢失敗」—— 兩者互相矛盾。失敗清單本身已經在下方卡片
+         顯示（非靜默），這裡只需要不要說謊，不必再重複一份錯誤訊息。 -->
+    <div v-if="noP0P1 && !pending.total && !data.freshness.banner && !data.freshness.failed.length
+               && data.monitor.label === '正常'"
          class="banner banner-ok">
       目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
       {{ clockTime(data.last_five_min_check) }}，{{ data.health.length }} 個 ClickHouse 資料來源均正常更新。
@@ -452,7 +465,7 @@ export default {
       <template v-if="!showTable">
         <!-- 兩欄小倍數（五個面板、第三列右邊留白）：五條線量級差 1000 倍以上，
              同一個 y 軸畫不下（雙軸則會誤導）。每個面板自己一個軸、自己一條
-             同時段 median 虛線。**刻意不用 `chart.group`**——它會把 `updateOptions`
+             同時段 median 虛線。**刻意不用 chart.group** —— 它會把 updateOptions
              廣播給整個群組，切換時間區間後最後一個面板的設定會覆蓋掉全部，
              症狀是每個面板的 tooltip 都顯示同一個面板的數字（見上方 PANELS
              旁的註解）。 -->
