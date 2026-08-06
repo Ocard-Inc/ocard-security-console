@@ -59,6 +59,23 @@ def test_actor_caps_length_for_attacker_controlled_values():
     assert masking.actor("andrew_c") == "andrew_c"
 
 
+def test_actor_truncation_suffix_is_collision_resistant():
+    """兩個前 200 字元相同、原長也相同的帳號名，截斷後不可以撞成同一個輸出。
+
+    這個回傳值直接餵給 `rules/engine.entity_parts()` 當 `entity_key` 的一段，
+    再由 `store/events.py` 拿去重。若後綴只靠「原長」組成，兩個這樣的帳號名
+    會產生一模一樣的字串 —— 兩個不同的攻擊來源被合併成同一個事件，沒有任何
+    錯誤訊息，只留下一個被覆蓋掉的 `metric_value`。
+    """
+    prefix = "a" * 200
+    huge_a = prefix + "b" * 100
+    huge_b = prefix + "c" * 100
+    assert len(huge_a) == len(huge_b)  # 前綴與原長都相同，只有尾端不同
+    out_a = masking.actor(huge_a)
+    out_b = masking.actor(huge_b)
+    assert out_a != out_b, "前綴與原長相同的兩個帳號名撞成了同一個截斷結果"
+
+
 # ── token：仍然是不可逆指紋 ────────────────────────────────────────
 
 def test_token_is_still_fingerprinted():
