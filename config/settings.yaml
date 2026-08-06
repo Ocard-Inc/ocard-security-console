@@ -49,6 +49,23 @@ data_sources:
     label: Auth Log
     table: ods_auth_log
     sensitive: true
+  # 2026-08-06 接入。POS 與 oboss 的訂單操作（接單／拒單／完成／改庫存）。
+  #
+  # 這張表與另外四張有四個結構性差異，會決定它在主控台能做什麼：
+  #   ① **沒有 ip 也沒有 headers** → 完全沒有來源 IP 維度。來源排名、
+  #      依 IP 反查、entity_extent 對它都不成立（見 explorer.GROUP_BY["source"]
+  #      刻意沒有 order，以及 tests/test_data_source_coverage.py 的反向測試）。
+  #   ② 沒有 acc → 操作者只有 _admin（整數），名稱由 core/admins.py 補。
+  #   ③ 沒有 status／error/has_error → 沒有錯誤分析。
+  #   ④ 沒有 order_number → 沒有 unique resource 分析。
+  #
+  # 實測（2026-08-06）：2.45 億列、6.91 GiB、約 123 萬筆/日、2026-01-01 起 218 天
+  # （比 api_log 的 179 天更長）、落地延遲約 5 分鐘、重複率 3.2%。
+  # 列寬 30 bytes/列（api_log 是 155），所以 180 天的每一種分析都在 13 秒內 ——
+  # **不需要為它另設較短的區間上限**，詳見 audit_export 那一節。
+  order:
+    label: Order Log
+    table: ods_order_api_log
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，
@@ -165,6 +182,7 @@ sql_console:
     - ods_backend_sys_log
     - ods_api_log
     - ods_auth_log
+    - ods_order_api_log
   forbidden_output_columns:
     - token
     - headers

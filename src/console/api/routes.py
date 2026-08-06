@@ -751,19 +751,37 @@ def _extra_limitations(event: dict) -> list[str]:
     return [note] if note else []
 
 
+# 事件詳細頁「資料限制」的逐來源說明。**抽成模組常數是為了讓
+# tests/test_data_source_coverage.py 看得到** —— 藏在函式內的 local dict
+# 沒辦法斷言「每個來源都有一項」。
+#
+# 這份與 `queries/explorer.SOURCE_LIMITS` 是**兩份，刻意不合併**：
+#   - 這裡渲染在事件詳細頁，該頁沒有「資料來源」標頭，所以每一句都自帶表名
+#     （「API Log 的來源 IP…」）。
+#   - explorer.SOURCE_LIMITS 渲染在 Explorer 該來源的區塊底下，表名已在上方，
+#     再寫一次是噪音。
+# 合併之後其中一邊的文案一定會變成謊話（少了主詞，或者多了重複的主詞）。
+# 兩份都由覆蓋率測試守著「每個來源都有一項」。
+_LIMITATIONS_BY_SOURCE = {
+    "admin": ["Admin Log 部分登入紀錄沒有 IP，顯示「來源 IP 不可用」，"
+              "此類紀錄無法納入單一來源判斷。"],
+    "api": ["API Log 的來源 IP 由 forwarded header 推導，屬「未驗證來源」，"
+            "不可作為可信來源證據。",
+            "API Log 的 params 大量不是合法 JSON，無法一律展開比對。"],
+    "backend": ["Backend System Log 歷史資料可能重複，已以事件 ID 去重後顯示。"],
+    "auth": ["Auth Log 為最高敏感等級，僅能提供遮罩摘要。"],
+    "order": ["Order Log 沒有 ip 也沒有 headers 欄位，因此完全沒有來源 IP —— "
+              "任何「單一來源」的判斷對這張表都不成立。",
+              "Order Log 沒有 status／error 欄位，無法區分成功與失敗的操作。",
+              "Order Log 的操作者是 _admin，實測全部是 POS 或串接金鑰帳號 —— "
+              "它代表哪一支整合程式，不是哪個人。"],
+}
+
+
 def _data_limitations(source_key: str) -> list[str]:
     common = ["目前缺少 device fingerprint，無法確認請求是否來自同一批裝置。",
               "缺少 response bytes 與 row count，因此不可推論「外洩 N 筆資料」。"]
-    per_source = {
-        "admin": ["Admin Log 部分登入紀錄沒有 IP，顯示「來源 IP 不可用」，"
-                  "此類紀錄無法納入單一來源判斷。"],
-        "api": ["API Log 的來源 IP 由 forwarded header 推導，屬「未驗證來源」，"
-                "不可作為可信來源證據。",
-                "API Log 的 params 大量不是合法 JSON，無法一律展開比對。"],
-        "backend": ["Backend System Log 歷史資料可能重複，已以事件 ID 去重後顯示。"],
-        "auth": ["Auth Log 為最高敏感等級，僅能提供遮罩摘要。"],
-    }
-    return per_source.get(source_key, []) + common
+    return _LIMITATIONS_BY_SOURCE.get(source_key, []) + common
 
 
 # 事件趨勢可以往事件視窗前後各再拉多久。分析師常需要看「事件之前長什麼樣」，

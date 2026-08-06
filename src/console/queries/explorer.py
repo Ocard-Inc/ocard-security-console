@@ -28,6 +28,16 @@ BUCKETS = {"1m": 1, "5m": 5, "10m": 10, "1h": 60, "1d": 1440}
 # 個點，而零填讓這件事不再取決於資料多寡 —— 稀疏對象原本回 3 列，之後會回 25 萬列。
 MAX_TREND_BUCKETS = 20_000
 
+# 全部資料來源。這份 tuple 與 `settings()["data_sources"]` 必須一致，
+# 由 tests/test_data_source_coverage.py 綁著 —— 這裡刻意寫死而不是在 import
+# 時呼叫 `settings()`，避免模組載入順序耦合到設定檔可用性。
+#
+# `_store <= 0` 在 `core/stores.py` 一律標成「（品牌層級，非特定分店）」——
+# 但 Order Log 實測**只有 `0`（未填，0.016%）、沒有 `-1`**，不需要改 `stores.py`
+# （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
+# Order Log 是個反例。
+_ALL_SOURCES = ("api", "backend", "admin", "auth", "order")
+
 # 分組維度 → (SQL 運算式, 遮罩種類, 顯示名稱)
 GROUP_BY = {
     "endpoint": {
@@ -35,12 +45,23 @@ GROUP_BY = {
         "backend": (exprs.ROUTE2, None, "Route"),
         "admin": ("concat(function, '/', action)", None, "功能/動作"),
         "auth": ("action", None, "動作"),
+        # Order Log 的 endpoint 用完整 `url`，不是 `controller/function`。
+        #
+        # `url` 保留動作段（`v1/order/active/accept`／`.../deny`／`.../complete`），
+        # 而「誰在大量拒單」「誰在大量改庫存」是真實的調查問題。
+        # `concat(controller,'/',function)` 會把它們全部收進 `v1/order` 一格
+        # ——實測 1 日 323,656 筆裡 complete 310,871、ready 6,175、accept 3,697、
+        # deny 2,896，從排名上完全看不出是哪個動作。
+        #
+        # backend 把 `route` 截成前 2 段（exprs.ROUTE2）是因為動態段會生出上千個
+        # 一次性選項；`url` 在 180 天只有 46 個相異值、**沒有動態段**，所以不截。
+        "order": ("url", None, "Endpoint"),
     },
-    "brand": {k: ("toString(_brand)", None, "品牌") for k in ("api", "backend", "admin", "auth")},
+    "brand": {k: ("toString(_brand)", None, "品牌") for k in _ALL_SOURCES},
     # 分店。名稱**刻意不在這裡查**（品牌維度在 `ranking()` 內另外接 `brands.labels`）——
     # 這個運算式同時是排名的 GROUP BY 與篩選的比對依據，回「忠孝店（27681）」的話
     # 排名裡看到的值就貼不回篩選器了。名稱由呈現層各自用 `core/stores.label()` 補。
-    "store": {k: ("toString(_store)", None, "分店") for k in ("api", "backend", "admin", "auth")},
+    "store": {k: ("toString(_store)", None, "分店") for k in _ALL_SOURCES},
     "source": {
         "api": (exprs.API_SRC_IP, "src", "來源"),
         "backend": ("ip", "src", "來源"),
@@ -66,6 +87,12 @@ GROUP_BY = {
         "admin": ("coalesce(nullIf(acc, ''), nullIf(JSONExtractString(params, 'acc'), ''), toString(_admin))", "actor", "操作者"),
         "api": ("toString(_admin)", "actor", "操作者"),
         "auth": ("token", "token", "憑證"),
+        # api 與 order 都沒有 acc 欄位，操作者以 `_admin` 識別。
+        # **這裡回原值（整數字串），不回帳號名** —— 這個運算式同時是排名的
+        # GROUP BY 與篩選的比對依據，回「cp07_pos（26465）」的話排名裡看到的值
+        # 就貼不回篩選器了（同 core/stores.py 開頭「名稱刻意不在這裡查」的教訓）。
+        # 帳號名由 `core/admins.py` 在呈現層補（見 ranking() 與 detail()）。
+        "order": ("toString(_admin)", "actor", "操作者"),
     },
 }
 
@@ -422,6 +449,8 @@ _DETAIL_COLUMNS = {
     "backend": "_id, create_time, acc, ip, _brand, _store, route, post_params, get_params",
     "admin": "_id, create_time, acc, _admin, ip, _brand, _store, function, action, params",
     "auth": "_id, create_time, ip, _brand, _store, action, token, params, response",
+    "order": ("_id, create_time, controller, function, url,"
+              " _brand, _store, _admin, platform, params"),
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -431,6 +460,7 @@ _PAYLOAD_COLUMNS = {
     "backend": "_id, create_time, post_params, get_params, add_data",
     "admin": "_id, create_time, params",
     "auth": "_id, create_time, headers, params, response",
+    "order": "_id, create_time, params",
 }
 
 
@@ -505,6 +535,22 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "result": "成功" if "success" in str(r.get("action")) else (
                 "失敗" if "fail" in str(r.get("action")) else "—"),
             "params": masking.payload_summary(r.get("params")),
+            "resource": None,
+        })
+    elif source == "order":
+        out.update({
+            # 與排名同一個值（GROUP_BY["endpoint"]["order"] 就是 url）——
+            # 排名裡看到的值貼回篩選器就一定命中。
+            "endpoint": str(r.get("url") or ""),
+            "platform": r.get("platform"),
+            # 這張表沒有 ip 也沒有 headers。None 讓前端渲染成「—」，
+            # 而「為什麼沒有」由 explorer.SOURCE_LIMITS 的第一句說出來。
+            "source_ip": None,
+            "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
+            # 沒有 status／error 欄位，無法區分成功與失敗
+            "result": "—",
+            "params": masking.payload_summary(r.get("params")),
+            # 沒有 order_number 欄位
             "resource": None,
         })
     else:  # auth

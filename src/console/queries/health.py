@@ -15,6 +15,16 @@ _MISSING_EXPR = {
     # api_log 的 has_error 僅在出錯時設值，NULL 屬正常；設計稿關注的是 params 可解析性
     "ods_api_log": ("NOT isValidJSON(params)", "params 無法解析"),
     "ods_auth_log": ("ip IS NULL OR ip = ''", "來源 IP"),
+    # Order Log 的 params 實測 99.9998% 是合法 JSON（92.7 萬列只有 2 列不是），
+    # 拿它當缺漏指標抓不到東西而且要 1.85 秒；改量「分店未填」（0.016%、0.33 秒，
+    # 與 api 現況的 0.35 秒同級）。
+    #
+    # **「沒有來源 IP」刻意不放進 missing_rate。** 那是 100% 的結構事實、
+    # 不是浮動比率，放進去只會讓卡片永遠顯示 100% 而看不出任何變化。
+    # 它改在四個地方各說一次：_NOTES（就在下面）、Explorer 的
+    # explorer.SOURCE_LIMITS、routes._LIMITATIONS_BY_SOURCE、以及
+    # explorer._ENTITY_FILTER_UNSUPPORTED 的拒絕理由。
+    "ods_order_api_log": ("_store <= 0", "分店未填"),
 }
 
 _NOTES = {
@@ -22,6 +32,9 @@ _NOTES = {
     "backend": "歷史資料可能重複，已以事件 ID 去重後顯示；route 含動態段，聚合時取前 2 段",
     "api": "來源 IP 由 forwarded header 推導，標示「未驗證來源」；params 大量非合法 JSON",
     "auth": "最高敏感等級：可能含 token 與登入 secret，僅顯示遮罩摘要",
+    "order": "此表沒有 ip 也沒有 headers 欄位，完全沒有來源 IP，"
+             "不可做任何單一來源判斷；操作者是 _admin，實測全部是 POS 或串接金鑰帳號"
+             "（代表哪一支整合程式，不是哪個人）；歷史資料可能重複，已以事件 ID 去重後顯示",
 }
 
 
@@ -37,7 +50,7 @@ def _status(lag_min: float) -> tuple[str, str]:
 
 
 def source_health() -> list[dict]:
-    """六張來源卡的資料（設計稿 14.1）。"""
+    """各來源卡的資料（設計稿 14.1；卡片數量依 `data_sources` 的數量，非固定值）。"""
     now = timewin.taipei_now()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     cards: list[dict] = []
