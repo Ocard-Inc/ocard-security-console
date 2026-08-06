@@ -117,14 +117,28 @@ def test_future_tail_is_not_drawn_as_zero_and_says_so():
 
     填到 23:00 的話尾端會是一段「還沒發生」的假 0，而畫面上與「這段時間沒有活動」
     長得一模一樣（同 `trends.resolve_window` 的教訓）。
+
+    **條件式斷言：在一天的最後一個小時內，「今天 23:59:59」的右界就等於已落地的桶，
+    沒有截短、也就不該有 note。原本的無條件斷言讓這則測試每天在 23:00–23:59 之間失敗。**
     """
     today = timewin.taipei_now().strftime("%Y-%m-%d")
+    end_dt = timewin.parse(f"{today} 23:59:59")
     d = explorer.trend(
         _filter(start=f"{today} 00:00:00", end=f"{today} 23:59:59"), "1h")
     last = timewin.parse(d["rows"][-1]["bucket"])
     assert last <= timewin.align_bucket(timewin.effective_now(), 60), (
         f"畫到了 {last}，超過資料落地時間 {timewin.effective_now()} —— 尾端是假的 0")
-    assert d["window_note"], "右界被截短了卻沒有任何說明"
+
+    # 判定右界是否被截短：計算使用者要求的右界對齊後是什麼
+    wanted_last = timewin.align_bucket(end_dt - timedelta(seconds=1), 60)
+    landed = timewin.align_bucket(timewin.effective_now(), 60)
+
+    if last < wanted_last:
+        # 右界確實被截短（例如 23:59:59 要求截短至 23:00），必須有 note
+        assert d["window_note"], "右界被截短了卻沒有任何說明"
+    else:
+        # 沒有截短（right boundary 就等於已落地的桶），不應該有 note
+        assert d["window_note"] is None, "沒有截短卻產生了多餘的說明"
 
 
 def test_bucket_count_is_capped_with_an_actionable_message():
