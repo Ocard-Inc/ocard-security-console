@@ -582,3 +582,57 @@ def test_breakdown_endpoint_rejects_a_wrong_number_of_values(client):
 
 def test_breakdown_endpoint_404_for_unknown_event(client):
     assert client.get("/api/events/EVT-9999/entity/breakdown").status_code == 404
+
+
+def test_trend_endpoint_defaults_to_the_events_own_object(client):
+    """趨勢預設畫本事件的對象，且錨點是事件的 last_seen 而不是現在。
+
+    用 `now()` 的話同一個事件在隔天會變成一張與它無關的圖，而且不會報錯 ——
+    所以右界必須貼著 `last_seen`（同一個桶內）。
+    """
+    e, p = _first_supported(client)
+    r = client.get(f"/api/events/{e['evt_no']}/entity/trend?minutes=1440")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["supported"] is True
+    assert d["is_self"] is True
+    assert d["label"] == p["label"]
+    assert len(d["rows"]) == 1440 // d["bucket_minutes"]
+    # 區間清單與「較慢」標註都由後端給，前端不列第二份
+    assert sorted(d["ranges"]) == sorted(entity_history.TREND_RANGES)
+    assert set(d["slow_ranges"]) <= set(d["ranges"]), \
+        "被標成較慢的區間必須真的是可選的區間，否則警語永遠不出現"
+
+    # 錨點貼著 last_seen（除非被夾到已落地的資料，那時要有 window_note）
+    last = timewin.parse(e["last_seen"])
+    anchor = timewin.parse(d["anchor"])
+    if not d["window_note"]:
+        gap = (anchor - last).total_seconds()
+        assert 0 < gap <= d["bucket_minutes"] * 60, \
+            f"錨點沒有貼著事件的 last_seen（差 {gap} 秒）"
+
+
+def test_trend_endpoint_rejects_a_range_outside_the_closed_set(client):
+    """`minutes` 是封閉集合，打錯一律 400。
+
+    靜靜挑一個分桶的話畫面會寫「最近 5 小時」而圖是別的長度 ——
+    「值不存在」與「這段時間沒有活動」必須分得開。
+    """
+    e, _ = _first_supported(client)
+    for bad in (300, 0, -60, 999999):
+        r = client.get(f"/api/events/{e['evt_no']}/entity/trend?minutes={bad}")
+        assert r.status_code == 400, f"minutes={bad} → {r.status_code}"
+
+
+def test_trend_endpoint_follows_a_selected_peer(client):
+    """點母體排名的任一列 → 趨勢跟著換對象。"""
+    e, p = _first_supported(client)
+    picked = _picked(p)
+    if picked is None:
+        pytest.skip("這個事件的母體沒有可回送的列")
+    r = client.get(f"/api/events/{e['evt_no']}/entity/trend"
+                   f"?minutes=60&{_vq(picked['keys'])}")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+    assert d["label"] == picked["label"]
+    assert d["is_self"] is picked["is_self"]

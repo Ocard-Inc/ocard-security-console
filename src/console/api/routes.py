@@ -698,6 +698,42 @@ def event_entity_breakdown(
     return {"supported": True, "label": picked.label, "is_self": is_self, **data}
 
 
+# 同步 def，理由同上。
+@router.get("/events/{evt_no}/entity/trend")
+def event_entity_trend(
+    evt_no: str,
+    minutes: int = Query(1440),
+    v: list[str] = Query(default=[]),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """選中對象的請求趨勢：本期 + 前一個等長區間。
+
+    `minutes` 是封閉集合（`entity_history.TREND_RANGES`），打錯一律 400 ——
+    靜靜挑一個分桶的話畫面會寫「最近 5 小時」而圖是別的長度。
+
+    `ranges` 與 `slow_ranges` 把那個集合與實測的成本分級回給前端當選單來源，
+    **前端不列第二份**（差一個值就是一個永遠拿到 400 的選項，或一個永遠不出現
+    的警語）。
+    """
+    guard(user, "view_events")
+    if minutes not in entity_history.TREND_RANGES:
+        raise HTTPException(400, (
+            f"minutes={minutes} 不是可選的區間；"
+            f"可選：{sorted(entity_history.TREND_RANGES)}"))
+    row, _rule, ref, reason = _entity_context(evt_no)
+    if ref is None:
+        return {"supported": False, "reason": reason}
+    picked, is_self = _selected_ref(ref, v)
+    try:
+        data = entity_history.recent_trend(
+            picked, timewin.parse(row["last_seen"]), minutes)
+    except ChQueryError as exc:
+        return {"supported": False, "reason": f"對象趨勢查詢失敗：{exc}"}
+    return {"supported": True, "label": picked.label, "is_self": is_self,
+            "ranges": sorted(entity_history.TREND_RANGES),
+            "slow_ranges": entity_history.slow_ranges(picked), **data}
+
+
 def _display_dim(dim) -> str:
     return dim.value if dim.mask is None else (
         masking.DISPLAY_FUNCS[dim.mask](dim.value) or dim.value)
