@@ -56,3 +56,27 @@ def test_r05_sql_params_include_the_sensitive_routes_key():
     rule = _rule("R05")
     params = engine._sql_params(rule, "2026-08-04 00:00:00", "2026-08-04 01:00:00")
     assert "sensitive_routes" in params
+
+
+def test_r05_brand_top_survives_empty_sensitive_routes_list(monkeypatch):
+    """`engine._sql_params()` 在敏感路由清單一條生效中的都沒有時，刻意拋
+    `RuntimeError`（避免 `IN ()` 靜靜回 0 筆，見該函式註解）——這對即時規則
+    引擎的逐規則 try 是對的，但 `_brand_top()` 原本只接 `ChQueryError`，
+    這個例外會逃出 per-event 迴圈中斷整支 CLI，讓其餘還沒補完的事件全部
+    補不到。這裡驗證的是同一件事的另一種觸發方式：正常運作時 API 的
+    409（不能移除最後一條生效路由）會擋住清單變空，但资料庫可能被人直接
+    改過。`_brand_top()` 必須把它當成「這一筆補不到」而不是讓整支程式中斷。
+    """
+    from console.rules import engine
+
+    monkeypatch.setattr(engine.sensitive_routes, "active", lambda: [])
+    rule = _rule("R05")
+    event = {
+        "first_seen": "2026-08-04 00:00:00",
+        "last_seen": "2026-08-04 01:00:00",
+        "entity_key": "R05|不存在的對象|0.0.0.0",
+        "brands": 1,
+    }
+    top, note = backfill_brands._brand_top(event, rule)
+    assert top is None
+    assert "查詢失敗" in note

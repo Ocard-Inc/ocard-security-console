@@ -77,8 +77,16 @@ def _brand_top(event: dict, rule: Rule) -> tuple[list[dict] | None, str]:
             # 的規則若少了這個參數，clickhouse-connect 會拋 Python 原生的
             # KeyError（不是 ChQueryError），下面的 except 接不住，整支 CLI
             # 就會在還沒補完的事件上中斷。
+            #
+            # 同一個 _sql_params() 在敏感路由清單目前一條生效中的都沒有時，
+            # 會刻意拋 RuntimeError（見該函式註解：避免 `IN ()` 靜靜回 0 筆、
+            # 讓「沒有在看」與「沒有異常」在畫面上一模一樣）。那個例外對即時
+            # 規則引擎是正確的（單一 tick 失敗、進 failures），但這裡是補歷史
+            # 資料的 per-event 迴圈：一個事件補不到明細，不該讓其餘還沒補完的
+            # 事件全部中斷。與下面 ChQueryError 的處理方式一致：這一筆降級、
+            # 說明原因、繼續下一筆。
             df = query(rule.sql, engine._sql_params(rule, start, end))
-        except ChQueryError as exc:
+        except (ChQueryError, RuntimeError) as exc:
             return None, f"查詢失敗：{exc}"
         matched = None
         for _, raw in df.iterrows():
