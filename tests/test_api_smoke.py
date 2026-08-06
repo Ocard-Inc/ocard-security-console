@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from console.core.config import settings
+
 
 def test_session_reports_identity(client):
     """沒有角色分級：session 回的是身分，不是等級。"""
@@ -127,7 +129,10 @@ def test_sparklines_shape(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["hours"] == 24
-    assert set(body["sources"]) == {"admin", "backend", "api", "auth"}
+    # 來源集合從 settings() 推導，不寫死 —— 寫死的話每加一張 log 表就要改這裡，
+    # 而漏改的症狀是一則看起來與新表無關的測試失敗。
+    # （membership 另有 tests/test_data_source_coverage.py 從同一個真相守著。）
+    assert set(body["sources"]) == set(settings()["data_sources"])
     for key, src in body["sources"].items():
         # 零填過，前端可以直接依索引取用，不必處理缺口
         assert len(src["points"]) == 24, f"{key} 應有 24 個點"
