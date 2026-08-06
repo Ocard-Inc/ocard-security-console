@@ -137,3 +137,22 @@ def test_only_the_genuinely_slow_combination_is_flagged():
     # 標註的值必須真的是可選的區間，否則前端比對不到、警語永遠不出現
     for m in entity_history.slow_ranges(api_ip):
         assert m in entity_history.TREND_RANGES
+
+
+def test_anchor_and_last_seen_are_both_reported(ref):
+    """區間右界與「事件最後出現」是兩個不同的時刻，兩個都要回。
+
+    右界是「含事件那一刻的整個分桶」的結束，120 分鐘分桶下它比事件晚將近兩小時
+    （實測 last_seen 22:05 → 右界 08-07 00:00）。只回一個而畫面寫
+    「（事件最後出現）」的話，那句話會在指一個事件根本沒有發生過的時刻。
+    """
+    last = timewin.parse("2026-08-06 22:05:00")
+    for minutes, bucket in entity_history.TREND_RANGES.items():
+        out = entity_history.recent_trend(ref, last, minutes)
+        assert out["last_seen"] == timewin.fmt(last), minutes
+        anchor = timewin.parse(out["anchor"])
+        if out["window_note"]:
+            continue                      # 被夾到已落地的資料，右界與事件無關
+        assert anchor > last, minutes
+        assert (anchor - last) <= timedelta(minutes=bucket), (
+            f"{minutes} 分鐘：右界應落在含 last_seen 的那個分桶結束處")

@@ -217,7 +217,13 @@ def recent_trend(ref: EntityRef, anchor: datetime, minutes: int) -> dict:
         })
 
     return {
+        # `anchor` 是**區間右界**（含 `anchor` 參數那一刻的整個分桶），
+        # `last_seen` 是傳進來的那一刻本身。兩者刻意都回：120 分鐘分桶下右界會比
+        # 事件的最後出現晚將近兩小時（實測 last_seen 22:05 → 右界 08-07 00:00），
+        # 只回一個並在畫面上寫「（事件最後出現）」的話，那句話會在指一個
+        # 事件根本沒有發生過的時刻。
         "anchor": timewin.fmt(end),
+        "last_seen": timewin.fmt(anchor),
         "minutes": minutes,
         "bucket_minutes": bucket,
         "start": timewin.fmt(start),

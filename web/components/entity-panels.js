@@ -9,17 +9,28 @@
 //   跟其他對象差多少（peers）、這是機器還是人（profile）、這正常嗎（share）。
 import { api, num, pct } from '../lib.js';
 import ApexChart from '../charts/ApexChart.js';
+import RangePicker from './range-picker.js';
 import { token } from '../charts/tokens.js';
 import { timeSeriesOptions } from '../charts/time-series.js';
 import { horizontalBarOptions, barHeight } from '../charts/bar.js';
 
+// 趨勢區間的顯示文字。**可選的值本身由後端給**（回應的 `ranges`）——
+// 前端只負責把分鐘數翻成人看得懂的字，不列第二份清單（差一個值就是一個
+// 永遠拿到 400 的選項）。查不到對照就原樣寫分鐘數，不會少一個選項。
+const TREND_LABELS = {
+  60: '最近 1 小時', 180: '最近 3 小時', 720: '最近 12 小時',
+  1440: '最近 24 小時', 4320: '最近 3 天', 10080: '最近 7 天',
+};
+
 export default {
   props: ['evtNo'],
-  components: { ApexChart },
+  components: { ApexChart, RangePicker },
   data: () => ({
     d: null, loading: true, error: null,
     // 右欄與拆解列在講的那一個對象。null = 本事件的對象（見 focus）。
     selected: null,
+    // 右欄的趨勢
+    trendMinutes: 1440, trend: null, trendLoading: false, trendError: null,
   }),
   computed: {
     ok() { return !!this.d?.supported; },
@@ -163,6 +174,60 @@ export default {
     peerSignature() { return `peers|${this.evtNo}|${this.peerRows.length}`; },
     peerHeight() { return barHeight(this.peerRows.length); },
 
+    // ── B2. 右欄：選中對象的請求趨勢 ──────────────────────────────────────
+    // 區間清單與「較慢」標註都由後端給（`ranges` / `slow_ranges`），
+    // 前端不列第二份。欄位不存在時退回只有目前那一個（舊版後端的降級）。
+    trendPresets() {
+      const ranges = this.trend?.ranges || [this.trendMinutes];
+      const slow = new Set(this.trend?.slow_ranges || []);
+      return ranges.map(m => [
+        String(m),
+        (TREND_LABELS[m] || `最近 ${num(m)} 分鐘`) + (slow.has(m) ? '（較慢）' : ''),
+        m,
+      ]);
+    },
+    trendRangeKey() { return String(this.trendMinutes); },
+    // 目前這個區間對這個對象是不是慢的那一個 —— 按下去之前就要知道。
+    trendIsSlow() {
+      return (this.trend?.slow_ranges || []).includes(this.trendMinutes);
+    },
+    trendRows() { return this.trend?.rows || []; },
+    trendSeries() {
+      const rows = this.trendRows;
+      return [
+        { name: '本期', type: 'line', data: rows.map(r => ({ x: r.label, y: r.count })) },
+        { name: '前一個等長區間', type: 'line',
+          data: rows.map(r => ({ x: r.label, y: r.prev_count })) },
+      ];
+    },
+    trendOptions() {
+      const now = token('--chart-event');
+      const prev = token('--chart-peer');
+      return timeSeriesOptions({
+        rowsRef: this._trendRows,
+        colors: [now, prev],
+        strokeWidth: [2.5, 1.5],
+        // 前期用虛線：顏色之外的第二編碼，任何色覺條件下都分得出哪條是現在。
+        dashArray: [0, 4],
+        // **這是半個欄寬的面板，一定要 compact。** 24h 有 48 個點、
+        // 標籤是「08/05 22:00」共 11 字，非 compact 的 8 個刻度在約 380px 寬
+        // 的欄位裡會疊成一團看不出是什麼時間（實測「08/05 2208/06 0108/06 03」）。
+        // compact 給 4 個刻度與較小的字。
+        compact: true,
+        showMarkers: this.trendRows.length <= 48,
+        tooltipTitle: row => row.label,
+        // **前期的點要帶自己的真實時刻**，否則虛線上的點沒有時間可讀。
+        tooltipRows: row => [
+          { name: '本期', value: num(row.count), color: now },
+          { name: `前期（${row.prev_label}）`, value: num(row.prev_count),
+            color: prev, dashed: true, muted: true },
+        ],
+      });
+    },
+    trendSignature() {
+      return `etrend|${this.evtNo}|${this.trendMinutes}|${this.trendRows.length}`;
+    },
+
     // ── C. 24 小時作息 ────────────────────────────────────────────────────
     profileRows() {
       return (this.profile?.rows || []).map(r => ({
@@ -253,6 +318,34 @@ export default {
         keys: row.keys, label: row.label, count: row.count,
         rank: index + 1, isSelf: !!row.is_self, inTop: true,
       };
+      this.loadTrend();
+    },
+    /**
+     * 載入右欄的趨勢。快取鍵是 (對象, 區間) —— 點回上一個對象或切回上一個區間
+     * 都不重查（api 的來源 IP 在 7d 實測 11.8 秒，見後端的 slow_ranges）。
+     */
+    async loadTrend() {
+      const keys = this.focus.keys;
+      const cacheKey = `${this.peerKey(keys)}|${this.trendMinutes}`;
+      if (this._trendCache.has(cacheKey)) {
+        this.trend = this._trendCache.get(cacheKey);
+        this._trendRows.current = this.trend?.rows || [];
+        return;
+      }
+      this.trendLoading = true;
+      this.trendError = null;
+      const qs = [`minutes=${this.trendMinutes}`,
+                  ...keys.map(v => `v=${encodeURIComponent(v)}`)].join('&');
+      try {
+        const d = await api(`/events/${this.evtNo}/entity/trend?${qs}`);
+        this._trendCache.set(cacheKey, d);
+        this.trend = d;
+        this._trendRows.current = d?.rows || [];
+      } catch (err) {
+        this.trendError = err.message;
+        this.trend = null;
+      }
+      this.trendLoading = false;
     },
     /** `<select>` 的 change：值是列索引字串。 */
     pickPeer(value) { this.selectPeer(Number(value)); },
@@ -264,6 +357,8 @@ export default {
         this._peerRows.current = this.peerRows;
         this._profileRows.current = this.profileRows;
         this._shareRows.current = this.shareRows;
+        // 右欄的預設對象是本事件的對象，這裡才拿得到它的 label 與排名
+        if (this.ok) this.loadTrend();
       } catch (err) { this.error = err.message; }
       this.loading = false;
     },
@@ -272,11 +367,22 @@ export default {
     this._peerRows = { current: [] };
     this._profileRows = { current: [] };
     this._shareRows = { current: [] };
+    this._trendRows = { current: [] };
+    // 快取刻意放在非響應式的地方：它是效能的東西，不需要觸發重繪。
+    this._trendCache = new Map();
   },
   mounted() { this.load(); },
-  // 換事件時把選取清掉：留著的話右欄會繼續講上一個事件的某個對象，
-  // 而標頭看起來完全正常。
-  watch: { evtNo() { this.selected = null; this.load(); } },
+  watch: {
+    // 換事件時把選取與快取清掉：留著的話右欄會繼續講上一個事件的某個對象，
+    // 而標頭看起來完全正常。
+    evtNo() {
+      this.selected = null;
+      this.trend = null;
+      this._trendCache.clear();
+      this.load();
+    },
+    trendMinutes() { this.loadTrend(); },
+  },
   template: `
 <div>
   <div v-if="loading" class="skel" style="height:200px;margin-bottom:14px"></div>
@@ -380,6 +486,48 @@ export default {
               </option>
             </select>
           </label>
+
+          <!-- 錨點是事件的 last_seen，**不是現在**。不寫出來的話「過去 24 小時」
+               一定被讀成「現在往前 24 小時」，而同一個事件在隔天看是完全不同的
+               一段時間。 -->
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+            <RangePicker :model-value="trendRangeKey" :presets="trendPresets"
+                         @update:model-value="trendMinutes = Number($event)" />
+            <!-- 兩個時刻都要寫：anchor 是區間右界（含事件那一刻的整個分桶），
+                 120 分鐘分桶下它會比事件的最後出現晚將近兩小時。只寫右界並標
+                 「（事件最後出現）」的話，那句話會在指一個事件沒有發生過的時刻。 -->
+            <span v-if="trend" class="muted" style="font-size:11.5px">
+              截至 {{ trend.anchor }} · {{ trend.bucket_minutes }} 分鐘分桶<template
+                v-if="trend.last_seen">（涵蓋事件最後出現的
+                {{ trend.last_seen }}，不是現在）</template>
+            </span>
+          </div>
+          <div v-if="trendIsSlow" class="muted" style="font-size:11px;margin-bottom:6px">
+            這個對象的來源 IP 要從 headers 解析，這個區間實測約 12 秒。
+          </div>
+
+          <div v-if="trendError" class="banner banner-danger" style="font-size:12px">
+            趨勢載入失敗：{{ trendError }}
+          </div>
+          <div v-else-if="trendLoading && !trend" class="skel" style="height:220px"></div>
+          <template v-else-if="trend">
+            <ApexChart :series="trendSeries" :options="trendOptions"
+                       :signature="trendSignature" :height="220"
+                       :style="trendLoading ? 'opacity:.55' : ''"
+                       aria-label="選中對象的請求量趨勢，實線為本期、虛線為前一個等長區間"/>
+            <div class="muted" style="font-size:11.5px;margin-top:4px;line-height:1.6">
+              虛線 = 前一個等長區間（{{ trend.prev_start }} ~ {{ trend.prev_end }}），
+              共 {{ num(trend.prev_total) }} 筆；本期 {{ num(trend.total) }} 筆。
+              <!-- 前期完全沒有活動是有意義的訊號（這個對象是新的），
+                   不可以把那條 0 線藏起來當成「沒有可比的資料」。 -->
+              <template v-if="trend.prev_total === 0">
+                前一個等長區間內這個對象<b>沒有任何活動</b> —— 它在那段時間還不存在，
+                或完全沒有動作。
+              </template>
+            </div>
+            <div v-if="trend.window_note" class="banner banner-warn"
+                 style="font-size:11.5px;margin-top:6px">{{ trend.window_note }}</div>
+          </template>
         </div>
       </div>
     </div>
