@@ -995,6 +995,24 @@ CI 只驗證映像建得起來、容器啟動得了。
   指紋，只有它變才 `updateOptions`）。x 值放在 series 裡（`data:[{x,y}]`），
   **不要用 `xaxis.categories`** —— 否則滾動視窗每 30 秒都會改到軸設定。
   tooltip 要用到但沒進 series 的欄位，透過非響應式的 `this._rows = {current: rows}` 持有者傳遞。
+- **`animations.enabled: true` + `dynamicAnimation.enabled: false` 是非法組合，
+  它會讓每一次 `updateSeries()` 之後的圖變成一條貼在 0 的平線。** ApexCharts 6.7.0
+  的 `renderPaths()` 在資料變動時**先畫動畫起點**（`pathFrom`，全部貼在零線），
+  再由 `dataChanged && dynamicAnimation.enabled && …` 那一行 morph 到 `pathTo`
+  —— 關掉後者只拿掉 morph，起點照畫，於是畫面停在起點。軸、標籤、tooltip
+  走的是另一條路徑、全部是**新資料的正確值**，所以看起來就是
+  「這個對象在這段時間完全沒有活動」，console 一個字都沒有。
+  實測（CDP 量 SVG）：點左欄長條前 `48 個點、bbox 高 141`，點完
+  `49 個點、bbox 高 0、y 值全部 148.3`，而 y 軸已正確從 38 換成 14。
+  **首頁受害最重** —— 30 秒自動更新走的就是這條熱路徑，實測載入後 30 秒
+  五張圖（四條線 + 一張長條）全部變平/消失。長條也一樣（`renderPaths` 共用）。
+  「更新時不要重播動畫」的支援做法是**呼叫端的第二個參數**
+  `updateSeries(next, false)`（`shouldAnimate=false` → morph 長度 1ms，瞬間到位），
+  不是關設定。合法組合只有兩個：整段 `animations.enabled: false`
+  （`sparkline.js`、`time-series.js` 的 dense 模式、`prefers-reduced-motion`
+  —— 那些使用者從來沒踩到這個 bug），或兩者都開。
+  `tests/test_chart_animation_contract.py` 掃原始碼擋這件事：症狀只在真的瀏覽器
+  裡看得到，而前端沒有建置流程也沒有 headless 測試環境。
 - **顏色只能來自 `app.css` `:root` 的 `--chart-*`，透過 `charts/tokens.js` 讀取**，
   JS 裡不得出現色碼字面值。序列色已通過 dataviz validator 全配對檢查，
   改色必須重跑（指令寫在 app.css 的註解裡）。登入失敗的虛線筆畫是紅綠色盲下的
