@@ -54,18 +54,63 @@ export const ANALYSES = [
 // 真相是那個端點。前端是 no-store、重新整理就生效，而 Python 要重啟
 // （沒有 --reload），所以「前端新、後端舊」是每次改動的必經中間狀態。
 //
-// 降級成「四個來源、全部分析」—— 與改動前的行為完全一樣。少了 endpoint 欄位
-// 標籤與「不支援某個篩選」的說明，但頁面完全可用。
+// 降級成「四個來源、全部分析」—— 與改動前的行為完全一樣。
 // **不可以降級成空清單**：那會讓整個資料來源下拉消失，看起來像整頁壞了。
 //
 // 這裡刻意寫死四個而不是五個：它代表的是「後端還沒有 meta 端點」那個舊世界，
 // 而那個舊世界裡沒有 Order Log。寫五個會宣稱一個舊後端給不出來的來源，
 // 使用者選了它只會得到 400。
-const FALLBACK_SOURCES = ['api', 'backend', 'admin', 'auth'].map(key => ({
-  key, label: SOURCE_LABEL[key], sensitive: key === 'auth',
-  analyses: ANALYSES.map(a => a.key),
-  endpoint_label: null, endpoint_placeholder: null, unsupported_filters: {},
-}));
+//
+// **`endpoint_label` / `endpoint_placeholder` / `unsupported_filters` 必須帶
+// 改動前那兩份寫死 dict 的實際內容，不可以是 null / {}。**（fix round 1，
+// reviewer 抓到：這是 brief 寫錯的，不是實作判斷問題。）CLAUDE.md 要求
+// 「欄位不存在必須降級成**舊行為**」，而舊行為就是這裡的值：
+//   - api/backend/admin 原本各自有 `endpointLabel()` / `endpointPlaceholder()`
+//     兩個 computed 寫死的三來源 dict（auth 兩者皆無 → 空字串 → 欄位隱藏）；
+//   - auth 原本 `f.source === 'auth'` 時帳號欄位停用並顯示指紋說明，
+//     endpoint 欄位因 `endpointLabel` 是空字串而隱藏。
+// 少了它們的後果（reviewer 逐條追出來的）：
+//   ① api/backend/admin 的 `<div v-if="endpointLabel">` 讓 endpoint 欄位
+//      整個消失，使用者在降級狀態下無法用 endpoint 篩選；
+//   ② 既有的 `watch 'f.source'()` 變成「每次切來源都清掉 f.endpoint」；
+//   ③ 更嚴重的連鎖：從事件按「在 Log Explorer 查此對象」落在 backend/admin
+//      時，watcher flush 後 `f.endpoint` 被清空 —— `endpoint ∈ ORIGIN_KEYS`，
+//      deep watcher 因此把 `origin` 設回 null，「條件來自 EVT-xxxx」提示條
+//      消失，使用者接著改任一條件重查就變成整張表的量，數字與事件對不上
+//      而且沒有任何訊號；
+//   ④ auth 的帳號輸入框重新可填、且沒有任何說明，填了拿到 400 ——
+//      正是這個 task 要消滅的形狀。
+//
+// 這裡刻意留一份跟後端 `ENDPOINT_FILTER_META` / `_ENTITY_FILTER_UNSUPPORTED`
+// 內容重複的副本，**不是**退回「兩份真相」：這份只在後端沒有 meta 端點時
+// 生效，而那個世界裡本來就只有這份值（後端還沒升級，前端能依賴的只有它自己
+// 記得的舊行為）。**不要為了「消滅重複」把它刪掉**——刪了等於把降級路徑
+// 改回一個從未存在過的「四來源但沒有 endpoint 欄位」的行為，而不是真的舊行為。
+const FALLBACK_SOURCES = [
+  { key: 'api', label: SOURCE_LABEL.api,
+    endpoint_label: 'Controller/Function 前綴', endpoint_placeholder: 'Api2/TransDetail',
+    unsupported_filters: {} },
+  { key: 'backend', label: SOURCE_LABEL.backend,
+    endpoint_label: 'Route 前綴', endpoint_placeholder: 'orderlist/detail',
+    unsupported_filters: {} },
+  { key: 'admin', label: SOURCE_LABEL.admin,
+    endpoint_label: 'Function 前綴', endpoint_placeholder: 'Boss_initial/auth_v2',
+    unsupported_filters: {} },
+  { key: 'auth', label: SOURCE_LABEL.auth,
+    endpoint_label: null, endpoint_placeholder: null,
+    // 原本的行為：`f.source === 'auth'` 時帳號欄位停用並顯示這句說明，
+    // endpoint 欄位因 `endpoint_label` 是 null 而隱藏（template 目前只靠
+    // `endpointLabel` 判斷要不要顯示 endpoint 欄位，不看這裡的 `endpoint`
+    // 鍵）。這裡仍然帶兩個鍵、文字與後端 `source_meta()` 一致 ——
+    // 讓降級值與真實 meta 的**形狀**一致，不是只湊巧讓畫面正確；
+    // 之後若有任何程式碼開始讀 `unsupportedFilters.endpoint`，降級狀態下
+    // 也不會是一份少了這個鍵的假資料。
+    unsupported_filters: {
+      actor: 'Auth Log 的操作者是 API token，畫面上為不可逆指紋，'
+            + '無法用指紋反查原始 token。請改用來源 IP 或品牌篩選。',
+      endpoint: 'Auth Log 不支援 endpoint 篩選（該表沒有對應欄位）',
+    } },
+].map(s => ({ ...s, analyses: ANALYSES.map(a => a.key) }));
 
 export default {
   // 區間由本頁的 RangePicker 持有。舊的 defaultRange prop 是為了接全域 header

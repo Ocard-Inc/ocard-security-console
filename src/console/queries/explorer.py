@@ -303,7 +303,15 @@ _FILTER_FIELDS = ("endpoint", "source_ip", "actor", "brand", "store")
 
 
 def source_meta() -> list[dict]:
-    """Explorer 的來源清單與每個來源的能力。**前端不自己列一份。**"""
+    """Explorer 的來源清單與每個來源的能力。**前端不自己列一份。**
+
+    **刻意沒有 `sensitive`**（fix round 1，reviewer 抓到）。它是 brief 的
+    Interfaces 原本列的欄位，但 Explorer 沒有任何地方渲染它 —— 健康卡的
+    `sensitive` 標記來自 `/api/health` 的另一份 payload，兩者鍵同名但用途
+    不同，不該因為名字一樣就以為 Explorer 也需要。加了等於在剛用
+    `test_meta_does_not_ship_a_field_nobody_renders` 擋下 `limits` 之後，
+    在同一個 payload 裡留了另一個沒有消費端的欄位。
+    """
     out = []
     for key, src in settings()["data_sources"].items():
         endpoint_meta = ENDPOINT_FILTER_META.get(key)
@@ -315,7 +323,6 @@ def source_meta() -> list[dict]:
         out.append({
             "key": key,
             "label": src["label"],
-            "sensitive": bool(src.get("sensitive")),
             "analyses": supported_analyses(key),
             "endpoint_label": endpoint_meta[0] if endpoint_meta else None,
             "endpoint_placeholder": endpoint_meta[1] if endpoint_meta else None,
@@ -679,8 +686,11 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "endpoint": str(r.get("url") or ""),
             "platform": r.get("platform"),
             # 這張表沒有 ip 也沒有 headers。None 讓前端渲染成「—」，
-            # 而「為什麼沒有」由 source_meta()["order"]["unsupported_filters"]["source_ip"]
-            # 說出來（渲染在 Explorer 該來源的來源 IP 輸入框旁邊）。
+            # 而「為什麼沒有」由 `_ENTITY_FILTER_UNSUPPORTED[("source_ip", "order")]`
+            # 說出來 —— 那段文字經 `source_meta()` 的 `unsupported_filters` 送到前端，
+            # 渲染在該來源的「來源 IP」輸入框旁邊。
+            # （`source_meta()` 回的是 list 而不是以來源為鍵的 dict，
+            #   所以不要寫成 `source_meta()["order"]` 那種下標。）
             "source_ip": None,
             "actor": masking.actor(r.get("_admin")) if r.get("_admin") else None,
             # 沒有 status／error 欄位，無法區分成功與失敗

@@ -74,9 +74,27 @@ def test_order_log_hides_source_ranking_and_api_only_analyses():
     assert {"trend", "endpoint", "brand", "actor", "detail"} <= set(supported)
 
 
-def test_auth_hides_endpoint_ranking_and_actor_filter():
-    """既有的行為要被這份 meta 正確描述，不只是新來源。"""
+def test_auth_hides_unique_resource_and_rejects_actor_and_endpoint_filters():
+    """既有的行為要被這份 meta 正確描述，不只是新來源。
+
+    **原本這則叫 `test_auth_hides_endpoint_ranking_and_actor_filter`，那個名字
+    是假的**（fix round 1，reviewer 抓到）：它從來沒有斷言 endpoint 排名，
+    而 auth 的 endpoint **排名**其實是列出來的 —— `GROUP_BY["endpoint"]["auth"]`
+    是 `action`，排名跑得起來，只是實測回 1 列（`action` 全域只有一個值
+    `'auth'`）。資訊量低，但那是誠實的結果，不是壞掉。
+
+    要分清楚兩件不同的事：
+    - endpoint **排名**（`GROUP_BY["endpoint"]`）：auth **有**，因為 `action` 是真欄位。
+    - endpoint **篩選**（`FILTER_COLUMN`）：auth **沒有**，因為那張表沒有
+      `function` 欄位（見 `FILTER_COLUMN` 的說明 —— 以前對 auth 生出
+      `startsWith(function, ...)` 會讓 ClickHouse 拋錯、API 回 502）。
+
+    不為 auth 的 endpoint 排名加特例：那要在 `supported_analyses()` 裡寫死一條
+    與 `GROUP_BY` 矛盾的規則，等於把「唯一真相」變成兩份。
+    """
     assert "unique_resource" not in explorer.supported_analyses("auth")
+    # 反面：endpoint 排名確實**在**清單裡，這是刻意的（見 docstring）
+    assert "endpoint" in explorer.supported_analyses("auth")
     meta = {s["key"]: s for s in explorer.source_meta()}
     assert "actor" in meta["auth"]["unsupported_filters"]
     assert "endpoint" in meta["auth"]["unsupported_filters"]
@@ -91,17 +109,27 @@ def test_unsupported_filters_carry_a_reason(client):
 
 
 def test_meta_does_not_ship_a_field_nobody_renders():
-    """meta 不可以帶 `limits` —— 渲染它的那一欄已於 4365a8e 移除。
+    """meta 不可以帶 `limits` 或 `sensitive` —— 兩個都沒有消費端。
+
+    `limits`：渲染它的那一欄已於 4365a8e 移除。
+    `sensitive`（fix round 1，reviewer 抓到）：曾是 brief 的 Interfaces 原本列的
+    欄位，但 `grep -rn sensitive web/` 只有 `FALLBACK_SOURCES` 自己在造這個鍵，
+    Explorer 沒有任何地方讀它 —— 健康卡的 `sensitive` 來自 `/api/health` 的
+    另一份 payload，鍵同名但是完全不同的資料。
 
     這則測試是反向的：它防的不是「漏了欄位」，而是**有人把一個沒有消費端的
     欄位加回來**。那正是這個 task 要消滅的形狀（前端與後端各留一份、其中一份
-    沒人讀、然後兩份慢慢不一致）。
+    沒人讀、然後兩份慢慢不一致）——`sensitive` 能在同一輪 review 裡被抓到兩次
+    正說明這個形狀有多容易複製。
     """
     for s in explorer.source_meta():
         assert "limits" not in s, (
             f"{s['key']} 的 meta 帶了 limits，但沒有任何地方渲染它。"
             "逐來源的限制說明已分散到 unsupported_filters（本 task）、"
             "routes._LIMITATIONS_BY_SOURCE（事件詳細頁）與 health._NOTES（健康卡）。")
+        assert "sensitive" not in s, (
+            f"{s['key']} 的 meta 帶了 sensitive，但 Explorer 沒有任何地方渲染它。"
+            "健康卡的 sensitive 來自 /api/health 的另一份 payload，不要混用。")
     assert not hasattr(explorer, "SOURCE_LIMITS"), (
         "explorer.SOURCE_LIMITS 不該存在（見 Task 6 的計畫修訂）")
 

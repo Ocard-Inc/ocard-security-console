@@ -1189,10 +1189,18 @@ def _explain_empty(f: explorer.ExplorerFilter) -> dict | None:
 # 但 `settings()` 有 lru_cache、其餘都是純運算 —— 沒有任何 await，
 # 寫成 async def 只會多一個要維護的例外。
 def explorer_meta(user: CurrentUser = Depends(current_user)) -> dict:
-    """Explorer 的來源清單與每個來源的能力（分析方式、資料限制、不支援的篩選）。
+    """Explorer 的來源清單與每個來源的能力（分析方式、endpoint 欄位標籤、
+    不支援的篩選及其原因）。
 
     **刻意是獨立的 GET，不塞進 `POST /explorer` 的回應。** 這份資料每次查詢
     都一樣，塞進去等於每次查詢都白傳一份；而前端只在 mounted 時要一次。
+
+    **刻意不含逐來源的「資料限制」清單。** 渲染它的那一欄（Explorer 最右側的
+    「欄位說明與資料限制」）已於 2026-08-07 移除；那些資訊分散在
+    `queries/health._NOTES`（健康卡）、`_LIMITATIONS_BY_SOURCE`（事件詳細頁）
+    與這裡的 `unsupported_filters`（顯示在被擋住的那個欄位旁邊）。
+    `tests/test_explorer_source_meta.py::test_meta_does_not_ship_a_field_nobody_renders`
+    反向守著「不要加回沒有消費端的欄位」。
     """
     guard(user, "use_explorer")
     return {"sources": explorer.source_meta()}
