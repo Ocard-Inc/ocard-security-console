@@ -509,3 +509,39 @@ def test_scrub_text_still_masks_authorization():
     """
     out = masking.scrub_text('{"authorization": "Bearer abcdef123456"}')
     assert "abcdef123456" not in out, f"authorization 沒有被遮罩：{out}"
+
+
+def test_scrub_text_respects_prefix_boundaries():
+    """regex 的前綴方向安全 —— `author` 與 `authority` 不會被遮罩。
+
+    樣式開頭的 `\"?` 沒有錨定，但 `[:=]` 會卡在前綴詞的中間，所以不會誤傷。
+    這是全部 9 個 alternation 共有的既有行為，不是 `auth` 新引入的，
+    不要為了「精確」而加錨定（那會改全部 9 個鍵的行為，超出本 task 範圍）。
+    """
+    # author 與 authority 不應該被遮
+    out_author = masking.scrub_text('{"author":"vinek","authority":"tw"}')
+    assert '"author":"vinek"' in out_author, f"author 被誤遮：{out_author}"
+    assert '"authority":"tw"' in out_author, f"authority 被誤遮：{out_author}"
+
+
+def test_scrub_text_accepts_suffix_matching():
+    """regex 的後綴方向會命中，這是刻意接受的既有行為。
+
+    開頭 `\"?` 沒有錨定意味著任何以 key 結尾的鍵都會被遮罩。這不是 `auth`
+    新引入的性質 —— `mytoken`、`mysecret` 等也一樣會被遮（既有行為）。
+
+    理由：過度遮罩比洩漏安全。`oauth` 或 `is_auth` 被遮成 `***` 是無害噪音，
+    但它們實際上是憑證，外流才是真的風險。布林旗標被誤遮只是信號有點混亂。
+    """
+    # oauth 與 is_auth 都應該被遮（後綴匹配）
+    out_oauth = masking.scrub_text('{"oauth":"secret_value_123456"}')
+    assert "secret_value_123456" not in out_oauth, f"oauth 沒有被遮罩：{out_oauth}"
+    assert '{"oauth":***}' in out_oauth, f"oauth 的值未正確遮罩：{out_oauth}"
+
+    out_is_auth = masking.scrub_text('{"is_auth":"token_value_789012"}')
+    assert "token_value_789012" not in out_is_auth, f"is_auth 沒有被遮罩：{out_is_auth}"
+    assert '{"is_auth":***}' in out_is_auth, f"is_auth 的值未正確遮罩：{out_is_auth}"
+
+    # mytoken 也會被遮（既有行為，不是新的）
+    out_mytoken = masking.scrub_text('{"mytoken":"abcdef123456"}')
+    assert "abcdef123456" not in out_mytoken, f"mytoken 沒有被遮罩：{out_mytoken}"

@@ -48,10 +48,21 @@ _EMPTY = {None, "", "None", "null"}
 # 後面的 `\"?\s*[:=]` 比對 `orization` 會失敗而回溯到完整分支），
 # 但 tests/test_masking_audit.py 兩個方向都守著。
 #
-# 注意這個樣式要求鍵**到此結束**：`auth_token` 不會被這個分支命中
-# （`[:=]` 比對到 `_` 就失敗）。目前實測的鍵名只有 `auth`，
-# 真的出現 `auth_xxx` 再加，不要為了保險把樣式放寬成前綴比對 ——
-# 那會連 `author`、`authority` 這類無關欄位一起遮掉。
+# 樣式的匹配特性（開頭 `\"?` 沒有錨定鍵名開頭）導致兩個方向的命中：
+#
+# **前綴方向：安全** —— `author` 與 `authority` 不會命中，因為 `[:=]` 卡在
+# `or` 與 `ority` 上。不要為了「精確」而加錨定（例如 `(?<![\\w])`）—— 那會改
+# 全部 9 個 alternation 的行為，超出本 task 範圍，而目前這個方向的安全性
+# 已由 tests/test_masking_audit.py::test_scrub_text_respects_prefix_boundaries
+# 守著。
+#
+# **後綴方向：命中**（刻意接受）—— `oauth`、`is_auth` 以及任何以 `token`/
+# `secret` 等結尾的鍵都會被遮罩。這不是 `auth` 新引入的行為，而是全部
+# 9 個 alternation 共有的既有特性（`mytoken`、`mysecret` 一樣）。過度遮罩
+# 比洩漏安全：布林旗標被誤遮成 `***` 只是無害噪音，但 OAuth token 或自訂
+# `is_auth` session 旗標被外流是真的風險。這個方向由
+# tests/test_masking_audit.py::test_scrub_text_accepts_suffix_matching
+# 驗證與記錄。
 _SENSITIVE_KEY_RE = re.compile(
     r"(?i)(\"?(?:authorization|auth|cookie|token|vtoken|password|pwd|secret|api[_-]?key)\"?\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"
