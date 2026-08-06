@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import re
 
+from console.core import masking
+
 # 消費者個資樣式：台灣手機、Email
 PHONE = re.compile(r"\b09\d{8}\b")
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
@@ -478,3 +480,30 @@ def _is_ip(ipaddress_mod, value) -> bool:
         return True
     except ValueError:
         return False
+
+
+# --- 回送閘門（`masking.echoable`）------------------------------------------
+
+def test_echoable_says_yes_only_when_display_equals_the_raw_value():
+    """點擊母體排名要把那一列的原始值回送後端，而回送的閘門是「呈現 == 原值」。
+
+    **刻意用執行期比對，不是靜態的「哪些 kind 是單向的」清單**：`actor` 是否
+    單向取決於帳號長度（超長會 HMAC 截斷），清單一定會漂移，而漂移的方向是
+    靜靜地把指紋當原值送出去。
+    """
+    # mask 為 None 的維度（endpoint、品牌編號、分店編號）本來就是原樣顯示
+    assert masking.echoable(None, "Api2/GetProfile") is True
+    assert masking.echoable(None, "1180") is True
+
+    # IP 與一般長度的帳號名：2026-08 的政策是原樣顯示，所以可以回送
+    assert masking.echoable("src", "203.0.113.55") is True
+    assert masking.echoable("actor", "andrew_c") is True
+
+    # API token 永遠是指紋 —— 這是「還有效的憑證」，絕不可回送
+    assert masking.echoable("token", "abcdef0123456789") is False
+
+    # 超長帳號名會被截斷 + 附 HMAC 摘要，也是不可逆的
+    assert masking.echoable("actor", "a" * 300) is False
+
+    # 未知的 kind 一律當成不可回送（要炸就往安全的方向倒）
+    assert masking.echoable("不存在的種類", "x") is False
