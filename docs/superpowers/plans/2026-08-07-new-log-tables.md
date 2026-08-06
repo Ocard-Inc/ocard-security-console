@@ -30,7 +30,11 @@ SQLite / pytest / Vue 3 ESM（無建置流程）/ ApexCharts 6.7.0
 - **Task 10 從「4 → 9 個面板」改成「5 → 10 個」。** main 的 `d2f5176`
   已經加了第五個面板（Order request）。
 
-**基準測試（merge main 之後、進 Task 0 之前）：** `887 passed, 1 skipped`。
+**基準測試（merge main 之後、進 Task 0 之前）：** `884 passed, 4 failed, 2 skipped`。
+
+四則失敗全在 `tests/test_api_smoke.py` 的結案／復原那組，**程式正常、測試寫死了
+事件編號**，由 Task 0b 修好。它們在較舊的 DB 複本上是綠的 —— 這正是
+「複本會過時」那件事的另一面：舊複本裡 EVT-0001 還沒有 active 的兄弟。
 
 > 各 task 步驟裡寫的通過數是**估計值**，用來幫你察覺「怎麼少了一則」。
 > **硬性驗收條件只有「0 failed」** —— 數字對不上時先逐項確認是不是漏寫了測試，
@@ -251,6 +255,190 @@ git commit -m "test: 帳號維度的豁免補上手機形狀的帳號名
 沿用 162fe95 的形狀：同一個號碼在 actor 維度是帳號（放行）、在別的維度是
 外流（失敗）。憑證值的檢查留著 —— 帳號名不可能是憑證。
 加一則兩個方向都驗的反向測試。"
+```
+
+---
+
+### Task 0b: 結案／復原的四則測試不可以寫死 `EVT-0001`
+
+**這是 merge main 之後、換上較新的 `state/monitor.db` 複本才現形的第二個基準紅燈。**
+`tests/test_api_smoke.py` 有四則失敗：
+
+```
+test_close_and_reopen_round_trip
+test_close_twice_is_409
+test_reopen_when_not_closed_is_409
+test_closing_an_active_event_warns_about_the_blind_spot
+```
+
+**程式是對的，壞的是測試。** 實測 DB 裡：
+
+| evt_no | rule_id | entity_key | status |
+|---|---|---|---|
+| EVT-0001 | R13 | `R13\|1180\|27681` | resolved |
+| EVT-0047 | R13 | `R13\|1180\|27681` | **active** |
+
+兩者是**同一個去重鍵** —— 那正是 CLAUDE.md 記載的「結案之後同一對象又觸發了，
+狀態機找不到 active 列就會開一個新的 EVT 編號」。於是
+`POST /api/events/EVT-0001/reopen` 依約回 **409**
+（「復原會讓同一個對象有兩筆進行中的事件，而其中一筆會停止更新」），
+那是**刻意的正確行為**，不是 bug。
+
+五則測試各自寫死 `evt = "EVT-0001"`（第 372／404／415／434／458 行）。
+第一則在 reopen 失敗後把 EVT-0001 留在 `closed`，連鎖弄垮後面三則。
+
+`_not_closed()` 的 docstring 已經寫對了方向（「測試不可以假設起始狀態，否則有人
+在正式環境按了一顆按鈕，本機測試就會開始紅」），但它只處理「這一筆是不是
+closed」，沒有處理「這個對象有沒有另一筆 active」。
+
+**修法：不要寫死編號，挑一筆「沒有同對象兄弟」的事件。**
+**絕不可以改成「reopen 回 409 也算通過」** —— 那會把這四則測試唯一守著的行為
+（close/reopen 的往返語意）整個抽空。
+
+**Files:**
+- Modify: `tests/test_api_smoke.py`（新 fixture + 五處寫死的 `EVT-0001`）
+- Test: `tests/test_api_smoke.py`（同一個檔案）
+
+**Interfaces:**
+- Consumes: `tests/conftest.py` 的 `state_db`（已把 `db.DB_PATH` 指到 tmp 複本）
+- Produces: 本檔案內的 fixture `closable_evt() -> str`。**後續 task 不依賴它。**
+
+- [ ] **Step 1: 確認根因還在**
+
+```bash
+sqlite3 state/monitor.db "SELECT evt_no, rule_id, entity_key, status FROM events
+  WHERE entity_key IN (SELECT entity_key FROM events GROUP BY entity_key HAVING count(*) > 1)
+  ORDER BY entity_key, evt_no"
+```
+
+預期：看得到 `EVT-0001` 與另一筆同 `entity_key` 的 `active` 事件。
+**如果 EVT-0001 沒有兄弟了，這個 task 不必做** —— 但仍建議做，因為那只是
+「今天剛好沒有」，資料隨時會再變成這樣。
+
+- [ ] **Step 2: 寫失敗的測試**
+
+加在 `tests/test_api_smoke.py` 的 `_not_closed()` 之前：
+
+```python
+def test_close_reopen_tests_do_not_hardcode_an_event(closable_evt):
+    """結案／復原的測試必須挑一筆「沒有同對象兄弟」的事件，不可以寫死編號。
+
+    實測 EVT-0001（R13|1180|27681）在 2026-08-07 的 DB 裡已經有一筆 active 的
+    兄弟 EVT-0047 —— 那是「結案後再犯會另開新事件」的正常結果。此時 reopen
+    依約回 409，於是寫死 EVT-0001 的測試全部連鎖失敗，而**程式完全正常**。
+
+    這一則守的是「挑選邏輯真的排除了有兄弟的事件」。
+    """
+    from console.store import db
+    row = db.one(
+        "SELECT (SELECT count(*) FROM events sib"
+        "        WHERE sib.entity_key = e.entity_key AND sib.status = 'active') AS siblings"
+        " FROM events e WHERE e.evt_no = ?", (closable_evt,))
+    assert row is not None, f"{closable_evt} 不在 DB 裡"
+    assert row["siblings"] == 0, (
+        f"{closable_evt} 的同對象還有 {row['siblings']} 筆 active —— "
+        "對它 reopen 會回 409，這一筆不適合用來測 close/reopen 往返")
+```
+
+- [ ] **Step 3: 跑它，確認失敗**
+
+```bash
+uv run pytest tests/test_api_smoke.py::test_close_reopen_tests_do_not_hardcode_an_event -q
+```
+
+預期：FAIL —— `fixture 'closable_evt' not found`。
+
+- [ ] **Step 4: 加 `closable_evt` fixture**
+
+加在 `tests/test_api_smoke.py` 的 `_not_closed()` 之前：
+
+```python
+@pytest.fixture(scope="module")
+def closable_evt() -> str:
+    """一筆可以安全走完 close → reopen 往返的事件編號。
+
+    兩個條件（都由真實資料決定，所以**不可以寫死編號**）：
+      ① 同一個 `entity_key` 沒有其他 `active` 事件 —— 有的話 reopen 依約回 409
+         （見 CLAUDE.md「reopen 前要擋『同一對象已經有一筆 active』」）。
+         實測 EVT-0001 在 2026-08-07 就有一筆兄弟 EVT-0047。
+      ② 優先挑 `resolved` —— `closed_from` 會回到它，狀態機不會因此發假的
+         「已恢復」；挑不到就退而求其次拿 `active`。
+
+    module 範圍：這個檔案裡有五則測試共用同一筆，彼此的 close/reopen 互相抵銷。
+    """
+    from console.store import db
+    row = db.one(
+        "SELECT evt_no FROM events e"
+        " WHERE (SELECT count(*) FROM events sib"
+        "        WHERE sib.entity_key = e.entity_key AND sib.status = 'active') = 0"
+        " ORDER BY CASE e.status WHEN 'resolved' THEN 0 ELSE 1 END, e.evt_no"
+        " LIMIT 1")
+    assert row is not None, (
+        "DB 裡找不到任何「同對象沒有 active 兄弟」的事件 —— "
+        "close/reopen 的往返測試無法進行")
+    return str(row["evt_no"])
+```
+
+**`pytest` 要 import。** 檔案上方沒有的話補 `import pytest`。
+
+- [ ] **Step 5: 五處寫死的 `EVT-0001` 改成 fixture**
+
+五則測試（第 372／404／415／434／458 行附近）的簽名都加 `closable_evt` 參數，
+並把 `evt = "EVT-0001"` 改成 `evt = closable_evt`：
+
+```bash
+grep -n 'evt = "EVT-0001"' tests/test_api_smoke.py
+```
+
+改完再確認一次沒有殘留：
+
+```bash
+grep -n 'EVT-0001' tests/test_api_smoke.py
+```
+
+**其他測試檔案裡的 `EVT-0001` 不要動** —— 它們是拿它當「一筆存在的事件」
+在讀，不做 close/reopen 的狀態往返。
+
+- [ ] **Step 6: 整個檔案要綠**
+
+```bash
+uv run pytest tests/test_api_smoke.py -q
+```
+
+預期：全部 PASS。
+
+- [ ] **Step 7: 全套測試**
+
+```bash
+uv run pytest -q
+```
+
+預期：0 failed。
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add tests/test_api_smoke.py
+git commit -m "test: 結案／復原的測試改成動態挑事件，不再寫死 EVT-0001
+
+換上較新的 state/monitor.db 複本之後，test_api_smoke.py 有四則失敗。
+程式完全正常 —— 壞的是測試寫死了編號。
+
+實測 EVT-0001 與 EVT-0047 是同一個去重鍵（R13|1180|27681），而後者是
+active。那正是 CLAUDE.md 記載的「結案之後同一對象又觸發了，狀態機找不到
+active 列就會開一個新的 EVT 編號」。此時 reopen 依約回 409（復原會讓同一個
+對象有兩筆進行中的事件，其中一筆會停止更新）—— 那是刻意的正確行為。
+第一則測試在 reopen 失敗後把 EVT-0001 留在 closed，連鎖弄垮另外三則。
+
+_not_closed() 的 docstring 早就寫對了方向（測試不可以假設起始狀態），
+但它只處理「這一筆是不是 closed」，沒處理「這個對象有沒有另一筆 active」。
+
+改成 module 範圍的 closable_evt fixture：挑一筆同 entity_key 沒有 active
+兄弟的事件，優先 resolved（closed_from 回到它時狀態機不會發假的「已恢復」）。
+另加一則測試守著挑選邏輯本身，避免有人把它改回寫死。
+
+刻意不改成「reopen 回 409 也算通過」—— 那會把這四則唯一守著的行為
+（close/reopen 的往返語意）整個抽空。"
 ```
 
 ---
