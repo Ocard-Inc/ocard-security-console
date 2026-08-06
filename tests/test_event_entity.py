@@ -456,3 +456,53 @@ def test_peer_keys_are_the_raw_values_not_the_named_labels():
     # 反向：label 確實已經解過名稱（兩者刻意不同）
     assert self_row["keys"] != [self_row["label"]]
     assert brands.label(_NAMED["brand"]) in self_row["label"]
+
+
+def test_breakdown_accounts_for_every_record_it_did_not_show():
+    """拆解的前 N 名加不到 100% 時，畫面要說得出剩下的去哪了。
+
+    `blank`（該維度是空字串的筆數）**一定要回**：不回的話「沒有帳號的那些筆」
+    會靜靜藏在分母裡，而佔比看起來只是「剛好不到 100%」。
+    這是這個專案一再警告的「把沒有資料說成沒有發生」的同一種錯。
+    """
+    ref = entity.from_filters("api", {"endpoint": "Api2/GetProfile"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.breakdown(ref, start, end)
+
+    assert out["total"] > 0, "這個時段這個 endpoint 沒有資料，換一個已知有量的"
+    # endpoint 已經是排序單位，所以不會出現在拆解裡
+    assert [d["field"] for d in out["dims"]] == ["actor", "brand", "store"]
+    assert out["note"] is None
+
+    for d in out["dims"]:
+        where = d["field"]
+        assert d["label"], f"{where} 少了顯示名稱"
+        assert len(d["rows"]) <= entity.BREAKDOWN_LIMIT
+        # 相異值個數不可能少於列出的名次 —— 反了就是母體與明細不同來源
+        assert d["groups"] >= len(d["rows"]), where
+        # 前 N 名 + 空值 不可能超過總數（前 N 名刻意排除空值那一組）
+        assert sum(r["count"] for r in d["rows"]) + d["blank"] <= out["total"], where
+        # 由高到低
+        assert [r["count"] for r in d["rows"]] == \
+            sorted((r["count"] for r in d["rows"]), reverse=True), where
+        for r in d["rows"]:
+            # 比例一律是小數（0..1）。回百分比的話前端的 pct() 會再乘 100
+            # ——實測 97.47 顯示成 9747.0%
+            assert 0 <= r["share"] <= 1, f"{where} 的 share 不是小數"
+            assert r["label"], f"{where} 有一列沒有標籤"
+            # 原始值不可以出現在拆解裡（這一層不再往下鑽，不需要它，
+            # 而 auth 的 actor 原始值是有效憑證）
+            assert "value" not in r, f"{where} 洩漏了原始值"
+
+
+def test_breakdown_says_so_when_there_is_nothing_left_to_split():
+    """四個維度全部被拿去排序時，回空清單 + 一句說明，不是一塊空白面板。"""
+    ref = entity.from_filters("api", {
+        "source_ip": "1.2.3.4", "endpoint": "Api2/GetProfile",
+        "actor": "andrew_c", "brand": "1180", "store": "27681"})
+    assert ref is not None
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.breakdown(ref, start, end)
+    assert out["dims"] == []
+    assert out["note"], "沒有可拆維度時必須說出原因"

@@ -364,6 +364,82 @@ def breakdown_fields(ref: EntityRef) -> list[str]:
             if f not in used and explorer.entity_meta(f, ref.source) is not None]
 
 
+def breakdown(ref: EntityRef, start: datetime, end: datetime,
+              limit: int = BREAKDOWN_LIMIT) -> dict:
+    """這個對象在此區間的活動，按每個「還沒被拿去排序的」維度分組的前 N 名。
+
+    ## 與 `peers()` 是**不同的範圍**，兩者不可混讀
+
+    `peers()` 問「我在母體的哪裡」（**不帶**對象條件的 GROUP BY）；
+    這一支問「我自己打了哪些 endpoint／帳號／品牌／分店」（**帶**對象條件）。
+    同一張卡的兩塊必須各自說出自己的範圍 —— 同一個數字兩種母體是這個專案
+    一再出事的形狀（見 CLAUDE.md 的 `by_judgement`）。
+
+    ## 區間必須與 `peers()` 相同
+
+    呼叫端一律傳規則的 `window_minutes`，這樣左欄那根長條的長度就等於
+    右邊各維度 `rows` 的總和 + `blank`。刻意**不吃自訂區間**就是為了維持
+    這個對帳關係（趨勢那支才吃區間，見 `entity_history.recent_trend()`）。
+
+    ## 查詢數是 1 + 維度數
+
+    一支把 `count()` 與每個維度的 `uniqExact` / `countIf(= '')` 一次算完，
+    剩下每個維度一支 top-N。欄位別名是程式產生的常數（`g0` / `b0`），
+    運算式來自 `explorer.GROUP_BY`，沒有注入面。
+    條件是「單一對象在 60 分鐘內」，非常選擇性。
+
+    ## `blank` 一定要回
+
+    前 N 名刻意**排除空值那一組**（標籤是空字串的長條沒有人讀得懂），
+    所以佔比加不到 100%。不回 `blank` 的話「沒有帳號的那些筆」會靜靜藏在
+    分母裡，而畫面看起來只是「剛好不到 100%」。
+
+    品牌的 `_brand` 有兩個哨兵值（`-1` 是品牌層級操作、`0` 是未填），
+    **照實列出**，不過濾 —— 過濾等於偷偷改分母。
+    """
+    params = {"start": timewin.fmt(start), "end": timewin.fmt(end), **ref.params}
+    base = f"FROM {ref.table} WHERE {exprs.time_filter()} AND {ref.where}"
+    shape = {"window_start": params["start"], "window_end": params["end"]}
+
+    fields = breakdown_fields(ref)
+    if not fields:
+        total = int(query(f"SELECT count() AS c {base}", params).iloc[0]["c"] or 0)
+        return {**shape, "total": total, "dims": [], "note": (
+            "這個事件的對象已經用掉全部可拆的維度"
+            f"（{'、'.join(d.label for d in ref.dims)}），沒有可以再往下拆的欄位。")}
+
+    metas = [(f, explorer.entity_meta(f, ref.source)) for f in fields]
+    agg = ", ".join(
+        f"uniqExact({expr}) AS g{i}, countIf({expr} = '') AS b{i}"
+        for i, (_, (expr, _, _)) in enumerate(metas))
+    s = query(f"SELECT count() AS total, {agg} {base}", params).iloc[0]
+    total = int(s["total"] or 0)
+
+    dims = []
+    for i, (field, (expr, mask, label)) in enumerate(metas):
+        df = query(f"SELECT {expr} AS d, count() AS c {base} AND {expr} <> ''"
+                   f" GROUP BY d ORDER BY c DESC LIMIT {int(limit)}", params)
+        pairs = [(str(r["d"]), int(r["c"])) for _, r in df.iterrows()]
+        # 品牌與分店要一次批次查名稱（逐列呼叫單值版就是 6 趟 MySQL）
+        names = _names(field, [v for v, _ in pairs])
+        dims.append({
+            "field": field,
+            "label": label,
+            "groups": int(s[f"g{i}"] or 0),
+            "blank": int(s[f"b{i}"] or 0),
+            "rows": [{
+                # **不回原始值。** 這一層不再往下鑽所以不需要它，
+                # 而 auth 的 actor 原始值是**還有效的憑證**。
+                "label": names.get(v) or _display(Dim(field, expr, v, mask, label)),
+                "count": c,
+                # 小數（0..1），不是百分比 —— 前端的 pct() 會乘 100
+                "share": round(c / total, 6) if total else None,
+            } for v, c in pairs],
+        })
+
+    return {**shape, "total": total, "dims": dims, "note": None}
+
+
 def hour_profile(ref: EntityRef, end: datetime, days: int = PROFILE_DAYS) -> dict:
     """24 小時作息：對象 vs 全站，各自佔**自身總量**的百分比。
 
