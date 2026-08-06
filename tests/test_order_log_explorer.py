@@ -102,3 +102,49 @@ def test_detail_rows_do_not_invent_a_source_ip():
         assert r["result"] == "—", f"沒有 status 欄位卻回了結果：{r['result']!r}"
         assert r["resource"] is None
         assert r["endpoint"], "endpoint 不該是空的"
+
+
+# ── 操作者的帳號名 ──────────────────────────────────────────────────
+
+def test_actor_ranking_carries_the_account_name():
+    """排名的 name 仍是可貼回篩選器的整數，帳號名另外一欄。"""
+    rows = explorer.ranking(_filter(), "actor", limit=10)["rows"]
+    assert rows, "這個區間應該要有資料"
+    for r in rows:
+        assert r["name"].isdigit(), (
+            f"name 不是整數字串（{r['name']!r}）—— 那個值要能貼回 actor 篩選器")
+        assert r["account"], f"沒有帳號名：{r}"
+
+
+def test_actor_ranking_name_is_pasteable_back_into_the_filter():
+    """不變量：排名裡看到的值，貼回篩選器就一定命中。"""
+    top = explorer.ranking(_filter(), "actor", limit=1)["rows"][0]
+    assert explorer.trend(_filter(actor=top["name"]))["total"] == top["count"]
+
+
+def test_detail_rows_carry_the_account_name():
+    rows = explorer.detail(_filter(limit=20))["rows"]
+    assert rows
+    for r in rows:
+        assert r["actor"] and r["actor"].isdigit()
+        assert r["account"], f"沒有帳號名：{r}"
+
+
+def test_api_log_actor_also_gets_the_account_name():
+    """api_log 的操作者也是 _admin 整數，同一個對照表的第二個呼叫端。"""
+    f = explorer.ExplorerFilter(source="api", start="2026-08-05 00:00:00",
+                                end="2026-08-05 00:10:00", limit=10)
+    rows = explorer.ranking(f, "actor", limit=5)["rows"]
+    assert rows
+    # api_log 的 _admin 有 0（非後台操作的一般 API 呼叫），那不是「查不到」
+    assert all("account" in r for r in rows)
+
+
+def test_sources_without_numeric_actor_get_none():
+    """backend 的操作者是 acc（本來就是名字），不該憑空多一個帳號欄位的值。"""
+    f = explorer.ExplorerFilter(source="backend", start="2026-08-05 00:00:00",
+                                end="2026-08-05 00:10:00", limit=10)
+    rows = explorer.ranking(f, "actor", limit=5)["rows"]
+    assert rows
+    assert all(r["account"] is None for r in rows), (
+        "backend 的 actor 已經是帳號名，不該再對照一次")

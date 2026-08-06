@@ -541,7 +541,12 @@ export default {
           <tbody>
             <tr v-for="r in result.rows" :key="r.rank">
               <td class="muted">{{ r.rank }}</td>
-              <td :class="{mono: f.analysis !== 'brand'}" style="font-size:12px">{{ r.name }}</td>
+              <td :class="{mono: f.analysis !== 'brand'}" style="font-size:12px">
+                {{ r.name }}
+                <!-- account 是 null 時整行不渲染：那代表這個來源的 actor
+                     本來就是帳號名（backend）或指紋（auth），不是「查不到」。 -->
+                <div v-if="r.account" class="muted" style="font-size:11px">{{ r.account }}</div>
+              </td>
               <td class="right" style="font-weight:500">{{ num(r.count) }}</td>
               <td class="right muted">{{ pct(r.share) }}</td>
               <td class="right">
@@ -613,7 +618,11 @@ export default {
                   {{ r.store_label || '—' }}</td>
                 <td class="mono" style="font-size:11.5px">{{ r.endpoint }}</td>
                 <td class="mono" style="font-size:11.5px;white-space:nowrap">{{ r.source_ip || '—' }}</td>
-                <td class="mono" style="font-size:11.5px;font-weight:600">{{ r.actor || '—' }}</td>
+                <td class="mono" style="font-size:11.5px;font-weight:600">
+                  {{ r.actor || '—' }}
+                  <div v-if="r.account" class="muted"
+                       style="font-size:11px;font-weight:400">{{ r.account }}</div>
+                </td>
                 <td :style="{color: r.result==='錯誤' ? 'var(--danger)' : (r.result==='成功' ? 'var(--ok)' : 'var(--text-2)')}">
                   {{ r.result }}</td>
                 <td class="muted" style="font-size:11px">{{ r.params }}</td>

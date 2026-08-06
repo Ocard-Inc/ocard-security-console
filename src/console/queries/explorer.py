@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pandas as pd
 
-from console.core import brands, masking, stores, timewin
+from console.core import admins, brands, masking, stores, timewin
 from console.core.ch import query
 from console.core.config import settings
 from console.queries import exprs, trends
@@ -37,6 +37,11 @@ MAX_TREND_BUCKETS = 20_000
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
 _ALL_SOURCES = ("api", "backend", "admin", "auth", "order")
+
+# 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
+# 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
+# auth 的是 token 指紋，兩者都不該再對照一次。
+NUMERIC_ACTOR_SOURCES = ("api", "order")
 
 # 分組維度 → (SQL 運算式, 遮罩種類, 顯示名稱)
 GROUP_BY = {
@@ -400,6 +405,11 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         f" {where} GROUP BY k ORDER BY cnt DESC LIMIT {int(limit)}", params)
     total = int(df["cnt"].sum()) if len(df) else 0
     brand_labels = brands.labels(df["k"]) if is_brand_dim and len(df) else {}
+    # 操作者的帳號名。`name` 仍是原始的 `_admin` 整數（要能貼回篩選器），
+    # 帳號名放獨立的 `account` 欄位 —— 見 GROUP_BY["actor"] 的說明。
+    accounts = (admins.accounts(df["k"])
+                if dimension == "actor" and f.source in NUMERIC_ACTOR_SOURCES
+                and len(df) else {})
     rows = []
     for i, (_, r) in enumerate(df.iterrows(), 1):
         raw = r["k"]
@@ -418,7 +428,10 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
                      "brand_top": [] if is_brand_dim else brands.breakdown(r["brand_map"]),
-                     "share": round(int(r["cnt"]) / total, 4) if total else 0})
+                     "share": round(int(r["cnt"]) / total, 4) if total else 0,
+                     # None = 這個來源的 actor 本來就是名字（backend）或指紋（auth）。
+                     # 前端據此決定要不要渲染那一行，不可以當成「查不到」。
+                     "account": accounts.get(brands.coerce_id(raw)) if accounts else None})
     return {"dimension": dimension, "label": label, "total": total, "rows": rows}
 
 
@@ -492,8 +505,12 @@ def detail(f: ExplorerFilter) -> dict:
     brand_labels = brands.labels(r["brand"] for r in masked)
     # 分店編號本身看不出是哪一家；-1 代表品牌層級操作（見 core/stores.py）
     store_labels = stores.labels(r["store"] for r in masked)
+    # 操作者的帳號名（只有 _admin 是整數的來源需要，見 NUMERIC_ACTOR_SOURCES）
+    account_map = (admins.accounts(r["actor"] for r in masked)
+                   if f.source in NUMERIC_ACTOR_SOURCES else {})
     rows = [{**r, "brand_label": brand_labels.get(r["brand"]),
-             "store_label": store_labels.get(r["store"])} for r in masked]
+             "store_label": store_labels.get(r["store"]),
+             "account": account_map.get(brands.coerce_id(r["actor"]))} for r in masked]
     cnt = query(f"SELECT count() AS n {where}", params).iloc[0]["n"]
     return {
         "rows": rows,
