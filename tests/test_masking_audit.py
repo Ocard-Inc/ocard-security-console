@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from console.core import masking
+from console.core import admins, masking
 
 # 消費者個資樣式：台灣手機、Email
 PHONE = re.compile(r"\b09\d{8}\b")
@@ -149,6 +149,64 @@ def _scan_json(body, where: str) -> None:
             f"{where} 的操作者欄位出現非內部網域的位址 {mail}"
 
 
+# `account`（Explorer 的 ranking()／detail()，2026-08 加）是 `ods_user_admin.acc`
+# 對照出來的**後台帳號名**，依 `core/masking.py` 的政策原樣顯示 —— 同
+# OPERATOR_KEYS 那段的道理，但形狀不同，不能直接塞進那個字典：
+#
+# 實測 Order Log 的 POS 整合帳號會用電話號碼命名（`idx=3731` → `0900480856`，
+# 命中 `\b09\d{8}\b`）、也會是外部 Email（`idx=43137` →
+# `f10205071020507@gmail.com`，不在任何內部網域）。兩者都會誤觸 PHONE／EMAIL
+# 樣式產生假警報「Explorer 明細洩漏消費者手機號碼／Email」——而 `account` 從來
+# 不是消費者資料，是後台整合帳號的名字。
+#
+# `INTERNAL_DOMAIN`／`ACCOUNT_DOMAIN` 這兩個網域檢查在這裡都不適用（帳號名可以
+# 是任意網域甚至沒有網域），所以斷言**形狀**沒有意義。改成斷言**出處**：
+# 移除的 `account` 值必須等於 `admins.account()` 對同一列 `actor`（`detail()`）
+# 或 `name`（`ranking()`）算出來的結果 —— 直接證明它來自 `ods_user_admin`
+# 對照，不是從 `params`／`headers` 漏出來的東西。一旦有人把別的字串塞進這個欄位，
+# 這個斷言就會失敗，而樣式檢查（放寬 PHONE／EMAIL）永遠不會抓到這種置換。
+def _strip_account_fields(value):
+    """遞迴移除 `account` 欄位，回傳 (清理後的結構, [(anchor, account值), ...])。
+
+    `anchor` 是同一列的 `actor`（明細）或 `name`（排名）—— 那兩個鍵在 `ranking()`／
+    `detail()` 的輸出裡本來就是原始的 `_admin` 整數字串，`admins.account()` 拿它
+    就能重算出同一個帳號名。
+    """
+    pairs: list[tuple[object, str]] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            account = node.get("account")
+            if isinstance(account, str) and account:
+                pairs.append((node.get("actor", node.get("name")), account))
+            out = {}
+            for k, v in node.items():
+                if k == "account":
+                    continue
+                out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(value), pairs
+
+
+def _scan_explorer(body, where: str) -> None:
+    """給會回傳 `account`（後台帳號對照）的 Explorer 端點用。
+
+    豁免的是「這個鍵的值不受 PHONE／EMAIL 樣式檢查」，換來的保證是
+    「它必須等於 `admins.account(anchor)` 的結果」—— 見上方常數區塊的說明。
+    """
+    import json
+    cleaned, pairs = _strip_account_fields(body)
+    _scan(json.dumps(cleaned, ensure_ascii=False), where)
+    for anchor, account in pairs:
+        assert account == admins.account(anchor), (
+            f"{where} 的 account 欄位（{account!r}，anchor={anchor!r}）與帳號對照"
+            f"結果不符 —— 可能不是真的來自 ods_user_admin 對照")
+
+
 def test_overview_response_is_clean(client):
     r = client.get("/api/overview?minutes=60")
     assert r.status_code == 200
@@ -223,7 +281,32 @@ def test_explorer_detail_is_clean(client):
             "source": source, "analysis": "detail",
             "start": "2026-08-01 12:00:00", "end": "2026-08-01 12:10:00", "limit": 50})
         assert r.status_code == 200, r.text
-        _scan(r.text, f"POST /api/explorer detail source={source}")
+        _scan_explorer(r.json(), f"POST /api/explorer detail source={source}")
+
+
+def test_explorer_detail_account_field_survives_a_wider_window(client):
+    """回歸測試：`account` 欄位裡的電話樣式帳號名不是假警報的來源。
+
+    2026-08-06 實測：`source=order`、視窗 2026-08-01 12:00~12:10、`limit=5000`
+    時，`actor=3731` 的帳號名是 `0900480856`（POS 整合帳號以電話號碼命名），
+    命中 PHONE 樣式 `\\b09\\d{8}\\b`。上面那條測試的 `limit=50` 從未掃到這一列
+    ——換一個視窗或調高 limit 就會產生假警報「Explorer 明細洩漏消費者手機號碼」。
+
+    這裡直接用會踩到它的參數送出去，並先斷言真的掃到目標列（不能自己也跟著
+    避開它），才呼叫 `_scan_explorer()`：這樣豁免與其驗證才算被真正驗證過，
+    不是恰好沒被測到。
+    """
+    r = client.post("/api/explorer", json={
+        "source": "order", "analysis": "detail",
+        "start": "2026-08-01 12:00:00", "end": "2026-08-01 12:10:00", "limit": 5000})
+    assert r.status_code == 200, r.text
+    rows = r.json()["rows"]
+    hit = [row for row in rows if row.get("account") == "0900480856"]
+    assert hit, ("這個視窗應該要能掃到 actor=3731 的帳號 0900480856，"
+                 "測試沒有踩到目標列，等於沒驗到東西")
+    assert hit[0]["actor"] == "3731"
+    assert PHONE.search(hit[0]["account"]), "目標值本身應該命中 PHONE 樣式，否則這條測試在測別的東西"
+    _scan_explorer(r.json(), "POST /api/explorer detail source=order（含電話樣式帳號名）")
 
 
 def test_explorer_detail_params_are_summarised_not_raw(client):
@@ -245,7 +328,26 @@ def test_explorer_rankings_are_clean(client):
             "source": "backend", "analysis": dim,
             "start": "2026-07-16 00:00:00", "end": "2026-07-16 02:00:00"})
         assert r.status_code == 200, r.text
-        _scan(r.text, f"POST /api/explorer {dim}")
+        # backend 的 actor 排名不會帶出 `account`（見 NUMERIC_ACTOR_SOURCES），
+        # 但走 `_scan_explorer()` 而非 `_scan()` 是防禦性的一致做法 ——
+        # 之後有人把 api／order 加進這個迴圈，不必記得換一個掃描函式。
+        _scan_explorer(r.json(), f"POST /api/explorer {dim}")
+
+
+def test_explorer_actor_ranking_account_field_survives_a_wider_window(client):
+    """同一個風險的排名版本：`ranking()` 的 `account` 也可能是電話樣式帳號名。
+
+    `ranking()` 的 anchor 是 `name`（原始 `_admin` 整數字串），不是 `actor`——
+    這裡直接驗證 `_scan_explorer()` 對這個形狀也抓得到出處。
+    """
+    r = client.post("/api/explorer", json={
+        "source": "order", "analysis": "actor",
+        "start": "2026-08-01 12:00:00", "end": "2026-08-01 12:10:00", "limit": 500})
+    assert r.status_code == 200, r.text
+    rows = r.json()["rows"]
+    accounts = [row["account"] for row in rows if row.get("account")]
+    assert accounts, "這個視窗的 actor 排名應該要有帳號名，測試沒驗到東西"
+    _scan_explorer(r.json(), "POST /api/explorer actor ranking source=order")
 
 
 def test_auth_actor_dimension_still_uses_token_fingerprint(client):
