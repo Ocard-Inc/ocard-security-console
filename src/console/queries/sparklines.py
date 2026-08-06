@@ -1,11 +1,12 @@
-"""統計卡上的迷你趨勢線資料：四張 log 表的每小時筆數。
+"""統計卡上的迷你趨勢線資料：各 log 表（依 `data_sources` 設定，目前五張）的每小時筆數。
 
 設計取捨：
 - **獨立端點，不塞進 `health.source_health()`**：那個函式被 `/api/health`（前端每 30 秒
   輪詢）、`/api/overview`（同樣 30 秒）與 `/api/explorer` 三處呼叫，其中只有一處要
   sparkline。塞進去等於讓另外兩個呼叫端永遠白付這筆成本。
-- **一個 UNION ALL 而不是四個查詢**：實測 24 小時、每小時分桶，UNION ALL 0.19 秒，
-  拆成四個獨立查詢 0.44 秒。
+- **一個 UNION ALL 而不是逐表查詢**：實測 24 小時、每小時分桶，四張表時 UNION ALL 0.19 秒、
+  拆成獨立查詢 0.44 秒；加入 Order Log 後五張表 UNION ALL 實測 0.41 秒，仍遠低於
+  拆開查詢的量級。
 - **TTL 快取**：前端 30 秒輪詢一次，但每小時桶的邊界一小時才移動一次，
   120 秒的過時對「趨勢形狀」完全不可見。仿 `core/brands.py` 的模組層快取 +
   `threading.Lock`；不能用 `lru_cache`，那個不會過期。
@@ -90,7 +91,7 @@ def _fetch(hours: int) -> dict:
 
 
 def source_sparklines() -> dict:
-    """四張表最近 N 小時的每小時筆數（TTL 快取）。"""
+    """各 log 表最近 N 小時的每小時筆數（TTL 快取；表的數量依 `data_sources` 設定，非固定值）。"""
     global _cache
     hours, ttl = _config()
     now = timewin.taipei_now().timestamp()

@@ -89,7 +89,7 @@ export default {
     buckets() { return this.data?.trend.buckets || []; },
 
     /**
-     * 四個小倍數面板的資料。每個面板兩條序列：資料線 + 同時段 median 虛線。
+     * 五個小倍數面板的資料。每個面板兩條序列：資料線 + 同時段 median 虛線。
      *
      * 刻意「只畫 median 參考線、不畫 median–P95 帶」：P95 的上緣比實際流量高一個量級
      * （實測 P95 8,323 vs API 776），畫成帶會把面板的 y 軸撐到 8,800、資料線只佔 9% 高，
@@ -388,7 +388,7 @@ export default {
     <div v-if="noP0P1 && !pending.total && !data.freshness.banner && data.monitor.label === '正常'"
          class="banner banner-ok">
       目前沒有達到 P0／P1 門檻的事件，也沒有待判定的事件。最近一次檢查完成於
-      {{ clockTime(data.last_five_min_check) }}，四個 ClickHouse 資料來源均正常更新。
+      {{ clockTime(data.last_five_min_check) }}，{{ data.health.length }} 個 ClickHouse 資料來源均正常更新。
       <template v-if="selfDisabled">
         <br><span style="font-weight:500">但請一併看上方：有部分監測目前被關閉或抑制。</span>
       </template>
@@ -450,9 +450,12 @@ export default {
       </div>
 
       <template v-if="!showTable">
-        <!-- 2×2 小倍數：四條線量級差 1000 倍，同一個 y 軸畫不下（雙軸則會誤導）。
-             每個面板自己一個軸、自己一條同時段 median 虛線；chart.group 讓四個面板
-             的準星同步，滑鼠移一張、四張一起動。 -->
+        <!-- 兩欄小倍數（五個面板、第三列右邊留白）：五條線量級差 1000 倍以上，
+             同一個 y 軸畫不下（雙軸則會誤導）。每個面板自己一個軸、自己一條
+             同時段 median 虛線。**刻意不用 `chart.group`**——它會把 `updateOptions`
+             廣播給整個群組，切換時間區間後最後一個面板的設定會覆蓋掉全部，
+             症狀是每個面板的 tooltip 都顯示同一個面板的數字（見上方 PANELS
+             旁的註解）。 -->
         <div class="panel-grid">
           <div v-for="p in panels" :key="p.key" class="panel">
             <div class="panel-head">

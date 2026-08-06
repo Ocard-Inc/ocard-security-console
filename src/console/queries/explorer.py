@@ -215,7 +215,7 @@ def filter_support(field: str, source: str) -> str | None:
         return f"未知資料來源 {source!r}"
     label = settings()["data_sources"][source]["label"]
     if field in ("brand", "store"):
-        return None                      # 四張表都有 _brand 與 _store
+        return None                      # 五張表都有 _brand 與 _store
     if field == "endpoint":
         return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
     if field in _ENTITY_FILTER:

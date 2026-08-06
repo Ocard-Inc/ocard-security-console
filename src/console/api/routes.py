@@ -99,13 +99,14 @@ def session(user: CurrentUser = Depends(current_user)) -> dict:
 
 # ─────────────────────────── 資安總覽 ───────────────────────────
 
-# 排名查詢的視窗上限。趨勢查詢跨四張表在 7 天視窗只要 0.5 秒（月分區 + part 級
-# create_time 剪枝很有效），但 sources 排名要對 headers 做 JSONExtract，7 天要掃 19M 列
-# 花 3.2 秒 —— 佔整個 /overview 的大半。排名夾在 24 小時，前端據 window_minutes 誠實標示。
+# 排名查詢的視窗上限。趨勢查詢跨五張表（含 Order Log）在 7 天視窗只要 0.7 秒
+# （月分區 + part 級 create_time 剪枝很有效；四張表時實測 0.5 秒），但 sources 排名要對
+# headers 做 JSONExtract，7 天要掃 19M 列花 3.2 秒 —— 佔整個 /overview 的大半。
+# 排名夾在 24 小時，前端據 window_minutes 誠實標示。
 RANKING_MAX_MINUTES = 1440
 
 
-# 自訂區間的上限。四張表都有 create_time 範圍剪枝，但 sources 排名要對 headers
+# 自訂區間的上限。每張表都有 create_time 範圍剪枝，但 sources 排名要對 headers
 # 做 JSONExtract，區間拉太長會讓單一請求跑上好幾十秒。
 MAX_CUSTOM_RANGE_DAYS = 31
 

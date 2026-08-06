@@ -44,7 +44,7 @@ ANY_LOGIN_FAILED = f"({BOSS_LOGIN_FAILED} OR {LEGACY_LOGIN_FAILED})"
 # 原本各處寫死 `has_error = 1`。2026-08-05 `ods_api_log` 重建後該欄位變成
 # `Nullable(String)`（實測值只有 NULL、`'1'`、`'verify failed'` 三種），
 # 於是 ClickHouse 對 String 與 UInt8 的比較直接拋 code 386 NO_COMMON_TYPE ——
-# R09 每個 tick 失敗，而且 **calibrate 整段中止、四張表的基線全部停止更新**。
+# R09 每個 tick 失敗，而且 **calibrate 整段中止、全部表的基線一起停止更新**。
 #
 # 改用 `isNotNull` 而不是 `has_error = '1'` 有兩個理由：
 #   ① 型別無關 —— 欄位再變回數值也不會壞，而這正是這次的教訓；

@@ -1,4 +1,4 @@
-// 趨勢圖設定工廠。總覽（4 線 + 基準帶）、事件詳細（1 線 + 基準帶）、
+// 趨勢圖設定工廠。總覽（5 線 + 基準帶）、事件詳細（1 線 + 基準帶）、
 // Log Explorer（1 線）三張圖共用這一份。
 import { num } from '../lib.js';
 import { baseOptions, axisLabelStyle } from './theme.js';
@@ -32,7 +32,7 @@ import { niceMax } from './format.js';
  *                                    才可以用**：ApexCharts 會把 updateOptions
  *                                    廣播給整個群組，設定不同的話最後一個 update 的
  *                                    圖表會覆蓋掉其他人的 tooltip.custom 與顏色。
- *                                    總覽的四個小倍數面板就是因為這樣而拿掉 group
+ *                                    總覽的五個小倍數面板就是因為這樣而拿掉 group
  *                                    （見 pages/overview.js 的說明）。
  */
 export function timeSeriesOptions(spec) {
@@ -42,7 +42,7 @@ export function timeSeriesOptions(spec) {
     colors, strokeWidth, dashArray,
     dense = false, showMarkers = false, type = 'line',
     compact = false, id, group,
-    // y 軸刻度的格式化。預設是整數（四張表的量都是計數），但 24 小時作息圖的
+    // y 軸刻度的格式化。預設是整數（五張表的量都是計數），但 24 小時作息圖的
     // 兩條線是**百分比**（4.29%），四捨五入成整數會讓整條線的刻度全變成 4
     // ——「機器沒有日夜節律」那個結論就從圖上消失了。
     yFormatter = v => num(Math.round(v)),
