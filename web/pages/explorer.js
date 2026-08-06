@@ -1,4 +1,5 @@
-// Log Explorer（設計稿 10 節）：三區式版面 — Filter Builder / 分析結果 / 欄位說明
+// Log Explorer（設計稿 10 節）：兩區式版面 — Filter Builder / 分析結果。
+// 設計稿的第三區「欄位說明與資料限制」已於 2026-08-07 移除（見 template 內的註解）。
 import { post, num, pct, SOURCE_LABEL } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import BrandPicker from '../components/brand-picker.js';
@@ -48,18 +49,6 @@ export const ANALYSES = [
   { key: 'unique_resource', label: 'Unique resource 分析' },
   { key: 'detail', label: '逐筆明細' },
 ];
-
-const LIMITS = {
-  api: ['來源 IP：多數由 forwarded header 推導，標示為「未驗證來源」，不可作為單 IP 判斷依據。',
-        'params：大量非合法 JSON，預設只呈現大小與欄位名稱；原文請用「調閱原文」。',
-        'has_error 僅在請求出錯時設值，NULL 屬正常。'],
-  backend: ['歷史資料可能重複，已以事件 ID（_id）去重。',
-            'route 含動態段（如 orderlist/detail/<id>），聚合時取前 2 段。'],
-  admin: ['部分登入紀錄沒有 IP，顯示「來源 IP 不可用」。',
-          '登入事件以帳號（acc）識別，操作事件以 _admin 識別，兩者不重疊。'],
-  auth: ['token 是有效憑證，一律以 token_ 指紋呈現（顯示原值等於可被冒用）。',
-         'action 欄位在實測期間只有單一值 auth，無法區分認證成功與失敗。'],
-};
 
 export default {
   // 區間由本頁的 RangePicker 持有。舊的 defaultRange prop 是為了接全域 header
@@ -211,7 +200,6 @@ export default {
     },
     errorHeight() { return barHeight(this.result?.rows?.length || 0); },
 
-    limits() { return LIMITS[this.f.source] || []; },
   },
   // tooltip 讀的是這個非響應式持有者，不是 computed —— 這樣 options 可以完全
   // 不依賴資料數值，避免每次查詢都得重建整組設定（見 ApexChart.js 的契約）。
@@ -656,19 +644,13 @@ export default {
     </template>
   </div>
 
-  <!-- 右：欄位說明與資料限制 -->
-  <div class="card" style="width:230px;flex:none;padding:14px 16px;font-size:12px;color:var(--text-3)">
-    <div style="font-weight:700;font-size:13px;color:var(--text-1);margin-bottom:8px">欄位說明與資料限制</div>
-    <div style="line-height:1.8">
-      <div v-for="(l,i) in limits" :key="i" style="margin-bottom:10px">· {{ l }}</div>
-    </div>
-    <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:10px;line-height:1.8">
-      <strong>帳號、來源 IP、訂單號、品牌與分店為原始值</strong>，可直接追查。<br>
-      仍然收斂的只有兩樣：<strong>token</strong>（有效憑證，以不可逆指紋呈現）與
-      <strong>params／headers 原文</strong>（混著憑證與消費者手機、Email）。
-      後者用每列的「調閱原文」取得，該動作會寫入操作稽核。
-    </div>
-  </div>
+  <!-- 原本這裡有第三欄「欄位說明與資料限制」，2026-08-07 移除（使用者要求）。
+       移除前確認過沒有弄丟東西：那一欄的遮罩政策說明與明細表格下方的
+       result.masked_note 內容重複（見上方），而「這個來源為什麼不支援某個篩選」
+       改成顯示在那個篩選欄位旁邊 —— 使用者被擋住的地方，而不是一個側欄。
+
+       注意：這整段 template 是 JS 的 template literal，所以註解裡不可以出現
+       反引號（會提早終止字串、整頁壞掉）。 -->
 </div>
 
 <!-- 逐筆調閱：完整 params／headers 原文 -->
