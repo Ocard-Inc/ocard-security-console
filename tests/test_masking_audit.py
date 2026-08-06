@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import re
 
+from console.core import masking
+
 # 消費者個資樣式：台灣手機、Email
 PHONE = re.compile(r"\b09\d{8}\b")
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
@@ -28,7 +30,7 @@ EMAIL_ALLOW = {"vinek@olis.com.tw", "dev@olis.com.tw"}
 # payload 裡出現這些字樣代表憑證值沒有被清洗掉。
 # 值本身是隨機的，所以檢查的是「鍵後面直接跟著一段非 *** 的值」。
 CREDENTIAL_LEAK = re.compile(
-    r'(?i)"(?:authorization|cookie|password|pwd|secret|api[_-]?key|vtoken)"\s*:\s*"(?!\*\*\*)[^"]{6,}"'
+    r'(?i)"(?:authorization|auth|cookie|password|pwd|secret|api[_-]?key|vtoken)"\s*:\s*"(?!\*\*\*)[^"]{6,}"'
 )
 
 
@@ -478,3 +480,32 @@ def _is_ip(ipaddress_mod, value) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ── scrub_text 的憑證鍵清單 ────────────────────────────────────────────
+
+def test_scrub_text_masks_the_auth_key():
+    """Order Log 的 params 帶明文 "auth" session 憑證（POS／oboss）。
+
+    這個值會流進規則 context → Slack 與 state/logs/*.log。漏掉的症狀是
+    值班頻道上出現一個還有效的憑證，而畫面上一切正常。
+    """
+    out = masking.scrub_text(
+        '{"_store":"4864","auth":"rzkAokVhOoLKV2fvHh53","lang":"zh-Hant",'
+        '"platform":"oboss","uid":"7097"}')
+    assert "rzkAokVhOoLKV2fvHh53" not in out, f"auth 憑證沒有被遮罩：{out}"
+    # 不可以連無關的值一起吃掉 —— 那些是調查需要的資料
+    assert "4864" in out
+    assert "zh-Hant" in out
+    assert "7097" in out
+
+
+def test_scrub_text_still_masks_authorization():
+    """加 auth 之後 authorization 不可以回歸。
+
+    alternation 的順序不影響結果（`auth` 先匹配時，後面的 `\"?\\s*[:=]`
+    比對 `orization` 會失敗而回溯到完整的 `authorization` 分支），但這件事
+    必須有測試守著，否則下一個人重排順序時沒有任何訊號。
+    """
+    out = masking.scrub_text('{"authorization": "Bearer abcdef123456"}')
+    assert "abcdef123456" not in out, f"authorization 沒有被遮罩：{out}"

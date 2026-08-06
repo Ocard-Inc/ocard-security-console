@@ -40,9 +40,20 @@ from console.core.config import fp_secret
 
 _EMPTY = {None, "", "None", "null"}
 
-# headers/params 內需要清洗的鍵（值以遮罩取代）
+# headers/params 內需要清洗的鍵（值以遮罩取代）。
+#
+# `auth` 是 2026-08 接 Order Log 時補的：`ods_order_api_log` 的 params 帶
+# `{"auth":"rzkAokVhOoLKV2fvHh53",...}` —— POS／oboss 的 session 憑證明文。
+# 它與 `authorization` 並列而不是取代它；順序無所謂（`auth` 先匹配時，
+# 後面的 `\"?\s*[:=]` 比對 `orization` 會失敗而回溯到完整分支），
+# 但 tests/test_masking_audit.py 兩個方向都守著。
+#
+# 注意這個樣式要求鍵**到此結束**：`auth_token` 不會被這個分支命中
+# （`[:=]` 比對到 `_` 就失敗）。目前實測的鍵名只有 `auth`，
+# 真的出現 `auth_xxx` 再加，不要為了保險把樣式放寬成前綴比對 ——
+# 那會連 `author`、`authority` 這類無關欄位一起遮掉。
 _SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(\"?(?:authorization|cookie|token|vtoken|password|pwd|secret|api[_-]?key)\"?\s*[:=]\s*)"
+    r"(?i)(\"?(?:authorization|auth|cookie|token|vtoken|password|pwd|secret|api[_-]?key)\"?\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"
 )
 # 疑似個資樣式：台灣手機、Email
