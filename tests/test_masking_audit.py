@@ -507,3 +507,36 @@ def test_echoable_says_yes_only_when_display_equals_the_raw_value():
 
     # 未知的 kind 一律當成不可回送（要炸就往安全的方向倒）
     assert masking.echoable("不存在的種類", "x") is False
+
+
+def test_peer_keys_never_carry_a_credential(client):
+    """`peers.top[].keys` 是回送用的原始值 —— 裡面不可以有憑證。
+
+    `keys` 存在就等於「這個值的呈現等於它本身」（`masking.echoable()` 的閘門），
+    所以逐段串起來必須等於 label。對不上代表有人把閘門拆掉了，而症狀是
+    **主控台把不可逆的指紋還原成原始 token**，畫面上完全正常。
+
+    只在維度全部原樣顯示時才比對 label —— 品牌與分店的 label 是「名稱（編號）」
+    而 keys 是裸編號，那個差異是刻意的（見 test_event_entity 的
+    `test_peer_keys_are_the_raw_values_not_the_named_labels`）。
+    """
+    named_kinds = {"brand", "store"}
+    checked = 0
+    for e in client.get("/api/events").json()["events"][:8]:
+        p = client.get(f"/api/events/{e['evt_no']}/entity").json()
+        if not p.get("supported"):
+            continue
+        fields = [d["field"] for d in p["dims"]]
+        for row in p["peers"]["top"]:
+            assert "keys" in row, f"{e['evt_no']} 少了 keys 鍵"
+            if row["keys"] is None:
+                continue
+            checked += 1
+            for v in row["keys"]:
+                assert not v.startswith("token_"), \
+                    f"{e['evt_no']} 的 keys 裡出現了 token 指紋：{v}"
+            if not (named_kinds & set(fields)):
+                assert " · ".join(row["keys"]) == row["label"], (
+                    f"{e['evt_no']} 的 keys 與 label 不一致 —— "
+                    f"echoable() 的閘門可能被拆掉了")
+    assert checked, "沒有任何一列有 keys，這條測試等於沒有執行"

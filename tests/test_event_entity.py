@@ -636,3 +636,30 @@ def test_trend_endpoint_follows_a_selected_peer(client):
     d = r.json()
     assert d["label"] == picked["label"]
     assert d["is_self"] is picked["is_self"]
+
+
+def test_token_peers_are_never_echoable(client):
+    """`auth` 的對象是 API token，母體排名的每一列都必須是 `keys: None`。
+
+    **這條刻意不依賴 DB 裡剛好有 auth 事件。** 本檔案原本用「掃前 8 個事件」
+    的方式驗這件事，而本機 DB 裡沒有 auth 對象的事件 —— 實測把
+    `masking.echoable()` 整個改成 `return True`（等於拆掉閘門），那個掃描
+    **照樣全綠**。一條永遠不會紅的反向測試就只是裝飾，而它守的正是
+    「主控台把不可逆的指紋還原成原始 token」。
+
+    這裡直接建一個 token 維度的 ref 來問 `peers()`，所以閘門被拆掉時一定會紅。
+    """
+    ref = entity.from_filters("auth", {"actor": "任何值都可以"})
+    assert ref is not None
+    assert [d.mask for d in ref.dims] == ["token"], \
+        "auth 的操作者必須是 token 種類，否則這條測試守不到東西"
+
+    start, end = (timewin.parse(s) for s in _NAMED_WINDOW)
+    out = entity.peers(ref, start, end)
+    assert out["top"], "這個區間 auth 表應該有資料，換一個已知有量的區間"
+    for row in out["top"]:
+        assert row["keys"] is None, (
+            f"token 的原始值被回送了：{row['keys']} —— "
+            f"那是還有效的憑證，顯示等於任何有主控台讀取權的人都能冒用")
+        # 顯示值本身仍然是指紋（不是空的），排名才讀得懂是「幾個不同的憑證」
+        assert row["label"].startswith("token_"), row["label"]
