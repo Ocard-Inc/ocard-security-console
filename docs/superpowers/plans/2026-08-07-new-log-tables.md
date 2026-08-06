@@ -16,38 +16,38 @@ SQLite / pytest / Vue 3 ESM（無建置流程）/ ApexCharts 6.7.0
 
 **設計文件：** `docs/superpowers/specs/2026-08-07-new-log-tables-design.md`
 
-**分支基準：** `design/order-log-integration`（`c753bf6`）。**不是 main** ——
-main 落後 18 個 commit，缺 `_ENTITY_FILTER_UNSUPPORTED` / `source_meta()` /
-`_LIMITATIONS_BY_SOURCE` / `core/admins.py` / `tests/test_data_source_coverage.py`
-與 `order` 來源，而這份計畫通篇建立在那些結構上。
+**分支基準：** `origin/main`（2026-08-07 merge 進來，commit `794346c` 之後）。
 
-**基準測試（進 Task 0 之前）：** `774 passed, 1 failed, 1 skipped`（5 分 36 秒）。
-唯一失敗是 `tests/test_masking_audit.py::test_event_entity_panels_are_clean`，
-由 Task 0 修好。**從 Task 1 起，任何 task 結束時的失敗數必須是 0。**
+原本這份計畫基於 `design/order-log-integration`，因為 main 當時缺
+`_ENTITY_FILTER_UNSUPPORTED` / `source_meta()` / `_LIMITATIONS_BY_SOURCE` /
+`core/admins.py` / `test_data_source_coverage.py` 與 `order` 來源。
+**那條分支已經併進 main**（`794346c`），所以基準改回 main，計畫依此更新過兩處：
 
-> 各 task 步驟裡寫的通過數（`780 passed` 等）是**估計值**，用來幫你察覺
-> 「怎麼少了一則」。**硬性驗收條件只有「0 failed」** —— 數字對不上時先逐項
-> 確認是不是漏寫了測試，確認無誤就照實際數字繼續，不要為了湊數字加測試。
+- **Task 0 大幅縮小。** main 的 `162fe95` 已經把對象標籤的豁免改成
+  **掛在維度上**（`ACTOR_FIELDS`），比原計畫的「查 ClickHouse 對帳出處」更好 ——
+  不需要額外查詢，語意也更準。原本那則紅燈現在是綠的。
+  剩下的缺口只有 PHONE 那一格（見 Task 0）。
+- **Task 10 從「4 → 9 個面板」改成「5 → 10 個」。** main 的 `d2f5176`
+  已經加了第五個面板（Order request）。
 
-## 這輪明確不做
+**基準測試（merge main 之後、進 Task 0 之前）：** `887 passed, 1 skipped`。
 
-寫在這裡是因為它們每一項看起來都「順手就做了」，而每一項都有具體的壞處：
-
-- **不寫任何規則、不進 `calibrate.GRANULARITIES`、不加 `baseline`。**
-  五張表的資料是 2026-08-06／08-07 同一天回填或上線的。現在跑 calibrate 會拿
-  「回填當天寫進來的資料」當 28 天歷史，算出來的門檻不是錯得離譜就是剛好等於
-  現況 —— 兩種都會讓規則長期漏抓，而畫面上一切正常。
-- **不進 `sweep` 探針。**
-- **不進 `sql_console.allowed_tables`。** 那是另一個攻擊面：現有的
-  `forbidden_output_columns` 擋的是欄位名，而 voucher/ec 的兩欄就叫
-  `request` / `response`，擋掉它們等於 SQL Console 對那兩張表只剩時間欄位可看。
-  值不值得要另外談。
-- **不做 `entity` / `entity_history`（事件對象視角）。** 那是規則的下游，
-  沒有事件就沒有對象。
-- **不處理 voucher 的 15% 重複對「規則 metric」的影響。** 這輪只有 Explorer 與
-  健康卡，而健康卡本來就會顯示 `dup_rate`，那正是它的用途。
-  （但 `request` 的 `idx` 去重是這輪就要做的 —— 它不是「重複率高」而是
-  「同一筆請求有兩個狀態」，不處理會在狀態碼分析裡生出一格幽靈的 `0`。）
+> 各 task 步驟裡寫的通過數是**估計值**，用來幫你察覺「怎麼少了一則」。
+> **硬性驗收條件只有「0 failed」** —— 數字對不上時先逐項確認是不是漏寫了測試，
+> 確認無誤就照實際數字繼續，不要為了湊數字加測試。
+>
+> **跑基準一定要跑完整套。** `test_api_smoke.py` 的 close/reopen 那組測試
+> 之間有狀態相依，只跑子集會出現 4 則假失敗（實測：單獨跑通過、
+> 與 `test_trend_baseline.py` 一起跑失敗、完整跑通過）。
+>
+> **worktree 的 `state/monitor.db` 是複本，會過時。** 實測：複本裡沒有
+> `table_*m:order` 的基線（那是抓完之後才由 calibrate 算出來的），
+> 於是 `test_trend_baseline.py::test_every_series_has_a_baseline[order]` 與
+> `test_api_smoke.py::test_wide_window_still_has_baselines_and_sane_multiples`
+> 一起失敗，看起來像程式壞了。重抓：
+> `sqlite3 <主 workspace>/state/monitor.db "VACUUM INTO 'state/monitor.db'"`
+> （**必須用 `VACUUM INTO` 而不是 `cp`** —— DB 是 WAL 模式，
+> 複製 `.db` 檔會漏掉尚未 checkpoint 的內容）。
 
 ## Global Constraints
 
@@ -94,211 +94,163 @@ created_at >= toDateTime(%(start)s, 'Asia/Taipei') AND created_at < toDateTime(%
 
 ---
 
-### Task 0: 修好基準的紅燈（entity panel 標籤改斷言出處）
+### Task 0: 帳號維度的豁免補上 PHONE（`162fe95` 只做了 EMAIL）
 
-`tests/test_masking_audit.py::test_event_entity_panels_are_clean` 在
-`design/order-log-integration` 上就是紅的。根因不是洩漏，而是**後台帳號的名字
-本身就長得像個資**：實測 365 天內 `ods_backend_sys_log` 與 `ods_admin_log` 的
-26,518 個相異帳號裡，**149 個是台灣手機號碼**（`0900480856`、`0972723297`…）、
-**892 個是外部 Email**（`aaronkuo0821@gmail.com`、`eddie630512@yahoo.com.tw`…）。
+**這個 task 在 2026-08-07 merge main 之後大幅縮小了。** 原本的計畫是
+「斷言出處取代樣式斷言」，但 main 的 `162fe95` 已經用更好的方式解決了主要問題：
+**豁免改成掛在維度上**（`_pop_labels()` 依 `ACTOR_FIELDS` 把標籤分成
+`accounts` 與 `others` 兩堆），`actor` 維度的標籤不限 Email 網域，
+其他維度仍只放行內部網域。那比查 ClickHouse 對帳更好 —— 不需要額外查詢，
+而且語意更準（「這一格顯示的是帳號欄位」才是豁免的真正依據）。
 
-母體排名（`entity.peers()`）會列出**其他**對象，所以這些帳號名遲早出現在標籤裡。
-目前只失敗一則，純粹是因為前 6 個事件剛好只撞到 Email 那一種 —— PHONE 那一格
-是同樣的潛伏紅燈。
+**剩下的缺口只有一個**：那個豁免只放寬了 EMAIL，PHONE 仍然是無條件的
 
-**修法：斷言出處，不放寬樣式。** 比照 `b383830` 對 Explorer `account` 欄位的做法
-（`account` 必須等於 `admins.account(anchor)` 的結果）。這裡的出處是
-「這個字串真的是某個後台帳號的名字」。**絕不可以放寬 `EMAIL` / `PHONE` regex
-或往 `EMAIL_ALLOW` 加網域** —— 那會讓之後任何真正的洩漏剛好落在被放寬的範圍裡，
-正是 `tests/test_masking_audit.py` 存在的理由被抽掉。
+```python
+assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"
+```
+
+而實測 365 天內 `ods_backend_sys_log` 與 `ods_admin_log` 的 26,518 個相異帳號裡，
+**149 個的名字就是台灣手機號碼**（`0900480856`、`0972723297`、`0983062108`…）。
+母體排名（`entity.peers()`）列的是**其他**對象，所以那些帳號名遲早出現在
+`accounts` 那一堆裡 —— 到時候會是一則看起來像「洩漏消費者手機」的假警報，
+而下一個人最可能的反應是放寬 `PHONE` regex，那正好把這個檔案的價值抽掉。
+
+**修法沿用 `162fe95` 的形狀**：同一個手機號碼，在 `actor` 維度是帳號（放行），
+在別的維度是外流（失敗）。**不要碰 `ACCOUNT_DOMAIN`，不要動 `EMAIL_ALLOW`，
+不要加 provenance fixture** —— 前兩者有反向測試守著，第三者現在是多餘的。
 
 **Files:**
-- Modify: `tests/test_masking_audit.py`（`_scan_entity_panel` 與新 fixture）
+- Modify: `tests/test_masking_audit.py`（`_scan_entity_panel` 的 PHONE 斷言）
 - Test: `tests/test_masking_audit.py`（同一個檔案）
 
 **Interfaces:**
-- Consumes: `tests/conftest.py` 的 `client` fixture；`console.core.timewin`
-- Produces: session 範圍 fixture `known_accounts() -> frozenset[str]`，
-  供本檔案內的 `_scan_entity_panel()` 使用。**後續 task 不依賴它。**
+- Consumes: `_pop_labels()` 回傳的 `(accounts, others, cleaned)`（main 上已存在）
+- Produces: 無新介面。後續 task 不依賴這個 task 的產出。
 
-- [ ] **Step 1: 先確認紅燈與根因都還在**
+- [ ] **Step 1: 先確認 PHONE 這一格真的還沒被放寬**
 
 ```bash
-uv run pytest tests/test_masking_audit.py::test_event_entity_panels_are_clean -q
+grep -n 'PHONE.search(acct)' tests/test_masking_audit.py
 ```
 
-預期：FAIL，訊息含「的對象標籤出現非內部網域的 Email」。
-若已經是綠的，**停下來問人** —— 代表 DB 複本或事件資料變了，這個 task 的前提不成立。
+預期：找得到 `assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"`。
+**找不到的話停下來** —— 代表已經有人處理過了，這個 task 不必做。
 
-- [ ] **Step 2: 加一個會直接踩到手機形狀帳號的回歸測試（現在會失敗）**
+- [ ] **Step 2: 寫失敗的測試**
 
-加在 `tests/test_masking_audit.py` 末尾。它證明「豁免本身有被驗證到」——
-少了它，有人把豁免寫得太寬（例如直接放行所有標籤）也不會有測試失敗。
+加在 `tests/test_masking_audit.py` 的
+`test_account_exemption_is_keyed_on_the_dimension_not_on_the_string` 之後
+（跟它放在一起，那一區是「對象標籤豁免的反向測試」，不需要 ClickHouse）：
 
 ```python
-def test_entity_panel_exemption_is_provenance_not_pattern(known_accounts):
-    """豁免的依據必須是「這是真的帳號名」，不是「它長得像內部網域」。
+def test_account_exemption_covers_phone_shaped_account_names():
+    """同一個手機號碼：在 `actor` 維度是帳號（放行），在別的維度是外流（失敗）。
 
-    實測 365 天內有 149 個後台帳號的名字就是台灣手機號碼、892 個是外部 Email。
-    它們是**帳號身分本身**（2026-08 政策要求原樣顯示），不是從 payload 漏出來的
-    消費者資料。所以檢查的是出處：這個字串必須真的出現在 acc 欄位裡。
+    實測 365 天內 backend + admin 共 26,518 個相異帳號，其中 **149 個的名字
+    就是台灣手機號碼**（0900480856、0972723297…）。母體排名列的是其他對象，
+    所以它們遲早出現在帳號標籤裡。
 
-    反向：一個不在帳號清單裡的手機號碼仍然必須被判定為洩漏。
+    不處理的話那會是一則看起來像「洩漏消費者手機」的假警報，而下一個人最可能
+    的反應是放寬 PHONE regex —— 那正好把這個檔案的價值抽掉。所以豁免掛在
+    維度上（同 162fe95 對 Email 的做法），不是掛在號碼長什麼樣。
     """
-    import re
-    phone_like = [a for a in known_accounts if re.fullmatch(r"09\d{8}", a)]
-    assert phone_like, ("實測母體裡應該有手機形狀的後台帳號；一個都沒有代表 "
-                        "known_accounts 查錯了，這個豁免會變成空的")
-    # 真帳號：放行
-    _scan_entity_panel({"label": phone_like[0]}, "假造的面板（真帳號）", known_accounts)
-    # 非帳號的手機號碼：必須擋下來
-    fake = "0900000001"
-    assert fake not in known_accounts, "測試資料選得不好，請換一個不存在的號碼"
+    import pytest
+    phone = "0900480856"
+    ok = {"peers": {"dims": [{"field": "actor"}],
+                    "top": [{"label": phone}]}}
+    _scan_entity_panel(ok, "帳號維度的手機形狀帳號")      # 不該拋
+
+    leaked = {"peers": {"dims": [{"field": "endpoint"}],
+                        "top": [{"label": f"Api2/GetProfile · {phone}"}]}}
     with pytest.raises(AssertionError, match="洩漏消費者手機號碼"):
-        _scan_entity_panel({"label": fake}, "假造的面板（假號碼）", known_accounts)
+        _scan_entity_panel(leaked, "非帳號維度的手機號碼")
 ```
 
-- [ ] **Step 3: 跑它，確認是失敗的**
+**`dims` 的形狀要與 `_pop_labels()` 實際讀的一致。** 先確認：
 
 ```bash
-uv run pytest tests/test_masking_audit.py::test_entity_panel_exemption_is_provenance_not_pattern -q
+sed -n '/^def _pop_labels/,/^def _scan_entity_panel/p' tests/test_masking_audit.py
 ```
 
-預期：FAIL —— `fixture 'known_accounts' not found`。
+照它實際判斷 `ACTOR_FIELDS` 的方式構造上面兩個假 body ——
+猜錯的話測試會因為「兩堆都分到 others」而以錯誤的理由通過或失敗。
 
-- [ ] **Step 4: 加 `known_accounts` fixture**
+- [ ] **Step 3: 跑它，確認第一個斷言就失敗**
 
-加在 `tests/test_masking_audit.py` 的 import 區之後、`_scan_entity_panel` 之前。
+```bash
+uv run pytest tests/test_masking_audit.py::test_account_exemption_covers_phone_shaped_account_names -q
+```
+
+預期：FAIL，訊息是「帳號標籤洩漏消費者手機號碼」——
+**那正是問題本身**（一個真的帳號名被當成洩漏）。
+
+- [ ] **Step 4: 把 PHONE 的斷言從帳號那一堆移除**
+
+`_scan_entity_panel()` 裡，把
 
 ```python
-@pytest.fixture(scope="session")
-def known_accounts() -> frozenset[str]:
-    """近 365 天真實存在的後台帳號名（backend + admin 兩張表的 acc）。
-
-    這是 `_scan_entity_panel()` 的**出處依據**：對象標籤裡長得像手機或 Email 的
-    字串，必須真的是某個帳號的名字，才算在「帳號原樣顯示」政策的範圍內。
-
-    實測 1.60 秒、26,518 個相異帳號（149 個手機形狀、892 個 Email 形狀），
-    session 範圍所以整場 pytest 只查一次。
-
-    邊界在 Python 端算好再傳參 —— SQL 裡不可以用 now()（見 CLAUDE.md）。
-    admin 的 acc 用與 `explorer.GROUP_BY["actor"]["admin"]` 相同的三層 fallback
-    的前兩層：`Boss_initial/auth_v2` 不寫 acc 欄位，帳號只在 params 裡。
-    """
-    from datetime import timedelta
-    from console.core import timewin
-    from console.core.ch import query_rows
-
-    end = timewin.effective_now()
-    params = {"start": timewin.fmt(end - timedelta(days=365)),
-              "end": timewin.fmt(end)}
-    rows = query_rows(
-        "SELECT DISTINCT acc FROM ods_backend_sys_log"
-        " WHERE create_time >= %(start)s AND create_time < %(end)s AND acc != ''"
-        " UNION DISTINCT "
-        "SELECT DISTINCT coalesce(nullIf(acc, ''),"
-        "                        nullIf(JSONExtractString(params, 'acc'), '')) AS acc"
-        " FROM ods_admin_log"
-        " WHERE create_time >= %(start)s AND create_time < %(end)s"
-        "   AND coalesce(nullIf(acc, ''),"
-        "                nullIf(JSONExtractString(params, 'acc'), '')) != ''",
-        params)
-    return frozenset(r["acc"] for r in rows)
+    # 帳號標籤：email 不限網域（帳號本來就是它），其餘規則完全不變
+    acct = " · ".join(accounts)
+    assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"
+    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的帳號標籤含未清洗的憑證值"
 ```
 
-- [ ] **Step 5: 改 `_scan_entity_panel()` 收 `known_accounts` 並改斷言出處**
-
-把現有的 `_scan_entity_panel(body, where)` 整個換掉（原本在第 117–135 行）：
+換成
 
 ```python
-def _scan_entity_panel(body, where: str, known_accounts: frozenset[str]) -> None:
-    """對象面板專用：標籤裡的帳號可以長得像個資，但必須真的是帳號。
-
-    母體排名列的是**其他**對象，而 backend／admin 的對象就是帳號名。實測那些
-    名字有 149 個是台灣手機號碼、892 個是外部 Email —— 它們是帳號身分本身，
-    2026-08 的政策要求原樣顯示。
-
-    **豁免的依據是出處不是樣式**（同 `_scan_explorer()` 對 `account` 欄位的做法）：
-    標籤裡符合手機／Email 樣式的**那一段子字串**必須出現在 `known_accounts` 裡。
-    放寬 regex 或往 EMAIL_ALLOW 加網域是錯的做法 —— 之後任何真正的洩漏都可能
-    剛好落在被放寬的範圍裡。
-
-    標籤仍要過憑證值檢查（帳號名不可能是憑證），結構的其他部分仍走 `_scan()`。
-    """
-    import json
-    labels, cleaned = _pop_labels(body)
-    _scan(json.dumps(cleaned, ensure_ascii=False), where)
-
-    blob = " · ".join(labels)
-    leak = CREDENTIAL_LEAK.search(blob)
-    assert leak is None, f"{where} 的對象標籤含未清洗的憑證值"
-    for phone in PHONE.findall(blob):
-        assert phone in known_accounts, (
-            f"{where} 的對象標籤洩漏消費者手機號碼 {phone} —— "
-            "它不是任何後台帳號的名字，所以不在「帳號原樣顯示」的政策範圍內")
-    for mail in EMAIL.findall(blob):
-        assert mail in EMAIL_ALLOW or mail in known_accounts, (
-            f"{where} 的對象標籤出現 Email {mail} —— "
-            "它不是任何後台帳號的名字，消費者位址仍是外流")
+    # 帳號標籤：email 與手機形狀都不限（**帳號本來就可能長成那樣**），
+    # 憑證值仍然一個都不能有。
+    #
+    # 實測 365 天內 backend + admin 共 26,518 個相異帳號，其中 892 個是外部
+    # Email、**149 個的名字就是台灣手機號碼**（0900480856、0972723297…）。
+    # 兩者都是帳號身分本身，2026-08 的政策要求原樣顯示。
+    #
+    # 豁免掛在**維度**上而不是掛在字串長什麼樣（同 162fe95 對 Email 的做法）：
+    # 同一個號碼出現在 endpoint 或品牌維度的標籤裡仍然是外流，
+    # 由下面 `others` 那一段擋住。帳號名不可能是憑證，所以 CREDENTIAL_LEAK 留著。
+    acct = " · ".join(accounts)
+    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的帳號標籤含未清洗的憑證值"
 ```
 
-- [ ] **Step 6: 把兩個呼叫端補上新參數**
-
-`test_event_entity_panels_are_clean` 的簽名加 `known_accounts`，
-並把 `_scan_entity_panel(r.json(), f"GET {path}")` 改成
-`_scan_entity_panel(r.json(), f"GET {path}", known_accounts)`。
-
-```bash
-grep -n '_scan_entity_panel' tests/test_masking_audit.py
-```
-
-確認只有三處：定義、`test_event_entity_panels_are_clean` 內、以及 Step 2 新增的測試。
-
-- [ ] **Step 7: 檢查 `ACCOUNT_DOMAIN` 是否還有人用**
-
-```bash
-grep -rn 'ACCOUNT_DOMAIN' tests/ src/
-```
-
-若只剩定義沒有呼叫端，**刪掉它**並在 commit message 說明 —— 留一個沒人用的
-regex，下一個人會以為樣式豁免仍是這裡認可的做法。若 `_scan_explorer()` 還在用，
-就留著不動。
-
-- [ ] **Step 8: 兩則測試都要綠**
+- [ ] **Step 5: 新測試轉綠、既有的反向測試不可以變紅**
 
 ```bash
 uv run pytest tests/test_masking_audit.py -q
 ```
 
-預期：全部 PASS（含原本紅的 `test_event_entity_panels_are_clean`）。
+預期：全部 PASS。特別確認這三則仍是綠的 ——
+它們守著「豁免不可以再放寬」：
 
-- [ ] **Step 9: 全套測試回到 0 失敗**
+- `test_entity_panel_exemption_still_rejects_a_consumer_email`
+- `test_account_exemption_is_keyed_on_the_dimension_not_on_the_string`
+- `test_account_exemption_covers_phone_shaped_account_names`（新增的）
+
+- [ ] **Step 6: 全套測試**
 
 ```bash
 uv run pytest -q
 ```
 
-預期：`776 passed, 1 skipped`（774 + 新增 1 + 原本紅的那則轉綠 = 776；
-數字對不上就逐項確認，不要直接改期望值）。
+預期：0 failed。
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add tests/test_masking_audit.py
-git commit -m "fix: entity panel 的標籤豁免改成斷言出處，修好基準紅燈
+git commit -m "test: 帳號維度的豁免補上手機形狀的帳號名
 
-test_event_entity_panels_are_clean 在這條分支上一直是紅的。根因不是洩漏，
-而是後台帳號的名字本身就長得像個資：實測 365 天內 26,518 個相異帳號裡，
-149 個是台灣手機號碼、892 個是外部 Email。母體排名會列出其他對象，所以那些
-名字遲早出現在標籤裡；目前只失敗一則純粹是因為前 6 個事件剛好只撞到 Email。
+162fe95 把對象標籤的豁免改成掛在維度上（actor 維度不限 Email 網域），
+但只放寬了 EMAIL，PHONE 仍然是無條件斷言。
 
-改成比照 b383830 對 Explorer account 欄位的做法：斷言出處而非樣式 ——
-標籤裡符合樣式的子字串必須真的出現在 acc 欄位裡（新增 session 範圍的
-known_accounts fixture，實測 1.60 秒）。刻意不放寬 EMAIL/PHONE regex 也不加
-EMAIL_ALLOW 網域，否則之後真正的洩漏可能剛好落在被放寬的範圍裡。
+實測 365 天內 ods_backend_sys_log 與 ods_admin_log 共 26,518 個相異帳號，
+其中 149 個的名字就是台灣手機號碼（0900480856、0972723297…）。
+母體排名列的是其他對象，所以那些帳號名遲早出現在帳號標籤裡 ——
+到時候會是一則看起來像「洩漏消費者手機」的假警報，而下一個人最可能的反應
+是放寬 PHONE regex，那正好把這個檔案的價值抽掉。
 
-另加一則兩個方向都驗的回歸測試：真帳號的手機形狀名字放行，
-不存在的號碼仍必須判定為洩漏。"
+沿用 162fe95 的形狀：同一個號碼在 actor 維度是帳號（放行）、在別的維度是
+外流（失敗）。憑證值的檢查留著 —— 帳號名不可能是憑證。
+加一則兩個方向都驗的反向測試。"
 ```
 
 ---
@@ -2784,11 +2736,12 @@ GROUP_BY 三處的字串插值天生成立，不需要特例。
 
 ---
 
-### Task 10: 總覽的九個趨勢面板
+### Task 10: 總覽的十個趨勢面板
 
-`trends.request_trend()` 目前是四條線寫死的 SQL（API request / Backend request /
-登入成功 / 登入失敗），前端 `overview.js` 的 `PANELS` 是 2×2 小倍數。
-加五個面板 → **九個**（3×3）。
+`trends.request_trend()` 目前是**五條**線寫死的 SQL（API request / Backend request /
+登入成功 / 登入失敗 / Order request —— 第五條是 `d2f5176` 加的），前端
+`overview.js` 的 `PANELS` 也是五個，版面在 `web/charts/charts.css` 的
+`.panel-grid`（固定 2 欄，窄螢幕降成 1 欄）。加五個面板 → **十個**。
 
 **五個新面板沒有基線**（這輪不算），`baseline.get()` 回 None → 前端不畫 median
 虛線，那是既有的正確降級。但面板標頭**必須明說「尚無基線」** ——
@@ -2797,7 +2750,8 @@ GROUP_BY 三處的字串插值天生成立，不需要特例。
 **Files:**
 - Modify: `src/console/queries/trends.py`（`request_trend()` 的 series 清單）
 - Modify: `web/pages/overview.js`（`PANELS` 與版面）
-- Modify: `web/app.css`（面板 grid 從 2 欄改成自動換行）
+- Modify: `web/charts/charts.css`（`.panel-grid` 從固定 2 欄改成自動換行）
+- Modify: `web/app.css`（來源健康卡的 grid，從 5 張變 10 張）
 - Test: `tests/test_trend_buckets.py` 或新建 `tests/test_overview_panels.py`
 
 **Interfaces:**
@@ -2820,11 +2774,12 @@ from console.core.config import PROJECT_ROOT
 from console.queries import trends
 
 NEW_SOURCES = ("voucher", "ec", "console", "request", "batch")
+EXISTING = ("api", "backend", "login_success", "login_failed", "order")
 
 
 def test_request_trend_has_a_series_for_every_new_source():
     data = trends.request_trend(minutes=360)
-    for key in ("api", "backend", "login_success", "login_failed", *NEW_SOURCES):
+    for key in (*EXISTING, *NEW_SOURCES):
         assert key in data["series"], f"request_trend 少了 {key} 這條線"
 
 
@@ -2904,6 +2859,7 @@ const PANELS = [
   { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
   { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
   { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
+  { key: 'order', label: 'Order request', tokenName: '--chart-order' },
   // 2026-08-07 接入。這五個**沒有基線**，面板標頭要顯示「尚無基線」——
   // 少一條 median 虛線與「這段時間剛好貼在基線上」在畫面上一模一樣。
   { key: 'voucher', label: 'Voucher API', tokenName: '--chart-voucher' },
@@ -2947,20 +2903,24 @@ const hasBaseline = (points) => points.some(p => p.baseline_median != null);
 
 - [ ] **Step 6: 版面改成自動換行（面板與健康卡都要）**
 
-先確認兩個 grid 現在各是幾欄：
+趨勢面板的 grid 在 **`web/charts/charts.css`**（不是 `app.css`），健康卡的在 `web/app.css`：
 
 ```bash
+grep -n 'panel-grid' -A 6 web/charts/charts.css
 grep -n 'grid-template-columns' web/app.css
 ```
 
-**趨勢面板**（原本 2×2）與**來源健康卡**（原本固定欄數）都改成：
+兩者都改成自動換行：
 
 ```css
 grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 ```
 
-**不要寫死 3 欄** —— 九個面板在 1280px 以下會擠。健康卡從 5 張變 10 張，
-同樣不可以留著固定欄數（會變成兩排半，最後一排孤零零一張）。
+**`.panel` 的 `min-width: 0` 不可以拿掉** —— `charts.css` 的註解寫著
+「沒有這行，grid 子項會被 SVG 撐開而不縮」。
+
+十個面板留在 2 欄會排成 5 列、把頁面拉得很長；健康卡從 5 張變 10 張，
+固定欄數會變成兩排半、最後一排孤零零一張。
 
 - [ ] **Step 7: 測試 + 手動驗收**
 
@@ -2974,7 +2934,7 @@ uv run pytest tests/test_overview_panels.py -q && uv run pytest -q
 uv run uvicorn console.api.app:app --host 127.0.0.1 --port 8600 --app-dir src
 ```
 
-開 http://127.0.0.1:8600 檢查：九個面板都在、五個新面板沒有 median 虛線但有
+開 http://127.0.0.1:8600 檢查：十個面板都在、五個新面板沒有 median 虛線但有
 「尚無基線」字樣、切換時間區間之後每個面板的 tooltip 顯示的是**自己的**數字
 （CLAUDE.md 記載的 `chart.group` 廣播 bug —— 那個 bug 只在切過區間後才出現）。
 
@@ -2983,7 +2943,7 @@ uv run uvicorn console.api.app:app --host 127.0.0.1 --port 8600 --app-dir src
 ```bash
 git add src/console/queries/trends.py web/pages/overview.js web/app.css \
         tests/test_overview_panels.py
-git commit -m "feat: 總覽趨勢從 4 個面板擴成 9 個（含五張新表）
+git commit -m "feat: 總覽趨勢從 5 個面板擴成 10 個（含五張新表）
 
 request_trend 的 interval 原本寫死 create_time，改成逐來源取
 source_schema 的 time_expr。
@@ -2996,7 +2956,7 @@ source_schema 的 time_expr。
 後者會畫一條貼在 x 軸的線，等於在陳述「正常值是 0」。
 
 版面改成 auto-fit grid（窄螢幕 2 欄、寬螢幕 3 欄），不寫死欄數 ——
-九個面板在 1280px 以下寫死 3 欄會擠。
+十個面板留在 2 欄會排成 5 列、把頁面拉得很長。
 
 加一則測試綁住「前端 PANELS 與後端 series 一一對應」：
 前端多一個那個面板永遠是空的，少一個那條線靜靜消失，
@@ -3173,7 +3133,7 @@ git commit -m "feat: 每個來源標明「資料自 X 起」
 
 - [ ] `uv run pytest -q` 全綠（預期約 800 則，0 失敗）
 - [ ] 啟動伺服器，Log Explorer 的來源下拉有十個，每一個的每一種分析都跑得起來
-- [ ] 資安總覽有十張健康卡、十條 sparkline、九個趨勢面板
+- [ ] 資安總覽有十張健康卡、十條 sparkline、十個趨勢面板
 - [ ] 五個新來源的健康卡都有「資料限制」說明，且說得出各自的空洞
 - [ ] **回填完成後重測 voucher 的效能**（Task 8 Step 7 的那個腳本）
 - [ ] 把設計文件「開放問題」的第 2、4、5 點回報給相關的人：
