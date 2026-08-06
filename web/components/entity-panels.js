@@ -7,7 +7,7 @@
 // 這一頁原本唯一的圖是「整個資料來源的總量」，與事件對象無關 —— 實際造成的
 // 誤讀是「量比平常低，所以沒事」。這個元件回答的是三個對象自己的問題：
 //   跟其他對象差多少（peers）、這是機器還是人（profile）、這正常嗎（share）。
-import { api, num, pct } from '../lib.js';
+import { api, num, pct, requestGate } from '../lib.js';
 import ApexChart from '../charts/ApexChart.js';
 import RangePicker from './range-picker.js';
 import { token } from '../charts/tokens.js';
@@ -355,16 +355,25 @@ export default {
       this.trendError = null;
       const qs = [`minutes=${this.trendMinutes}`,
                   ...keys.map(v => `v=${encodeURIComponent(v)}`)].join('&');
+      const token = this._trendGate.begin();
       try {
         const d = await api(`/events/${this.evtNo}/entity/trend?${qs}`);
+        // 快取仍然要寫（那個 payload 是對的，只是不再是使用者現在要看的），
+        // 但**不可以寫進畫面**：回應會亂序到達，晚到的舊區間會蓋掉新區間
+        // 而畫面上的區間標籤還是新的（見 lib.js 的 requestGate）。
         this._trendCache.set(cacheKey, d);
+        if (this._trendGate.isStale(token)) return;
         this.trend = d;
         this._trendRows.current = d?.rows || [];
       } catch (err) {
+        // 晚到的失敗會把 trend 清成 null → 圖整塊消失，而畫面上正好是新請求
+        // 剛畫好的那張。這就是「圖有時候跑不出來，再切一次又出現」。
+        if (this._trendGate.isStale(token)) return;
         this.trendError = err.message;
         this.trend = null;
+      } finally {
+        if (!this._trendGate.isStale(token)) this.trendLoading = false;
       }
-      this.trendLoading = false;
     },
     /** 載入選中對象的維度拆解。快取鍵只有對象 —— 它刻意不吃區間。 */
     async loadParts() {
@@ -378,17 +387,23 @@ export default {
       this.partsLoading = true;
       this.partsError = null;
       const qs = keys.map(v => `v=${encodeURIComponent(v)}`).join('&');
+      const token = this._partsGate.begin();
       try {
         const d = await api(
           `/events/${this.evtNo}/entity/breakdown${qs ? '?' + qs : ''}`);
         this._partsCache.set(cacheKey, d);
+        // 同 loadTrend：連續點兩個對象時，先送的那個可能後回 —— 沒有這道 gate
+        // 的話拆解顯示的是上一個對象，而標頭已經是新的那一個。
+        if (this._partsGate.isStale(token)) return;
         this.parts = d;
         this.syncPartRows();
       } catch (err) {
+        if (this._partsGate.isStale(token)) return;
         this.partsError = err.message;
         this.parts = null;
+      } finally {
+        if (!this._partsGate.isStale(token)) this.partsLoading = false;
       }
-      this.partsLoading = false;
     },
     /**
      * tooltip 讀的非響應式持有者，**逐維度一份**（見 ApexChart.js 的契約）。
@@ -444,6 +459,10 @@ export default {
     // 快取刻意放在非響應式的地方：它是效能的東西，不需要觸發重繪。
     this._trendCache = new Map();
     this._partsCache = new Map();
+    // **趨勢與拆解各自一個 gate**：切區間只重查趨勢，若共用一個 gate，
+    // 那次 begin() 會把還在飛的拆解請求判成 stale，拆解就永遠不落地。
+    this._trendGate = requestGate();
+    this._partsGate = requestGate();
   },
   mounted() { this.load(); },
   watch: {
