@@ -7,11 +7,22 @@
 // 狀態全部活在網址裡（見 events-view.js）：點進事件再返回、重新整理、把網址
 // 貼給同事，看到的都是同一個畫面。元件自己不寫 location.hash ——
 // 序列化後的字串往上 emit，由 app.js 統一處理 hash（見 syncHash）。
-import { api, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL,
+import { api, post, num, mult, multColor, shortTime, duration, SEV_LABEL, SOURCE_LABEL,
          STATUS_LABEL, STATUS_COLOR } from '../lib.js';
 import BrandBreakdown from '../components/brand-breakdown.js';
 import RangePicker from '../components/range-picker.js';
 import { RANGES, defaultView, parse, rangeKey, stringify, toParams } from './events-view.js';
+
+// judgement_note 的三個欄位 → 顯示名稱與提示。與 event-detail.js 的 JUDGE_FIELDS
+// 同一組鍵（後端的 _JUDGEMENT_FIELDS）。**三個都是選填**，而批次還多一層語意：
+// 留空的欄位不會蓋掉事件原本的內容（見後端 batch_judge_events 的 ①）。
+const JUDGE_FIELDS = [
+  ['reason', '判定理由', '為什麼這一批做出此判定'],
+  ['evidence', '主要證據', '引用的查詢或數據'],
+  ['next_step', '下一步或處置', '例如：通知平台團隊、持續觀察 48 小時'],
+];
+
+const emptyBatch = () => ({ reason: '', evidence: '', next_step: '' });
 
 export default {
   props: ['query'],
@@ -23,7 +34,12 @@ export default {
     // 網址裡看不懂的值。**要顯示給使用者**，不是 console 訊息：靜靜退回預設的話
     // 畫面看起來完全正常，而條件不是他以為的那個。
     notes: [],
-    drawer: null, RANGES, SEV_LABEL, SOURCE_LABEL, STATUS_LABEL, STATUS_COLOR,
+    // 批次判定。選取**刻意不進網址**（events-view.js 的四條規則管的是查詢條件）：
+    // 網址是拿來分享畫面的，而「我勾了哪 30 筆」不是畫面狀態而是進行到一半的
+    // 操作 —— 貼給同事讓他手上憑空多出 30 筆待送出的選取才是壞事。
+    sel: [], batchJudge: '', batchForm: emptyBatch(), batchOpen: false,
+    batchBusy: false, batchResult: null, batchError: null,
+    drawer: null, RANGES, JUDGE_FIELDS, SEV_LABEL, SOURCE_LABEL, STATUS_LABEL, STATUS_COLOR,
   }),
   computed: {
     tabs() { return this.data?.judgement_tabs || []; },
@@ -56,6 +72,26 @@ export default {
       return this.tabs.filter(t => t.key !== this.view.tab && t.count > 0
                                    && t.judgements.length);
     },
+    // ── 批次判定 ───────────────────────────────────────────────────────
+    // 選取的那幾列（不是 evt_no，是整列）—— 警告要說出「哪幾筆已有判定、原本
+    // 判成什麼」，只有 evt_no 的話那句話寫不出來。
+    selectedRows() {
+      const picked = new Set(this.sel);
+      return (this.data?.events || []).filter(e => picked.has(e.evt_no));
+    },
+    // 送出**之前**就要看得到會覆寫誰。後端回應也會再說一次（同 close 的
+    // warnings 做法）：按下去之後才知道等於沒有警告。
+    willOverwrite() { return this.selectedRows.filter(e => e.judgement); },
+    allShownSelected() {
+      const rows = this.data?.events || [];
+      return rows.length > 0 && this.sel.length === rows.length;
+    },
+    someShownSelected() { return this.sel.length > 0 && !this.allShownSelected; },
+    // 判定按鈕的選項**一律來自回應**（同判定下拉的理由）：前端列第二份的話，
+    // 日後新增第六個判定值時這裡會少一顆按鈕，而畫面完全正常。
+    batchOptions() { return this.data?.judgements || []; },
+    // 三個欄位都沒填時要說出來，但不擋送出（選填就是選填）。
+    batchBlank() { return JUDGE_FIELDS.every(([k]) => !this.batchForm[k].trim()); },
   },
   methods: {
     num, mult, multColor, shortTime, duration, rangeKey,
@@ -69,8 +105,15 @@ export default {
       } catch (e) { this.error = e.message; }
       this.loading = false;
     },
-    /** 改了條件：先把新網址往上送，再重查。 */
+    /** 改了條件：先把新網址往上送，再重查。
+     *
+     *  **選取一律清掉。** 這是所有條件變更（含換頁籤）的唯一漏斗，掛在這裡就
+     *  沒有漏掉的分支。留著的話會對「畫面上已經看不到的事件」下判定 ——
+     *  勾了 20 筆 P0、把嚴重度改成 P3、再按送出，那 20 筆 P0 照樣被判掉，
+     *  而畫面上一列都沒有。
+     */
     commit() {
+      this.clearSel();
       this.$emit('view-change', stringify(this.view));
       this.load();
     },
@@ -135,6 +178,44 @@ export default {
       const from = e.closed_from === 'active' ? '關閉時仍在持續命中' : '關閉時已回落';
       return `${e.closed_by || '未記錄'} 於 ${e.closed_at || '未記錄'} 標為已處理完畢（${from}）`;
     },
+    // ── 批次判定 ───────────────────────────────────────────────────────
+    toggle(evtNo) {
+      this.sel = this.sel.includes(evtNo)
+        ? this.sel.filter(n => n !== evtNo) : [...this.sel, evtNo];
+    },
+    /** 表頭的全選。**範圍只有畫面上這幾列**，不是「符合條件的全部」——
+     *  後者會讓使用者按下去時看不到自己改了哪些（清單被 LIMIT 截斷過）。
+     *  截斷時操作條會明說還有幾筆不在選取範圍內。 */
+    toggleAll() {
+      this.sel = this.allShownSelected ? [] : (this.data?.events || []).map(e => e.evt_no);
+    },
+    clearSel() {
+      this.sel = [];
+      this.batchJudge = '';
+      this.batchForm = emptyBatch();
+      this.batchOpen = false;
+      this.batchError = null;
+    },
+    async submitBatch() {
+      if (!this.batchJudge || !this.sel.length) return;
+      this.batchBusy = true;
+      this.batchError = null;
+      try {
+        const r = await post('/events/judge',
+                             { evt_nos: this.sel, judgement: this.batchJudge,
+                               ...this.batchForm });
+        this.batchResult = r;
+        this.clearSel();
+        // 判定過的事件通常會離開目前這一格（例如從「待判定」消失），頁籤數字
+        // 也跟著變 —— 一定要重查，不可以就地改前端那份 rows。
+        await this.load();
+      } catch (err) {
+        // 400／404 的訊息本身就是要給人看的說明（哪幾筆找不到、判定值不合法），
+        // 原樣顯示比翻成「操作失敗」有用得多。
+        this.batchError = err.message;
+      }
+      this.batchBusy = false;
+    },
     async preview(evtNo) {
       this.drawer = { loading: true, evt_no: evtNo };
       try {
@@ -166,6 +247,15 @@ export default {
     </div>
 
     <div v-for="(n,i) in notes" :key="i" class="banner banner-warn">{{ n }}</div>
+
+    <!-- 批次判定的結果。**留在畫面上直到下一次操作**（不是 toast）：覆寫了
+         哪幾筆、哪些欄位維持原樣，都是事後才會想確認的事。 -->
+    <div v-if="batchResult" class="banner banner-ok">
+      已將 <strong>{{ num(batchResult.count) }}</strong> 筆判定為
+      <strong>{{ batchResult.judgement }}</strong>。{{ batchResult.note }}
+      <div v-for="(w,i) in batchResult.warnings" :key="i" style="margin-top:6px">⚠ {{ w }}</div>
+      <a @click="batchResult=null" style="margin-left:8px">關閉</a>
+    </div>
 
     <div class="card" style="padding:14px 16px;margin-bottom:14px">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -254,12 +344,22 @@ export default {
       <div v-else class="card" style="padding:0;overflow:hidden">
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
+            <!-- 全選的範圍**只有這張表格上的列**（見 toggleAll）。 -->
+            <th style="width:30px">
+              <input type="checkbox" :checked="allShownSelected"
+                     :indeterminate="someShownSelected" @change="toggleAll"
+                     :title="'選取目前顯示的 ' + data.events.length + ' 筆'"
+                     aria-label="全選目前顯示的事件"></th>
             <th>嚴重度</th><th>事件編號</th><th>發生 → 最後出現</th><th>規則</th>
             <th>異常對象</th><th class="right">數值</th><th class="right">基線倍數</th>
             <th class="right">品牌</th><th>持續</th><th>判定</th><th></th>
           </tr></thead>
           <tbody>
-            <tr v-for="e in data.events" :key="e.evt_no">
+            <tr v-for="e in data.events" :key="e.evt_no"
+                :style="sel.includes(e.evt_no) ? {background:'#F5F8FF'} : {}">
+              <td><input type="checkbox" :checked="sel.includes(e.evt_no)"
+                         @change="toggle(e.evt_no)"
+                         :aria-label="'選取 ' + e.evt_no"></td>
               <td><span :class="'sev sev-'+e.severity">▲ {{ SEV_LABEL[e.severity] }}</span></td>
               <td><a class="mono" style="font-size:12px" @click="$emit('open-event', e.evt_no)">{{ e.evt_no }}</a></td>
               <td class="muted" style="white-space:nowrap">{{ shortTime(e.first_seen) }} → {{ shortTime(e.last_seen) }}</td>
@@ -287,6 +387,69 @@ export default {
         </table>
       </div>
     </template>
+
+    <!-- 操作條是 position:fixed（見 app.css .batchbar），會蓋住最後幾列，
+         而使用者會以為清單就到那裡。**讓出高度只能靠這個 flow 裡的墊片**：
+         這一頁的根 div 是 height:100%，padding-bottom 加在它身上不會延長
+         .content 的捲動範圍（實測捲到底時最後一列仍被蓋住 153px）。
+         實測高度：收起 79px、展開 190px、展開又選了「已確認攻擊」237px。 -->
+    <div v-if="sel.length" :style="{height: batchOpen ? '260px' : '110px'}"></div>
+
+    <!-- 批次判定操作條。勾了才升起；三個文字欄預設收起（多數批次判定就是
+         「這 20 筆都是同一個誤報」，一顆按鈕就講完了）。 -->
+    <div v-if="sel.length" class="batchbar">
+      <div class="batchbar-row" style="font-size:12.5px">
+        <strong>已選 {{ num(sel.length) }} 筆</strong>
+        <a @click="clearSel">清除選取</a>
+        <!-- 「全選」只涵蓋表格上的列。截斷時不說的話，使用者會以為自己剛剛
+             處理掉了符合條件的全部 512 筆。 -->
+        <span v-if="allShownSelected && data.truncated" class="muted">
+          這是表格上的 {{ num(data.shown) }} 筆；符合條件的另外
+          {{ num(data.total - data.shown) }} 筆不在選取範圍內
+        </span>
+        <span v-if="willOverwrite.length" style="color:var(--warn)">
+          ⚠ 其中 {{ willOverwrite.length }} 筆已有判定，送出後會被覆寫（{{
+            willOverwrite.slice(0,3).map(e => e.evt_no + ' ' + e.judgement).join('、')
+          }}{{ willOverwrite.length > 3 ? ' 等' : '' }}）
+        </span>
+      </div>
+
+      <div class="batchbar-row" style="margin-top:8px">
+        <button v-for="j in batchOptions" :key="j" class="btn btn-sm"
+                :class="{active: batchJudge===j}"
+                :style="batchJudge===j && j==='已確認攻擊' ? {background:'var(--p1)',borderColor:'var(--p1)',color:'#fff'} : {}"
+                @click="batchJudge=j">{{ j }}</button>
+        <a @click="batchOpen=!batchOpen" style="font-size:12.5px">
+          {{ batchOpen ? '▲ 收起' : '▼ 加上' }}判定理由／主要證據／下一步（選填）</a>
+        <button class="btn btn-primary btn-sm" style="margin-left:auto"
+                :disabled="!batchJudge || batchBusy" @click="submitBatch">
+          {{ batchBusy ? '送出中…' : '送出判定（' + num(sel.length) + ' 筆）' }}</button>
+        <span v-if="!batchJudge" class="muted" style="font-size:12px">
+          尚缺：請先選一個判定結果</span>
+      </div>
+
+      <div v-if="batchOpen" class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px">
+        <div v-for="f in JUDGE_FIELDS" :key="f[0]">
+          <div style="font-size:12px;font-weight:500;margin-bottom:3px">
+            {{ f[1] }}<span class="muted" style="font-weight:400">（選填）</span></div>
+          <textarea v-model="batchForm[f[0]]" style="width:100%;height:52px"
+                    :placeholder="f[2]"></textarea>
+        </div>
+      </div>
+      <!-- 批次與單筆的語意不同，而那個差別看不出來就會靜靜刪掉別人寫的證據。
+           所以在**輸入欄旁邊**說，不是只寫在送出後的回應裡。 -->
+      <div v-if="batchOpen" class="muted" style="font-size:11.5px;margin-top:6px">
+        留空的欄位維持每一筆事件原本的內容（不會被清空）；要清空某一欄請進該事件的詳細頁。
+      </div>
+      <div v-if="batchJudge && batchBlank" class="muted" style="font-size:11.5px;margin-top:6px">
+        三個欄位皆為選填，留空不會擋住送出 —— 但這批判定將只留下「誰、什麼時候、判定成什麼」。
+      </div>
+      <div v-if="batchJudge==='已確認攻擊'" style="font-size:11.5px;color:var(--danger);margin-top:6px">
+        本系統不會執行任何自動封鎖、停權或 token 撤銷；後續處置請記在「下一步或處置」。
+      </div>
+      <div v-if="batchError" class="banner banner-danger" style="margin:8px 0 0">
+        {{ batchError }}</div>
+    </div>
   </div>
 
   <!-- 快速預覽 Drawer -->

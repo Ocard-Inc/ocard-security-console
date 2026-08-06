@@ -847,28 +847,167 @@ def judge_event(
     """
     guard(user, "judge_event")
     validate.reject_unknown_keys(payload, {"judgement", *_JUDGEMENT_FIELDS})
-    judgement = payload.get("judgement")
-    if judgement not in JUDGEMENTS:
-        raise HTTPException(400, f"判定必須是 {'、'.join(JUDGEMENTS)} 之一"
-                                 f"（收到 {judgement!r}）")
-    # 三個欄位一律寫進 judgement_note，沒填的存成空字串而**不是省略鍵** ——
-    # 讀取端才不用去分辨「這次沒填」與「舊資料還沒有這個欄位」。
+    judgement = _require_judgement(payload)
+    # 單筆表單三個欄位一律送出，所以這裡是**完整取代**：使用者把某一欄清空
+    # 就是要清空它。批次那條路徑相反（留空 = 不動），見 batch_judge_events。
     detail = {k: str(payload.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
-    note = json.dumps(detail, ensure_ascii=False)
+    row = db.one("SELECT * FROM events WHERE evt_no = ?", (evt_no,))
+    if row is None:
+        raise HTTPException(404, f"找不到事件 {evt_no}")
     with db.tx() as conn:
-        cur = conn.execute(
-            "UPDATE events SET judgement = ?, judgement_note = ?, owner = ? WHERE evt_no = ?",
-            (judgement, note, user.email, evt_no))
-        if cur.rowcount == 0:
-            raise HTTPException(404, f"找不到事件 {evt_no}")
-    audit.record(who=user.email, role=user.role_label, action="變更事件狀態",
-                 target=f"{evt_no}：判定為 {judgement}",
-                 reason=detail["reason"] or None)
+        _write_judgement(conn, row["id"], judgement, detail, user.email)
+    _audit_judgement(user, evt_no, judgement, detail, batch_size=1)
     message = ("本系統不會執行任何自動封鎖、停權或 token 撤銷；"
                "後續處置請於案件中記錄。")
     if not any(detail.values()):
         message += "此判定沒有留下任何理由、證據或處置紀錄。"
     return {"ok": True, "judgement": judgement, "recorded": detail, "note": message}
+
+
+# 一次可以批次判定幾筆。**與清單的 _EVENT_LIMIT 同一個數字不是巧合**：
+# 選取只能從表格那 300 列勾出來（見 web/pages/events.js 的註解），所以送進來
+# 比它多就代表呼叫端不是那份清單，那時擋下來比照單全收安全。
+_BATCH_JUDGE_LIMIT = _EVENT_LIMIT
+
+
+def _require_judgement(payload: dict) -> str:
+    """判定值必填且是封閉集合的成員。
+
+    「待判定」是 `judgement IS NULL` 的**顯示值**，不是可以提交的判定 ——
+    存得進去卻篩不出來的判定值是這裡最容易出現的漂移（見 UNJUDGED 的註解）。
+    """
+    judgement = payload.get("judgement")
+    if judgement not in JUDGEMENTS:
+        raise HTTPException(400, f"判定必須是 {'、'.join(JUDGEMENTS)} 之一"
+                                 f"（收到 {judgement!r}）")
+    return judgement
+
+
+def _write_judgement(conn, event_id: int, judgement: str, detail: dict,
+                     who: str) -> None:
+    """把一筆判定寫進 events。單筆與批次共用**同一條寫入路徑**。
+
+    兩個端點各寫一份 UPDATE 的話，遲早有一份漏掉 owner 或把 judgement_note
+    存成非 JSON —— 而症狀是「詳細頁讀不回剛剛打的字」，不會有任何錯誤。
+    差異只在呼叫端算好的 `detail`（單筆取代、批次合併）。
+    """
+    # 三個欄位一律寫進 judgement_note，沒填的存成空字串而**不是省略鍵** ——
+    # 讀取端才不用去分辨「這次沒填」與「舊資料還沒有這個欄位」。
+    note = json.dumps({k: detail.get(k, "") for k in _JUDGEMENT_FIELDS},
+                      ensure_ascii=False)
+    conn.execute(
+        "UPDATE events SET judgement = ?, judgement_note = ?, owner = ? WHERE id = ?",
+        (judgement, note, who, event_id))
+
+
+def _audit_judgement(user: CurrentUser, evt_no: str, judgement: str,
+                     detail: dict, *, batch_size: int) -> None:
+    """判定的稽核列。**批次一樣是逐筆一列**，只是 target 多一段批次標記。
+
+    一批只寫一列的話，`/api/audit` 用 evt_no 搜尋會搜不到其中 29 筆 ——
+    而「每一筆判定都查得到」正是 web/pages/audit-mode.js 對稽查人員的承諾。
+    """
+    mark = f"（批次 {batch_size} 筆）" if batch_size > 1 else ""
+    audit.record(who=user.email, role=user.role_label, action="變更事件狀態",
+                 target=f"{evt_no}：判定為 {judgement}{mark}",
+                 reason=detail.get("reason") or None)
+
+
+# 這條路由必須排在任何 `POST /events/{...}` 之前（目前沒有，但加的人會踩到）：
+# FastAPI 依宣告順序比對，`/events/{evt_no}` 會把字面值 "judge" 吃掉，
+# 而症狀是「批次送出回 404 找不到事件 judge」。同 web/app.js 的 #/rules/R06。
+@router.post("/events/judge")
+def batch_judge_events(
+    payload: dict = Body(...),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """批次提交調查判定（清單頁勾選 N 筆）。
+
+    與單筆端點的三個**刻意的差異**：
+
+    ① **留空的欄位不覆寫既有文字。** 批次送出時三個欄位講的是「這一批共同的
+       說法」，而選取裡可能有別人已經判定並寫過證據的事件 —— 一律取代的話那些
+       字會靜靜消失。要清空某一欄請進單筆頁面做（那裡的表單顯示的是現值）。
+    ② **evt_nos 全部要存在，有一個查不到就整批 400、一列都不寫。** 清單頁送的
+       就是它剛剛查到的編號，查不到代表呼叫端送錯了。允許部分成功的話畫面會停在
+       「12 筆裡成功 9 筆」而使用者無從知道是哪 3 筆。
+    ③ 回應帶 `overwritten` —— 哪幾筆本來就有判定、原本判成什麼。前端在**按下去
+       之前**就顯示同一段警告（同 close 的 warnings 做法）。
+
+    判定本身仍然必填、三個文字欄仍然全部選填（2026-08 的決定，見 judge_event）。
+    """
+    guard(user, "judge_event")
+    validate.reject_unknown_keys(payload, {"evt_nos", "judgement", *_JUDGEMENT_FIELDS})
+    judgement = _require_judgement(payload)
+    evt_nos = _batch_targets(payload)
+    rows = db.rows(
+        f"SELECT * FROM events WHERE evt_no IN ({','.join('?' * len(evt_nos))})",
+        tuple(evt_nos))
+    found = {r["evt_no"]: r for r in rows}
+    missing = [n for n in evt_nos if n not in found]
+    if missing:
+        raise HTTPException(
+            404, f"找不到這些事件：{'、'.join(missing[:10])}"
+                 f"{f' 等 {len(missing)} 筆' if len(missing) > 10 else ''}。"
+                 f"沒有任何一筆被判定 —— 請重新整理事件清單再試一次。")
+    # 有填的欄位才套用。**空字串與「沒有這個鍵」在這裡是兩件事**，所以用鍵的
+    # 有無來表達，不用空字串（見上面 ① 與 _write_judgement 的註解）。
+    applied = {k: str(payload.get(k) or "").strip() for k in _JUDGEMENT_FIELDS}
+    applied = {k: v for k, v in applied.items() if v}
+    overwritten = [{"evt_no": n, "from": found[n]["judgement"]}
+                   for n in evt_nos if found[n]["judgement"]]
+    with db.tx() as conn:
+        for evt_no in evt_nos:
+            row = found[evt_no]
+            # 逐筆合併：既有的三欄先讀回來，再蓋上這次有填的。
+            detail = {**_judgement_detail(row["judgement_note"]), **applied}
+            _write_judgement(conn, row["id"], judgement, detail, user.email)
+    for evt_no in evt_nos:
+        _audit_judgement(user, evt_no, judgement, applied, batch_size=len(evt_nos))
+    logger.info("%s 批次判定 %d 筆為 %s（覆寫 %d 筆）",
+                user.email, len(evt_nos), judgement, len(overwritten))
+    warnings = []
+    if overwritten:
+        listed = "、".join(f"{o['evt_no']} {o['from']}" for o in overwritten[:5])
+        warnings.append(
+            f"其中 {len(overwritten)} 筆原本已有判定，已被覆寫（{listed}"
+            f"{' 等' if len(overwritten) > 5 else ''}）。舊的判定仍可在操作稽核查到。")
+    if not applied:
+        warnings.append(
+            "這一批判定沒有留下任何理由、證據或處置紀錄 —— 三個欄位皆為選填，"
+            "但三個月後想知道「當時為什麼這樣判」時只剩這段文字。")
+    return {"ok": True, "judgement": judgement, "count": len(evt_nos),
+            "evt_nos": evt_nos, "applied": applied,
+            "kept": [k for k in _JUDGEMENT_FIELDS if k not in applied],
+            "overwritten": overwritten, "warnings": warnings,
+            "note": "本系統不會執行任何自動封鎖、停權或 token 撤銷；"
+                    "留空的欄位維持事件原本的內容（要清空請進單筆事件頁）。"}
+
+
+def _batch_targets(payload: dict) -> list[str]:
+    """`evt_nos` → 去重後保持順序的事件編號清單。
+
+    型別一律嚴格檢查：沒有 Pydantic 擋，一個字串（而不是陣列）進來的話
+    `for n in evt_nos` 會逐字元跑，症狀是「找不到事件 E」。
+    """
+    raw = payload.get("evt_nos")
+    if not isinstance(raw, list):
+        raise HTTPException(400, f"evt_nos 必須是事件編號的陣列"
+                                 f"（收到 {type(raw).__name__}）")
+    picked: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise HTTPException(400, f"evt_nos 只能是非空字串（收到 {item!r}）")
+        value = item.strip()
+        if value not in picked:
+            picked.append(value)
+    if not picked:
+        raise HTTPException(400, "沒有選取任何事件 —— 請先在清單勾選要判定的事件")
+    if len(picked) > _BATCH_JUDGE_LIMIT:
+        raise HTTPException(
+            400, f"一次最多判定 {_BATCH_JUDGE_LIMIT} 筆（收到 {len(picked)} 筆）。"
+                 f"事件清單一次也只顯示 {_EVENT_LIMIT} 筆，請縮小時間範圍或加上條件。")
+    return picked
 
 
 @router.post("/events/{evt_no}/close")

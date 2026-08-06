@@ -23,6 +23,9 @@
   --p2: #DC6803;
   --p3: #4E5BA6;
   --nav-bg: #101828;
+  /* 側邊選單寬度。.nav 與 .batchbar（fixed 定位，要讓開選單）共用同一個值 ——
+     兩邊各寫 232px 的話，改寬度時操作條會靜靜蓋住選單一角。 */
+  --nav-w: 232px;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
 
   /* ── 圖表色票 ──────────────────────────────────────────────────────────
@@ -104,7 +107,7 @@ input, select, textarea { font-family: inherit; }
 /* 版面骨架 */
 .shell { display: flex; height: 100vh; overflow: hidden; }
 .nav {
-  width: 232px; flex: none; background: var(--nav-bg); color: #98A2B3;
+  width: var(--nav-w); flex: none; background: var(--nav-bg); color: #98A2B3;
   display: flex; flex-direction: column;
 }
 .nav-brand {
@@ -149,6 +152,18 @@ input, select, textarea { font-family: inherit; }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--text-2); }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .content { flex: 1; overflow-y: auto; padding: 20px; min-height: 0; }
+
+/* 批次操作條（事件清單勾選後升起）。
+   **fixed 而不是 sticky**：.content 才是捲動容器，而事件頁的根 div 是
+   height:100% —— sticky 的黏著範圍會是那個高度（約一個畫面），捲到第 200 列時
+   操作條就消失在上方，而使用者手上還握著 30 筆選取。fixed 沒有這個問題。
+   讓開側邊選單用 --nav-w（不要再寫一次 232px）。 */
+.batchbar {
+  position: fixed; left: var(--nav-w); right: 0; bottom: 0; z-index: 40;
+  background: var(--card-bg); border-top: 1px solid var(--line);
+  box-shadow: 0 -6px 18px rgba(16,24,40,.10); padding: 12px 20px;
+}
+.batchbar-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* 元件 */
 .card { background: var(--card-bg); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
