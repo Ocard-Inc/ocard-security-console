@@ -37,7 +37,7 @@ MAX_TREND_BUCKETS = 20_000
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
 _ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch", "console",
-                "request")
+                "request", "voucher")
 
 # 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
 # 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
@@ -84,6 +84,9 @@ GROUP_BY = {
         # `api/reports` 一格），理由同 backend 的 ROUTE2。
         # **逐筆明細仍保留完整 uri** —— 「誰下載了哪一份報表」是這張表存在的理由。
         "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')", None, "路由"),
+        # request.function 實測乾淨、沒有動態段（getUserVoucherList 899 萬、
+        # makeOrder 173 萬、checkRedeem 42 萬），不必像 backend 那樣截段。
+        "voucher": ("JSONExtractString(request, 'function')", None, "API 功能"),
     },
     # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
     # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
@@ -144,6 +147,11 @@ GROUP_BY = {
         # 的操作者排名。
         "console": ("coalesce(nullIf(JSONExtractString(authentication, 'account'), ''), nullIf(JSONExtractString(body, 'account'), ''), '')",
                     "actor", "操作者"),
+        # header 的值是 JSON **陣列**（["ocard-api_prod"]），所以要
+        # JSONExtract(…, 'Array(String)') 再取第 1 個。JSONExtractString 對陣列
+        # 會回空字串（= 一個全空的排名），當成字串用則會帶著括號而貼不回篩選器。
+        "voucher": ("arrayElement(JSONExtract(JSONExtractRaw(request, 'header'), 'x-ocard-channel-id', 'Array(String)'), 1)",
+                    "actor", "呼叫通道"),
     },
 }
 
@@ -154,6 +162,7 @@ GROUP_BY = {
 FILTER_COLUMN = {
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
+    "voucher": "JSONExtractString(request, 'function')",
     "batch": "route",           # 真欄位、無動態段
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
@@ -177,6 +186,7 @@ SUGGEST_EXPR = {
     # 這個不變量因此天生成立。
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
+    "voucher": "JSONExtractString(request, 'function')",
     "batch": "route",
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
@@ -266,6 +276,10 @@ _ENTITY_FILTER_UNSUPPORTED = {
     ("actor", "request"): "Report Service Log 沒有帳號欄位 —— 身分只在 "
                           "headers.authorization 的憑證裡，而憑證不可反查成帳號。"
                           "請改用來源 IP 篩選。",
+    ("source_ip", "voucher"): "Voucher API Log 的 header 只有 host、content-* 與"
+                              " x-ocard-channel-*，完全是伺服器對伺服器呼叫，"
+                              "沒有來源 IP —— 這是資料本身的限制，"
+                              "不是本主控台未支援。請改用呼叫通道篩選。",
 }
 
 # 品牌／分店「不支援」的**逐來源**理由。
@@ -373,6 +387,7 @@ ENDPOINT_FILTER_META = {
     "batch": ("批次工作前綴", "NinexNine/import_main"),
     "console": ("Controller/Method 前綴", "userAdmin/login"),
     "request": ("路由前綴", "api/reports"),
+    "voucher": ("API 功能前綴", "getUserVoucherList"),
 }
 
 # **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
@@ -731,6 +746,7 @@ _DETAIL_COLUMNS = {
     # `api/reports`，明細不收斂：「誰下載了哪一份報表」是這張表存在的理由。
     "request": ("idx AS _id, created_at AS create_time, method, uri, ip,"
                 " status_code, duration_ms, headers, body"),
+    "voucher": "_id, created_time AS create_time, request, response",
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -746,6 +762,7 @@ _PAYLOAD_COLUMNS = {
                 " requester, request, authentication, response, body"),
     "request": ("idx AS _id, created_at AS create_time, headers, body,"
                 " response_headers, response_body"),
+    "voucher": "_id, created_time AS create_time, request, response",
 }
 
 
@@ -801,6 +818,17 @@ def _json_col(r: dict, col: str) -> dict:
     except (ValueError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _first(value) -> str | None:
+    """header 的值是 JSON 陣列（`["ocard-api_prod"]`），取第 1 個。
+
+    直接當字串用會得到 `['ocard-api_prod']` 這種帶括號的值 ——
+    貼回篩選器永遠不會命中，而畫面上看起來只是「格式怪怪的」。
+    """
+    if isinstance(value, list):
+        return str(value[0]) if value else None
+    return str(value) if value else None
 
 
 def _console_endpoint(r: dict) -> str:
@@ -944,6 +972,19 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "actor": None,
             "result": _request_result(r),
             "params": masking.payload_summary(r.get("body")),
+            "resource": None,
+        })
+    elif source == "voucher":
+        req = _json_col(r, "request")
+        out.update({
+            "endpoint": str(req.get("function") or ""),
+            # 完全沒有來源 IP（全部是伺服器對伺服器呼叫）
+            "source_ip": None,
+            "actor": masking.actor(_first(_json_col(r, "request")
+                                          .get("header", {}).get("x-ocard-channel-id"))),
+            "result": "—",          # 沒有 status 欄位
+            # request 整坨是 payload（含 x-ocard-channel-secret），一律收斂
+            "params": masking.payload_summary(r.get("request")),
             "resource": None,
         })
     elif source == "auth":

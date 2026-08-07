@@ -146,6 +146,44 @@ data_sources:
     # 11 個超過 20 分鐘。180 分鐘涵蓋實測的最長間隔並留餘裕 ——
     # 真的失速（例如整晚沒進資料）仍然抓得到。
     freshness_alert_minutes: 180
+  # 2026-08-07 接入。voucher.ocard.co 的票券／兌換 API 請求紀錄。
+  #
+  # **完全沒有來源 IP** —— header 只有 host / content-* / x-ocard-channel-id /
+  # x-ocard-channel-secret，全部是伺服器對伺服器呼叫。這與 Order Log 是同一類
+  # 結構性限制，不是「我們還沒做」。操作者只能是 x-ocard-channel-id
+  # （ocard-api_prod / ocard-admin / momo_prod）。
+  #
+  # header 的值是 JSON **陣列**（["ocard-api_prod"]），所以要
+  # JSONExtract(…, 'Array(String)') 再取第 1 個 —— JSONExtractString 對陣列
+  # 會回空字串（= 一個全空的排名），當成字串用則會帶著括號而貼不回篩選器。
+  #
+  # x-ocard-channel-secret 是**還有效的通道憑證**，由 masking.scrub_text() 清洗
+  # （鍵以 secret 結尾，走既有的後綴比對）。
+  #
+  # request.input.brand 是雜湊 token（例如 lgBZX4）而不是 _brand，
+  # 無法對照品牌名，所以沒有品牌維度。
+  #
+  # created_at 是 **UTC**（分區鍵），created_time 是台北牆鐘。兩者實測是各自
+  # 獨立寫入的（ec 那張 3,284 筆裡有 18 筆差 28,799 秒而不是 28,800），
+  # 所以不可以用其中一個推導另一個。
+  #
+  # 實測（2026-08-07 21:00，**回填已完成**）：37,310,599 列、2023-01-07 起連續、
+  # 2026-01 約 170 萬列 ≈ 5.3 萬筆/日、**重複率 0.003%**。
+  #
+  # ⚠️ 先前的設計文件寫「重複 15%」，那是**回填進行中量到的假象** ——
+  # ReplacingMergeTree 尚未合併。合併完之後幾乎是零。同 ods_request_log 的
+  # in-flight 列，在合併視窗內量到的東西不是穩態。
+  #
+  # 效能實測（區間上限 180 天，ClickHouse max_execution_time = 55 秒）：
+  #   趨勢 1d 桶      0.12 s
+  #   呼叫通道排名     4.92 s
+  #   逐筆明細 500 筆  1.82 s
+  # 全部遠低於上限，**不需要為它另設較短的區間上限**。
+  # （對照 api_log：同樣的來源排名在 90 天就會撞上限失敗。voucher 雖然列數多，
+  #   但列寬小、JSON 欄位少，差了一個量級。）
+  voucher:
+    label: Voucher API Log
+    table: ods_voucher_request_log
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，

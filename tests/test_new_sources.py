@@ -300,3 +300,50 @@ def test_freshness_query_works_for_every_source():
             f"SELECT max({schema.time_expr}) AS mx FROM {src['table']}"
             f" WHERE {exprs.time_filter_for(key)}", params)
         assert "mx" in df.columns, f"{key} 的新鮮度查詢沒有回 mx"
+
+
+# ── voucher（ods_voucher_request_log）─────────────────────────────────────────
+
+def test_voucher_source_works(client):
+    """voucher.ocard.co 的票券／兌換 API 請求紀錄。五張裡唯一夠大的一張。"""
+    assert_source_works(client, "voucher",
+                        expect_analyses={"trend", "endpoint", "actor", "detail"})
+
+
+def test_voucher_has_no_source_ip():
+    """header 只有 host / content-* / x-ocard-channel-* —— 全部是伺服器對伺服器。
+
+    這與 order 是同一類結構性限制，理由要說出是**資料本身沒有**，
+    不是「我們還沒做」—— 後者會讓人去等一個永遠不會來的功能。
+    """
+    assert "voucher" not in explorer.GROUP_BY["source"]
+    reason = explorer.filter_support("source_ip", "voucher")
+    assert reason and "伺服器對伺服器" in reason, (
+        f"拒絕理由要說出是全部伺服器對伺服器呼叫：{reason!r}")
+
+
+def test_voucher_actor_unwraps_the_array_header(client):
+    """header 的值是 JSON **陣列**（`["ocard-api_prod"]`）。
+
+    直接 `JSONExtractString` 對陣列會回空字串 → 一個全空的操作者排名；
+    當成字串用則會得到 `['ocard-api_prod']` 這種帶括號的值 ——
+    貼回篩選器永遠不會命中，而畫面上看起來只是「格式怪怪的」。
+    """
+    r = _explore(client, "voucher", "actor")
+    assert r.status_code == 200, r.text
+    names = [row["name"] for row in r.json()["rows"]]
+    assert any(n and n != "（空）" for n in names), (
+        f"呼叫通道排名全部是空的 —— 陣列沒有解開：{names[:5]}")
+    assert not any(n.startswith(("[", "'", '"')) for n in names if n), (
+        f"值帶著陣列或引號的括號，貼回篩選器不會命中：{names[:5]}")
+
+
+def test_voucher_channel_secret_never_reaches_the_response(client):
+    """`x-ocard-channel-secret` 是還有效的憑證，明細不可以吐出它。
+
+    實測值形如 `AHtCAkV+2+tMij97yAB9Fw==` —— 顯示等於任何有主控台讀取權的人
+    都能冒用該通道呼叫 API。
+    """
+    r = _explore(client, "voucher", "detail")
+    assert r.status_code == 200, r.text
+    assert "AHtCAkV" not in r.text, "channel secret 的值原樣外流"

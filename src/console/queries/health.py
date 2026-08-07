@@ -38,6 +38,8 @@ _MISSING_EXPR = {
     # in-flight 的那一列 status_code 是 0。它不是「缺漏」而是「還沒完成」，
     # 但比率異常升高代表有大量請求沒有寫回完成狀態 —— 那是真的訊號。
     "ods_request_log": ("status_code = 0", "尚未寫回完成狀態"),
+    # request 是這張表唯一的分析來源，不是合法 JSON 就什麼維度都算不出來。
+    "ods_voucher_request_log": ("NOT isValidJSON(request)", "request 無法解析"),
 }
 
 _NOTES = {
@@ -63,6 +65,9 @@ _NOTES = {
                "沒有帳號欄位（身分只在 headers.authorization 的憑證裡）、"
                "沒有品牌與分店；排名的路由收斂成 api/reports，"
                "要看是哪一份報表請用逐筆明細",
+    "voucher": "完全沒有來源 IP（全部是伺服器對伺服器呼叫），不可做任何單一來源判斷；"
+               "操作者是呼叫通道（x-ocard-channel-id），代表哪一支整合程式、"
+               "不是哪個人；input.brand 是雜湊 token 而非 _brand，所以沒有品牌維度",
 }
 
 

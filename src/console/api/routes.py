@@ -892,6 +892,12 @@ _LIMITATIONS_BY_SOURCE = {
                 "Report Service Log 的同一個 idx 會短暫有「請求開始」與「完成」"
                 "兩列，資料落地後由 ReplacingMergeTree 合併；合併前的計數會略高。",
                 "Report Service Log 沒有品牌與分店欄位。"],
+    "voucher": ["Voucher API Log 完全沒有來源 IP（全部是伺服器對伺服器呼叫）—— "
+                "任何「單一來源」的判斷對這張表都不成立。",
+                "Voucher API Log 的操作者是呼叫通道（x-ocard-channel-id），"
+                "它代表哪一支整合程式，不是哪個人。",
+                "Voucher API Log 的 input.brand 是雜湊 token 而非品牌編號，"
+                "無法對照品牌名稱。"],
 }
 
 

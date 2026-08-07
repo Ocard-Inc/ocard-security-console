@@ -97,6 +97,19 @@ SCHEMAS["console"] = SourceSchema(
     store_col=None,
 )
 
+# ods_voucher_request_log / ods_ec_request_log：created_at 是 UTC（分區鍵），
+# created_time 是台北牆鐘的真欄位。兩者各自獨立寫入，不可互相推導。
+SCHEMAS["voucher"] = SourceSchema(
+    key="voucher",
+    table=settings()["data_sources"]["voucher"]["table"],
+    time_col="created_at",
+    time_tz="Asia/Taipei",
+    time_expr="created_time",
+    dedup_col="_id",
+    brand_col=None,
+    store_col=None,
+)
+
 # ods_request_log：`created_at` 是**台北牆鐘**（與 voucher/ec 的同名欄位語意
 # 相反，那兩張是 UTC），所以 time_tz 是 None、不做任何轉換。
 #
