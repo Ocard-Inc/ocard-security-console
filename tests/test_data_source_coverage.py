@@ -89,6 +89,36 @@ def test_source_dimension_is_deliberately_incomplete():
         "Order Log 沒有 ip 也沒有 headers 欄位，不可以有來源 IP 運算式。")
 
 
+def test_brand_and_store_dimensions_follow_the_schema():
+    """`_brand` / `_store` 不再是「每張表都有」的假設。
+
+    2026-08-07 接入的五張表沒有一張有這兩個真欄位。原本的
+    `{k: … for k in _ALL_SOURCES}` 會讓那些來源的排名在 ClickHouse 端拋
+    「Unknown expression or function identifier」→ 502，
+    而畫面上那個選項看起來是正常功能。
+    """
+    from console.queries import source_schema
+    for key in SOURCES:
+        schema = source_schema.get(key)
+        assert (key in explorer.GROUP_BY["brand"]) == (schema.brand_col is not None), (
+            f"{key} 的 GROUP_BY['brand'] 與 source_schema.brand_col 不一致")
+        assert (key in explorer.GROUP_BY["store"]) == (schema.store_col is not None), (
+            f"{key} 的 GROUP_BY['store'] 與 source_schema.store_col 不一致")
+
+
+def test_sources_without_brand_say_why():
+    """沒有品牌維度的來源，`filter_support` 必須說出原因而不是回 None。
+
+    回 None 的話 Explorer 會顯示品牌輸入框，填進去查到 0 筆 ——
+    而「這張表沒有品牌欄位」與「這個品牌沒有活動」在畫面上一模一樣。
+    """
+    from console.queries import source_schema
+    for key in SOURCES:
+        if source_schema.get(key).brand_col is None:
+            reason = explorer.filter_support("brand", key)
+            assert reason, f"{key} 沒有品牌欄位，filter_support 必須說出原因"
+
+
 def test_health_endpoint_lists_every_source(client):
     keys = {c["key"] for c in client.get("/api/health").json()["sources"]}
     assert keys == set(SOURCES)

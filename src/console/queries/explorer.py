@@ -16,7 +16,7 @@ import pandas as pd
 from console.core import admins, brands, masking, stores, timewin
 from console.core.ch import query
 from console.core.config import settings
-from console.queries import exprs, trends
+from console.queries import exprs, source_schema, trends
 
 # "auto" 依查詢視窗長度走 trends.BUCKET_LADDER；其餘為手動指定。
 # Explorer 是臨時調查工具，手動選項全部保留 —— 分析師要能自己決定顆粒度。
@@ -72,11 +72,18 @@ GROUP_BY = {
         # 一次性選項；`url` 在 180 天只有 46 個相異值、**沒有動態段**，所以不截。
         "order": ("url", None, "Endpoint"),
     },
-    "brand": {k: ("toString(_brand)", None, "品牌") for k in _ALL_SOURCES},
-    # 分店。名稱**刻意不在這裡查**（品牌維度在 `ranking()` 內另外接 `brands.labels`）——
+    # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
+    # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
+    # ClickHouse 會拋「Unknown expression or function identifier」→ 502，
+    # 而畫面上那個選項看起來是正常功能。
+    #
+    # 名稱**刻意不在這裡查**（品牌維度在 `ranking()` 內另外接 `brands.labels`）——
     # 這個運算式同時是排名的 GROUP BY 與篩選的比對依據，回「忠孝店（27681）」的話
     # 排名裡看到的值就貼不回篩選器了。名稱由呈現層各自用 `core/stores.label()` 補。
-    "store": {k: ("toString(_store)", None, "分店") for k in _ALL_SOURCES},
+    "brand": {k: (f"toString({source_schema.get(k).brand_col})", None, "品牌")
+              for k in _ALL_SOURCES if source_schema.get(k).brand_col},
+    "store": {k: (f"toString({source_schema.get(k).store_col})", None, "分店")
+              for k in _ALL_SOURCES if source_schema.get(k).store_col},
     "source": {
         "api": (exprs.API_SRC_IP, "src", "來源"),
         "backend": ("ip", "src", "來源"),
@@ -210,6 +217,14 @@ _ENTITY_FILTER_UNSUPPORTED = {
                             "不是本主控台未支援。請改用操作者、品牌或分店篩選。",
 }
 
+# 品牌／分店「不支援」的**逐來源**理由。
+#
+# `filter_support()` 的預設文案說的是「這張表沒有這個欄位」，但有些來源是
+# **欄位在、但上游沒有寫入值**。兩者要分開講：前者永遠不會有，後者是上游
+# 可以修好的 —— 只說「不支援」會讓人去等一個不會來的功能，或反過來以為
+# 資料結構天生如此而不去追上游。
+_DIMENSION_UNSUPPORTED: dict[tuple[str, str], str] = {}
+
 
 def filter_support(field: str, source: str) -> str | None:
     """`(篩選欄位, 資料來源)` 不支援的原因；支援回 None。
@@ -225,7 +240,17 @@ def filter_support(field: str, source: str) -> str | None:
         return f"未知資料來源 {source!r}"
     label = settings()["data_sources"][source]["label"]
     if field in ("brand", "store"):
-        return None                      # 五張表都有 _brand 與 _store
+        # 逐來源的明確理由優先（欄位在但沒有值），其次才是通用的「沒有欄位」。
+        explicit = _DIMENSION_UNSUPPORTED.get((field, source))
+        if explicit:
+            return explicit
+        col = (source_schema.get(source).brand_col if field == "brand"
+               else source_schema.get(source).store_col)
+        if col is not None:
+            return None
+        name, real_col = (("品牌", "_brand") if field == "brand" else ("分店", "_store"))
+        return (f"{label} 沒有 {real_col} 欄位，無法依{name}篩選 —— "
+                "這是資料本身的限制，不是本主控台未支援。")
     if field == "endpoint":
         return None if source in FILTER_COLUMN else f"{label} 不支援 endpoint 篩選（該表沒有對應欄位）"
     if field in _ENTITY_FILTER:
@@ -381,17 +406,24 @@ def validate(f: ExplorerFilter) -> ExplorerFilter:
 
 
 def where_clause(f: ExplorerFilter) -> tuple[str, dict]:
-    table = settings()["data_sources"][f.source]["table"]
-    clauses = [exprs.time_filter()]
+    schema = source_schema.get(f.source)
+    table = schema.table
+    clauses = [exprs.time_filter_for(f.source)]
     params: dict = {"start": timewin.fmt(timewin.parse(f.start)),
                     "end": timewin.fmt(timewin.parse(f.end))}
     if f.brand is not None:
-        clauses.append("_brand = %(brand)s")
+        reason = filter_support("brand", f.source)
+        if reason:
+            raise FilterError(reason)
+        clauses.append(f"{schema.brand_col} = %(brand)s")
         params["brand"] = f.brand
     # 分店：整數的完全相等。**不可以寫成 toString 後前綴比對** —— 「分店 276」
     # 會靜靜把 27681 的資料算進來，數字比實際大而且不會報錯。
     if f.store is not None:
-        clauses.append("_store = %(store)s")
+        reason = filter_support("store", f.source)
+        if reason:
+            raise FilterError(reason)
+        clauses.append(f"{schema.store_col} = %(store)s")
         params["store"] = f.store
     if f.endpoint:
         reason = filter_support("endpoint", f.source)
@@ -518,9 +550,18 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
     where, params = where_clause(f)
     # 品牌維度的 k 本身就是品牌，再算一次逐品牌分布沒有意義
     is_brand_dim = dimension == "brand"
-    breakdown_col = "" if is_brand_dim else f", {exprs.BRAND_MAP} AS brand_map"
+    # 沒有 `_brand` 欄位的來源不可以算「涉及品牌數」與逐品牌分布 ——
+    # `uniq(_brand)` 會是 Unknown identifier → 502。回 0 與空清單，
+    # 前端本來就把 `brand_top` 當「可能為空」處理。
+    brand_col = source_schema.get(f.source).brand_col
+    if brand_col is None:
+        brands_col = "toUInt64(0) AS brands"
+        breakdown_col = ""
+    else:
+        brands_col = f"uniq({brand_col}) AS brands"
+        breakdown_col = "" if is_brand_dim else f", {exprs.BRAND_MAP} AS brand_map"
     df = query(
-        f"SELECT {expr} AS k, count() AS cnt, uniq(_brand) AS brands{breakdown_col}"
+        f"SELECT {expr} AS k, count() AS cnt, {brands_col}{breakdown_col}"
         f" {where} GROUP BY k ORDER BY cnt DESC LIMIT {int(limit)}", params)
     total = int(df["cnt"].sum()) if len(df) else 0
     brand_labels = brands.labels(df["k"]) if is_brand_dim and len(df) else {}
@@ -555,7 +596,8 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
             account = None
         rows.append({"rank": i, "name": name, "count": int(r["cnt"]),
                      "brands": int(r["brands"]),
-                     "brand_top": [] if is_brand_dim else brands.breakdown(r["brand_map"]),
+                     "brand_top": ([] if (is_brand_dim or brand_col is None)
+                                   else brands.breakdown(r["brand_map"])),
                      "share": round(int(r["cnt"]) / total, 4) if total else 0,
                      # None = 這個來源的 actor 本來就是名字（backend）或指紋（auth）。
                      # 前端據此決定要不要渲染那一行，不可以當成「查不到」。
