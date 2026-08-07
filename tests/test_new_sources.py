@@ -574,3 +574,59 @@ def test_low_volume_sources_do_not_raise_the_delay_banner(client):
         assert c["status"] in ("正常", "注意"), (
             f"{c['key']} 的健康卡顯示 {c['status']}（延遲 {c['lag_minutes']} 分）——"
             "它是低流量表，這是沒有流量而不是管線延遲")
+
+
+def test_empty_aggregate_never_reaches_strftime():
+    """`max()` / `min()` 的空結果是 pandas `NaT`，不是 `None`。
+
+    **`NaT is not None` 是 True**，`NaT` 也有 `to_pydatetime()`（回 `NaT`），
+    所以 `if value is not None` 這個防呆完全擋不住它 —— 一路走到
+    `timewin.fmt()` 的 `strftime` 才拋 ValueError，而那是在 API 端點裡，
+    症狀是 **/api/health 回 500**。
+
+    實測正式環境：**每晚台北 00:00:0x 固定發生**，08-05／06／07／08 連續四晚
+    都在 Cloud Logging 裡。原因是 `source_health()` 查「今日」而資料落地延遲約
+    5 分鐘 —— 午夜剛過的那幾十秒每張表的 `max()` 都是 NULL。
+
+    這個 bug 活了四晚沒被發現，正是因為沒有任何測試模擬「空結果」——
+    真實資料在測試執行的時段永遠不是空的。
+    """
+    import pandas as pd
+    from console.queries import health
+
+    assert health._as_datetime(pd.NaT) is None, (
+        "NaT 必須被當成「沒有資料」——它是 max()/min() 在空結果時的值")
+    assert health._as_datetime(None) is None
+    got = health._as_datetime(pd.Timestamp("2026-08-08 00:00:01"))
+    assert got is not None and got.year == 2026
+
+    # 端到端：正常值仍然格式化得出來（別為了擋 NaT 把正常路徑也擋掉）
+    from console.core import timewin
+    assert timewin.fmt(got) == "2026-08-08 00:00:01"
+
+
+def test_health_card_survives_a_source_with_no_rows_today(client, monkeypatch):
+    """某個來源今天完全沒有資料時，健康卡要降級而不是讓整個端點 500。
+
+    低流量的表（ec 約 700–1,000 筆/日）夜間可能好幾個小時沒有任何一筆。
+    """
+    import pandas as pd
+    from console.core import ch
+    from console.queries import health
+
+    real_query = ch.query
+    empty = pd.DataFrame([{"latest": pd.NaT, "today_rows": 0, "missing": 0,
+                           "uniq_ids": 0}])
+
+    def fake_query(sql, params=None):
+        if "AS latest" in sql:
+            return empty
+        return real_query(sql, params)
+
+    monkeypatch.setattr(health, "query", fake_query)
+    cards = health.source_health()
+    assert cards, "健康卡不該是空的"
+    for c in cards:
+        assert c["latest"] is None, f"{c['key']} 沒有資料時 latest 應該是 None"
+        assert c["status"] in ("停更", "查詢失敗"), (
+            f"{c['key']} 今天沒有資料，狀態應該是停更，實際 {c['status']}")

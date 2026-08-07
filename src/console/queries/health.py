@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
+
+import pandas as pd
 
 from console.core import timewin
 from console.core.ch import ChQueryError, query
@@ -123,10 +125,9 @@ def _data_since() -> dict[str, dict]:
                 {"floor": _MIN_VALID_TIME})
             r = df.iloc[0]
             val = r["since"]
+            since = _as_datetime(r["since"])
             out[key] = {
-                "since": (timewin.fmt(val.to_pydatetime())
-                          if val is not None and hasattr(val, "to_pydatetime")
-                          else None),
+                "since": timewin.fmt(since) if since is not None else None,
                 "invalid_rows": int(r["invalid"] or 0),
             }
         except ChQueryError:
@@ -162,6 +163,28 @@ def freshness_scale(key: str) -> float:
     if not override or default_alert <= 0:
         return 1.0
     return float(override) / default_alert
+
+
+def _as_datetime(value) -> datetime | None:
+    """ClickHouse 聚合結果 → datetime，**空結果一律回 None**。
+
+    `max()` / `min()` 在沒有任何列時回 NULL，而 pandas 把它變成 `NaT`。
+    **`NaT is not None` 是 True**，`NaT` 也有 `to_pydatetime()`（回 `NaT`），
+    所以 `if value is not None` 這個防呆完全擋不住它 —— 一路走到
+    `timewin.fmt()` 的 `strftime` 才拋 `ValueError: NaTType does not support
+    strftime`，而那是在 API 端點裡，症狀是 **/api/health 回 500**。
+
+    實測正式環境：**每晚台北 00:00:0x 固定發生**（08-05 / 06 / 07 / 08 連續四晚
+    都在 log 裡）。原因是 `source_health()` 查的是「今日」，而資料落地延遲約
+    5 分鐘 —— 午夜剛過的那幾十秒，每一張表的 `max()` 都是 NULL。
+
+    2026-08-07 接入低流量的來源之後這件事變嚴重：`ods_ec_request_log` 約
+    700–1,000 筆/日、夜間沒有購物流量，「今日」的列數可能**好幾個小時**都是 0，
+    於是 /api/health 從「每晚 500 半分鐘」變成「每晚 500 好幾小時」。
+    """
+    if value is None or pd.isna(value):
+        return None
+    return value.to_pydatetime() if hasattr(value, "to_pydatetime") else value
 
 
 def _status(lag_min: float, scale: float = 1.0) -> tuple[str, str]:
@@ -212,8 +235,8 @@ def source_health() -> list[dict]:
                 f" FROM {table} WHERE {tf}",
                 {"start": timewin.fmt(today), "end": timewin.fmt(now)})
             r = df.iloc[0]
-            latest = r["latest"]
-            lag = ((now - latest.to_pydatetime()).total_seconds() / 60
+            latest = _as_datetime(r["latest"])
+            lag = ((now - latest).total_seconds() / 60
                    if latest is not None else 9999)
             today_rows = int(r["today_rows"])
             uniq_ids = int(r["uniq_ids"])
@@ -230,7 +253,7 @@ def source_health() -> list[dict]:
                                 day_class=baseline.day_class_of(now))
             card.update({
                 "status": status, "status_color": color,
-                "latest": timewin.fmt(latest.to_pydatetime()) if latest is not None else None,
+                "latest": timewin.fmt(latest) if latest is not None else None,
                 "lag_minutes": round(lag, 1),
                 "today_rows": today_rows, "yesterday_rows": yesterday_rows,
                 "baseline_10m_median": base.median if base else None,
