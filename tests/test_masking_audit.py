@@ -829,3 +829,63 @@ def test_peer_keys_never_carry_a_credential(client):
                     f"{e['evt_no']} 的 keys 與 label 不一致 —— "
                     f"echoable() 的閘門可能被拆掉了")
     assert checked, "沒有任何一列有 keys，這條測試等於沒有執行"
+
+
+# --- scrub_text 的值形狀（不需要 ClickHouse）-----------------------------------
+
+def test_scrub_text_handles_array_shaped_header_values():
+    """voucher / ec / request 的 header 值是**陣列**，不是純量。
+
+    `_SENSITIVE_KEY_RE` 的 `[^\\s,;&}]+` 分支遇到空白或分號就停，所以
+    `["Bearer eyJ…"]` 只清到 `["Bearer` 就結束，整段 JWT 留在原地；
+    `["a=1; b=2"]` 的分號後也全留。
+
+    去向不只畫面：`alerting/notify.py` 會把事件內容送進 Slack，
+    應用 log 明文寫進 `state/logs/*.log`。
+    """
+    jwt = "eyJ0eXAiOiJKV1QifQ.abcdefghijklmnop.qrstuvwxyz"
+    for raw in (f'{{"authorization":["Bearer {jwt}"]}}',
+                f'{{"bearer":"{jwt}"}}',
+                f'{{"authUser":{{"bearer":"{jwt}","_user":9844028}}}}'):
+        out = masking.scrub_text(raw)
+        assert jwt not in out, f"JWT 未被清洗：{raw} → {out}"
+
+    cookie = masking.scrub_text(
+        '{"cookie":["_ga=GA1.1.531900820.1786033644; _fbp=fb.1.1786033688771.93126"]}')
+    assert "_fbp" not in cookie and "_ga" not in cookie, f"cookie 追蹤 ID 未清洗：{cookie}"
+
+    secret = masking.scrub_text('{"x-ocard-channel-secret": ["AHtCAkV+2+tMij97yAB9Fw=="]}')
+    assert "AHtCAkV" not in secret, f"channel secret 未清洗：{secret}"
+
+
+def test_scrub_text_still_handles_scalar_values():
+    """回歸：既有五張表是純量形狀，加分支不可以改壞它們。
+
+    `ods_api_log` 的 headers 是 `{"Cookie": "ci_session=…"}`、
+    `ods_order_api_log` 的 params 是 `{"auth": "9iYM…"}`。
+    """
+    out = masking.scrub_text(
+        '{"Cookie": "ci_session=a%3A5%3A%7Bs%3A10%3A%22session_id%22", '
+        '"Authorization": "Bearer scalarshapedtoken123", "Sid": "beardpapa024_pos"}')
+    assert "ci_session" not in out
+    assert "scalarshapedtoken123" not in out
+    # 非敏感鍵必須原樣保留 —— 過度遮罩會讓明細失去調查價值
+    assert "beardpapa024_pos" in out
+
+    out2 = masking.scrub_text('{"uid": "15657", "auth": "9iYM7B5Dhnm5Qr90OULt"}')
+    assert "9iYM7B5Dhnm5Qr90OULt" not in out2
+    assert '"uid": "15657"' in out2
+
+
+def test_scrub_text_array_branch_does_not_swallow_later_keys():
+    """陣列分支只吃到收尾的 `]`，不可以連後面的鍵值對一起吃掉。
+
+    貪婪地吃到最後一個 `]` 的話，`user-agent` 之類的**調查用資訊**會一起消失，
+    而症狀是「明細少了很多欄位」，看起來像資料本身沒有。
+    """
+    out = masking.scrub_text(
+        '{"authorization":["Bearer abcdefghijk"],"user-agent":["curl/7.81.0"],'
+        '"host":["api-ec.ocard.co"]}')
+    assert "abcdefghijk" not in out, "憑證沒清掉"
+    assert "curl/7.81.0" in out, f"陣列分支吃掉了後面的鍵：{out}"
+    assert "api-ec.ocard.co" in out, f"陣列分支吃掉了後面的鍵：{out}"

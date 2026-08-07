@@ -63,9 +63,26 @@ _EMPTY = {None, "", "None", "null"}
 # `is_auth` session 旗標被外流是真的風險。這個方向由
 # tests/test_masking_audit.py::test_scrub_text_accepts_suffix_matching
 # 驗證與記錄。
+#
+# **`bearer` 是 2026-08-07 接 ec 時補的。** `ods_ec_request_log` 的
+# `response.authUser.bearer` 是 `request.header.authorization` 那個 JWT 的
+# **第二份副本** —— 只清 header 會漏掉它，而症狀是「看起來清乾淨了」。
+#
+# **值的第一個分支 `\[[^\]]*\]` 是給陣列型 header 值用的**（同一天補）。
+# voucher / ec / request 三張表的 header 值都是 JSON 陣列
+# （`{"authorization":["Bearer eyJ0…"]}`），而原本的 `[^\s,;&}]+` 遇到**空白**
+# 就停 —— 只清掉 `["Bearer` 而留下整段 JWT；cookie 的分號後也全留。
+# 既有五張表是純量值（`{"Cookie": "ci_session=…"}`），走 `"[^"]*"` 那一支，
+# 所以這不是既有的洩漏，是新表會踩到的缺口。
+#
+# **這個分支必須排在 `[^\s,;&}]+` 之前**，否則後者先命中 `["Bearer` 就沒機會了。
+# `[^\]]*` 不跨越 `]`，所以不會貪婪地把後面的鍵值對（`user-agent`、`host` 等
+# 調查用資訊）一起吃掉 —— 由
+# tests/test_masking_audit.py::test_scrub_text_array_branch_does_not_swallow_later_keys
+# 守著。
 _SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(\"?(?:authorization|auth|cookie|token|vtoken|password|pwd|secret|api[_-]?key)\"?\s*[:=]\s*)"
-    r"(\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"
+    r"(?i)(\"?(?:authorization|auth|bearer|cookie|token|vtoken|password|pwd|secret|api[_-]?key)\"?\s*[:=]\s*)"
+    r"(\[[^\]]*\]|\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"
 )
 # 疑似個資樣式：台灣手機、Email
 _PHONE_RE = re.compile(r"\b09\d{8}\b")
