@@ -68,6 +68,21 @@ def time_filter(alias: str = "create_time") -> str:
     return f"{alias} >= %(start)s AND {alias} < %(end)s"
 
 
+def time_filter_for(source: str) -> str:
+    """依**來源**給出時間範圍條件。唯一真相是 `queries/source_schema.py`。
+
+    與上面的 `time_filter(alias)` 並存而不是取代它：那一支是給規則 SQL 與
+    `sweep/probes.py` 用的（都是既有那五張表、都自己寫 `create_time`），
+    這一支是給「要支援任意來源」的 Explorer / health / sparklines / trends 用的。
+
+    對既有五張表兩者的輸出**完全相同**，所以不會有「同一張表兩種條件」的漂移
+    （由 tests/test_source_schema.py 的
+    `test_legacy_sources_keep_the_exact_same_time_filter` 綁著）。
+    """
+    from console.queries import source_schema
+    return source_schema.time_filter(source)
+
+
 def exclusion_filter(alias: str = "create_time") -> str:
     """排除已知事件污染窗（值為 config 內常數，直接內插字面值）。"""
     windows = settings()["baseline"].get("exclusion_windows", [])
