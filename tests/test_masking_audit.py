@@ -111,7 +111,7 @@ def _scan(payload: str, where: str) -> None:
     assert leak is None, f"{where} payload 內的憑證值未清洗：{leak.group(0)[:60] if leak else ''}"
 
 
-def _pop_labels(value) -> tuple[list[str], list[str], object]:
+def _pop_labels(value, object_is_account: bool = False) -> tuple[list[str], list[str], object]:
     """抽出對象標籤，回傳 (帳號維度的標籤, 其餘標籤, 剩下的結構)。
 
     「這個標籤是不是帳號」由**結構**決定，不是由字串長相決定：
@@ -176,10 +176,35 @@ def _pop_labels(value) -> tuple[list[str], list[str], object]:
     dims = value.get("dims") if isinstance(value, dict) else None
     in_actor = bool(dims) and any(
         isinstance(d, dict) and d.get("field") in ACTOR_FIELDS for d in dims)
-    return accounts, others, walk(value, False)
+    cleaned = walk(value, False)
+
+    # **頂層的 `label` 是這個對象自己**（`/entity` 回的 `label` 就是事件的
+    # entity_label）。維度是 actor 時它就是帳號 —— 漏了的話一個 email 形式的
+    # 帳號會從頂層那一格漏進嚴格檢查（2026-08-07 由 R07A 的
+    # jason.jyesa151@gmail.com 暴露）。
+    #
+    # **只搬頂層那一個鍵，不是整棵樹**：`walk(value, True)` 會讓 `share`
+    # （來源 IP 清單）與 `profile`（時段分布）一起落進帳號桶，而
+    # `test_account_exemption_is_keyed_on_the_dimension_not_on_the_string`
+    # 的第 ③ 段正是在守那件事。
+    # `object_is_account` 是呼叫端給的：**這個事件的對象本身是不是帳號**
+    # （由它的規則 entity 有沒有 fp=actor 決定）。
+    #
+    # 為什麼不能只看 `dims`：`/entity` 的 `dims` 是事件自己的維度，但
+    # `/entity/breakdown` 的 `dims` 是**拆解維度**（endpoint／品牌／分店…），
+    # 兩者語意不同。頂層的 `label` 在兩支端點都是「這個對象自己」，
+    # 所以要用事件層級的訊號，不是那一份 payload 裡的 dims。
+    if (in_actor or object_is_account) and isinstance(cleaned, dict) \
+            and isinstance(value.get("label"), str):
+        moved = value["label"]
+        if moved in others:
+            others.remove(moved)
+            accounts.append(moved)
+
+    return accounts, others, cleaned
 
 
-def _scan_entity_panel(body, where: str) -> None:
+def _scan_entity_panel(body, where: str, object_is_account: bool = False) -> None:
     """對象面板專用：帳號維度的標籤可以是任何 email 形式，其餘一律最嚴格。
 
     母體排名列的是**其他**對象，而 admin／backend 的對象就是帳號
@@ -189,7 +214,7 @@ def _scan_entity_panel(body, where: str) -> None:
     結構的其他部分仍走原本的 `_scan()`。
     """
     import json
-    accounts, others, cleaned = _pop_labels(body)
+    accounts, others, cleaned = _pop_labels(body, object_is_account)
     _scan(json.dumps(cleaned, ensure_ascii=False), where)
 
     # 帳號標籤：email 不限網域（帳號本來就是它），其餘規則完全不變
@@ -206,6 +231,107 @@ def _scan_entity_panel(body, where: str) -> None:
             f"{where} 的對象標籤出現非內部網域的 Email {mail} —— "
             "「帳號原樣顯示」的政策只涵蓋帳號維度（actor），"
             "其他維度出現消費者位址仍是外流")
+
+
+def _actor_rule_cols() -> dict[str, frozenset[str]]:
+    """規則 id → 它的 entity 裡屬於「帳號」的欄位名。
+
+    那些規則的 `entity_label` **就是帳號**（R07A 是登入失敗的帳號、R05 是
+    操作者…），而 2026-08 的政策要求後台帳號原樣顯示。其餘規則的
+    `entity_label` 是 endpoint／IP／品牌，不該出現 email。
+
+    回欄位名而不只是規則 id，因為同一個值也會出現在事件的 `context` 裡
+    （R07A 的 `context.acc`）—— 那一格與 `entity_label` 是同一個東西，
+    豁免必須一致，而**依欄位名判斷**才不會連 context 裡的別的欄位一起放行。
+    """
+    from console.rules.loader import load_rules
+    return {r.id: frozenset(e.col for e in r.entity if e.fp == "actor")
+            for r in load_rules()
+            if any(e.fp == "actor" for e in r.entity)}
+
+
+def _pop_event_labels(value) -> tuple[list[str], list[str], object]:
+    """抽出事件的對象標籤，回傳 (帳號類, 其餘, 剩下的結構)。
+
+    「這個標籤是不是帳號」由**結構**決定，不是由字串長相決定：`entity_label`
+    一律與 `rule_id` 同層，而規則的 entity 有沒有 `fp: "actor"` 就是答案
+    （同 `_pop_labels()` 依 `ACTOR_FIELDS` 判斷對象面板的做法）。
+
+    2026-08-07 由 R07A 暴露：它命中了一個名字是 gmail 位址的**真實後台帳號**
+    （`jason.jyesa151@gmail.com`，`ods_admin_log` 有 17 筆登入失敗），於是
+    `/api/overview` 與 `/api/events` 被判定為「洩漏 Email」。實測 R07A 近期還
+    命中過 `bqt@phxevergreen.com.tw`、`dinjanewong19@gmail.com` 等 —— 這不是
+    偶發，是商家用自己的信箱當後台帳號。
+    """
+    actor_labels: list[str] = []
+    other_labels: list[str] = []
+
+    actor_cols = _actor_rule_cols()
+
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            rid = node.get("rule_id")
+            cols = actor_cols.get(rid) if isinstance(rid, str) else None
+            for k, v in node.items():
+                if k == "entity_label" and isinstance(v, str):
+                    (actor_labels if cols else other_labels).append(v)
+                    continue
+                # 同一個帳號也出現在事件的 `context` 裡（R07A 的 `context.acc`）。
+                # **依規則自己宣告的 entity 欄位名判斷**，不是看 context 裡有
+                # 什麼 —— 那樣會把同一格裡的別的欄位一起放行。
+                # 「在 Explorer 查此對象」的篩選值。`filter.actor` 依定義就是
+                # actor 欄位（`api/drilldown.py` 的 `_FILTER_BY_FP` 把
+                # `fp="actor"` 對到它），所以與 entity_label 是同一個東西。
+                if k == "drilldown" and isinstance(v, dict):
+                    filt = v.get("filter")
+                    if isinstance(filt, dict) and isinstance(filt.get("actor"), str):
+                        actor_labels.append(filt["actor"])
+                        v = {**v, "filter": {kk: vv for kk, vv in filt.items()
+                                             if kk != "actor"}}
+                    out[k] = walk(v)
+                    continue
+                if k == "context" and cols and isinstance(v, dict):
+                    kept = {}
+                    for ck, cv in v.items():
+                        if ck in cols and isinstance(cv, str):
+                            actor_labels.append(cv)
+                            continue
+                        kept[ck] = walk(cv)
+                    out[k] = kept
+                    continue
+                out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return actor_labels, other_labels, walk(value)
+
+
+def _scan_with_event_labels(body, where: str) -> None:
+    """給會回傳事件清單的端點用：`entity_label` 走結構性豁免，其餘最嚴格。
+
+    豁免的範圍只有「**actor 類規則的** entity_label × email」這一格：
+    手機與憑證值照樣要炸，其他規則的標籤仍只放行內部網域，
+    結構的其他部分仍走原本的 `_scan()`。
+    """
+    import json
+    actor_labels, other_labels, cleaned = _pop_event_labels(body)
+    _scan(json.dumps(cleaned, ensure_ascii=False), where)
+
+    acct = " · ".join(actor_labels)
+    assert not PHONE.search(acct), f"{where} 的事件對象標籤洩漏消費者手機號碼"
+    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的事件對象標籤含未清洗的憑證值"
+
+    blob = " · ".join(other_labels)
+    assert not PHONE.search(blob), f"{where} 的事件對象標籤洩漏消費者手機號碼"
+    assert CREDENTIAL_LEAK.search(blob) is None, f"{where} 的事件對象標籤含未清洗的憑證值"
+    for mail in EMAIL.findall(blob):
+        assert mail in EMAIL_ALLOW or ACCOUNT_DOMAIN.search(mail), (
+            f"{where} 出現非內部網域的 Email {mail} —— "
+            "「帳號原樣顯示」的政策只涵蓋 entity 帶 fp=actor 的規則，"
+            "其他規則的對象是 endpoint／IP／品牌，不該有 email")
 
 
 def _scan_json(body, where: str) -> None:
@@ -281,22 +407,22 @@ def _scan_explorer(body, where: str) -> None:
 def test_overview_response_is_clean(client):
     r = client.get("/api/overview?minutes=60")
     assert r.status_code == 200
-    _scan(r.text, "GET /api/overview")
+    _scan_with_event_labels(r.json(), "GET /api/overview")
 
 
 def test_overview_widest_window_is_clean(client):
     r = client.get("/api/overview?minutes=10080")
     assert r.status_code == 200
-    _scan(r.text, "GET /api/overview?minutes=10080")
+    _scan_with_event_labels(r.json(), "GET /api/overview?minutes=10080")
 
 
 def test_events_response_is_clean(client):
     r = client.get("/api/events")
     assert r.status_code == 200
-    _scan(r.text, "GET /api/events")
+    _scan_with_event_labels(r.json(), "GET /api/events")
     for e in r.json()["events"]:
         detail = client.get(f"/api/events/{e['evt_no']}")
-        _scan(detail.text, f"GET /api/events/{e['evt_no']}")
+        _scan_with_event_labels(detail.json(), f"GET /api/events/{e['evt_no']}")
 
 
 def test_event_entity_panels_are_clean(client):
@@ -309,9 +435,15 @@ def test_event_entity_panels_are_clean(client):
     標籤欄位裡的內部網域位址）—— 實測 R05 的母體排名會列出 `hetty@ocard.co`
     這類員工帳號，那是政策要求顯示的值。
     """
-    evts = [e["evt_no"] for e in client.get("/api/events").json()["events"]][:6]
-    assert evts, "DB 裡沒有事件，這個測試會變成空跑"
-    for evt in evts:
+    # 帶著 rule_id 一起取：**事件的對象是不是帳號**由它的規則決定
+    # （entity 有沒有 fp=actor），而 /entity/breakdown 的 dims 是拆解維度、
+    # 回答不了這個問題。
+    actor_cols = _actor_rule_cols()
+    rows = client.get("/api/events").json()["events"][:6]
+    assert rows, "DB 裡沒有事件，這個測試會變成空跑"
+    for row in rows:
+        evt = row["evt_no"]
+        is_account = row.get("rule_id") in actor_cols
         # 拆解與趨勢是 2026-08 新增的**新外流面**：`breakdown` 逐維度列出
         # 這個對象打了哪些 endpoint／品牌／分店／帳號，那是四份新的對象清單。
         # 漏掉的話新面板可以外流而整個檔案照樣全綠。
@@ -321,7 +453,7 @@ def test_event_entity_panels_are_clean(client):
                      f"/api/events/{evt}/entity/timeline?days=3"):
             r = client.get(path)
             assert r.status_code == 200, f"{path} → {r.status_code} {r.text[:200]}"
-            _scan_entity_panel(r.json(), f"GET {path}")
+            _scan_entity_panel(r.json(), f"GET {path}", is_account)
 
 
 # --- 對象標籤豁免的反向測試（不需要 ClickHouse）--------------------------------
