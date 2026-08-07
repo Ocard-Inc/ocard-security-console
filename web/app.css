@@ -368,6 +368,34 @@ label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; 
 .jtab-n.zero { color: var(--text-2); font-weight: 400; }
 
 .skel { background: #EAECF0; border-radius: 10px; animation: skpulse 1.4s infinite; }
+
+/* 查詢中的轉圈。**位置是 fixed 而不是塞在結果區塊裡**：Explorer 重查時沿用上一版
+   畫面（見 explorer.js 的 reloading），而使用者按下查詢時往往已經捲到明細表格
+   中段 —— 指示器在版面流裡的話會落在畫面外，症狀就是「按了沒反應」。
+   left 讓開側邊選單（同 .batchbar 共用 --nav-w）。
+   pointer-events:none：這是指示器不是遮罩，送出中的按鈕自己會 disabled，
+   蓋住整個畫面反而讓人沒辦法一邊等一邊看已經畫出來的資料。 */
+.busy-overlay {
+  position: fixed; left: var(--nav-w); right: 0; top: 0; bottom: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+.busy-box {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card-bg); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 18px; box-shadow: 0 8px 24px rgba(16,24,40,.16);
+  font-size: 13px; font-weight: 600; color: var(--text-1);
+}
+.spinner {
+  width: 20px; height: 20px; flex: none; border-radius: 50%;
+  border: 2.5px solid var(--line); border-top-color: var(--link);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg) } }
+/* 會動的東西一律尊重系統設定；關掉動畫之後仍要看得出「還在跑」，
+   所以退化成脈動而不是變成一個靜止的圈（靜止的圈跟裝飾長一樣）。 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: skpulse 1.4s infinite; }
+}
 .empty-box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 60px; text-align: center; }
 
 /* 版面內的右欄抽屜。**刻意不是 position:fixed。** 設計稿畫的是蓋住全畫面的
