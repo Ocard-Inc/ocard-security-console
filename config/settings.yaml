@@ -184,6 +184,38 @@ data_sources:
   voucher:
     label: Voucher API Log
     table: ods_voucher_request_log
+  # 2026-08-07 接入。api-ec.ocard.co 的購物請求紀錄（購物車／訂單／付款）。
+  #
+  # **五張新表裡唯一有真實消費者 IP 的一張**（CloudFront 的 x-forwarded-for），
+  # 也是唯一有品牌維度的一張。
+  #
+  # 三個要清洗的憑證與追蹤值（都靠 masking.scrub_text()）：
+  #   - header.authorization 的 Bearer JWT（內含 user_tk）
+  #   - response.authUser.bearer —— **同一個 JWT 的第二份副本**，
+  #     只清 header 會漏掉它
+  #   - header.cookie 的 _ga / _fbp / _clck / _clsk 追蹤 ID
+  #
+  # 品牌在 response.ouput.ec._brand —— **上游的鍵就叫 ouput（拼錯），照抄**。
+  # 寫成 output 會靜靜回 0 筆、品牌維度整個變空而畫面完全正常。
+  #
+  # **兩個哨兵值，都不過濾**（過濾等於偷偷改分母）：
+  #   - actor `0`（實測 4 天 899 筆，最大宗）= 未登入的訪客請求，
+  #     不是「會員 0 號」。明細回 None，排名仍顯示原值（要能貼回篩選器），
+  #     比照 api 的 _admin = 0。
+  #   - brand `0`（實測 1,501 筆）= 這個請求與品牌無關（非購物車類）。
+  #
+  # request.function 對這張表沒有意義（是 cart id，例如 2Rb7xl），
+  # 所以 endpoint 從 url path 推導。
+  #
+  # 實測（2026-08-07）：774,297 列、**0 重複**、2023-01 起連續、
+  # 約 700–1,000 筆/日（五張裡量最小）。
+  #
+  # 低流量表 → R12 的門檻要放寬（同 request）。實測 2 天 1,287 個間隔裡有 12 個
+  # 超過 20 分鐘，**最長 752 分**（12.5 小時，整晚沒有購物流量）。
+  ec:
+    label: EC API Log
+    table: ods_ec_request_log
+    freshness_alert_minutes: 900
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，

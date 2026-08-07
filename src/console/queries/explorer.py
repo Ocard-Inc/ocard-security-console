@@ -37,7 +37,7 @@ MAX_TREND_BUCKETS = 20_000
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
 _ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch", "console",
-                "request", "voucher")
+                "request", "voucher", "ec")
 
 # 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
 # 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
@@ -87,6 +87,11 @@ GROUP_BY = {
         # request.function 實測乾淨、沒有動態段（getUserVoucherList 899 萬、
         # makeOrder 173 萬、checkRedeem 42 萬），不必像 backend 那樣截段。
         "voucher": ("JSONExtractString(request, 'function')", None, "API 功能"),
+        # `path()` 去掉 scheme/host 與 query string；切出來的第 1 段是空字串
+        # （path 以 `/` 開頭），所以從索引 2 開始取 3 段。
+        # **不可以用 request.function** —— 對這張表那是 cart id（2Rb7xl），
+        # 會生出上萬個一次性選項而且看不出是什麼操作。
+        "ec": ("arrayStringConcat(arraySlice(splitByChar('/', path(JSONExtractString(request, 'url'))), 2, 3), '/')", None, "路由"),
     },
     # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
     # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
@@ -113,6 +118,9 @@ GROUP_BY = {
         "console": ("JSONExtractString(requester, 'xForwardedForRaw')", "src", "來源"),
         # 真欄位，實測與 headers 的 x-real-ip 一致。
         "request": ("ip", "src", "來源"),
+        # CloudFront 的 x-forwarded-for。值是 JSON 陣列且可能含多段
+        # （"client, proxy1, proxy2"），取第 1 段並去空白。
+        "ec": ("trim(BOTH ' ' FROM splitByChar(',', arrayElement(JSONExtract(JSONExtractRaw(request, 'header'), 'x-forwarded-for', 'Array(String)'), 1))[1])", "src", "來源"),
     },
     # admin 的操作者來自三層 fallback：
     #
@@ -152,6 +160,11 @@ GROUP_BY = {
         # 會回空字串（= 一個全空的排名），當成字串用則會帶著括號而貼不回篩選器。
         "voucher": ("arrayElement(JSONExtract(JSONExtractRaw(request, 'header'), 'x-ocard-channel-id', 'Array(String)'), 1)",
                     "actor", "呼叫通道"),
+        # 會員 ID（response.authUser._user）。**刻意不用 authorization 裡的
+        # user_tk** —— 那是還有效的憑證，而會員 ID 依 2026-08 的政策原樣顯示。
+        # `0` 是「未登入的訪客請求」的哨兵值，不是會員 0 號；排名保留原值
+        # （要能貼回篩選器），明細回 None，語意寫在 health._NOTES。
+        "ec": ("toString(JSONExtractInt(JSONExtractRaw(response, 'authUser'), '_user'))", "resource", "會員"),
     },
 }
 
@@ -163,6 +176,7 @@ FILTER_COLUMN = {
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
     "voucher": "JSONExtractString(request, 'function')",
+    "ec": ("arrayStringConcat(arraySlice(splitByChar('/', path(JSONExtractString(request, 'url'))), 2, 3), '/')"),
     "batch": "route",           # 真欄位、無動態段
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
@@ -187,6 +201,7 @@ SUGGEST_EXPR = {
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
     "voucher": "JSONExtractString(request, 'function')",
+    "ec": ("arrayStringConcat(arraySlice(splitByChar('/', path(JSONExtractString(request, 'url'))), 2, 3), '/')"),
     "batch": "route",
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
@@ -388,6 +403,7 @@ ENDPOINT_FILTER_META = {
     "console": ("Controller/Method 前綴", "userAdmin/login"),
     "request": ("路由前綴", "api/reports"),
     "voucher": ("API 功能前綴", "getUserVoucherList"),
+    "ec": ("路由前綴", "v1/ec/ocard"),
 }
 
 # **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
@@ -637,7 +653,10 @@ def ranking(f: ExplorerFilter, dimension: str, limit: int = 20) -> dict:
         breakdown_col = ""
     else:
         brands_col = f"uniq({brand_col}) AS brands"
-        breakdown_col = "" if is_brand_dim else f", {exprs.BRAND_MAP} AS brand_map"
+        # **逐品牌次數也要用綱要的品牌欄位。** `exprs.BRAND_MAP` 寫死 `_brand`，
+        # 而 ec 的品牌是運算式（埋在 response JSON 裡）—— 用常數會 502。
+        breakdown_col = ("" if is_brand_dim
+                         else f", {exprs.brand_map(brand_col)} AS brand_map")
     df = query(
         f"SELECT {expr} AS k, count() AS cnt, {brands_col}{breakdown_col}"
         f" {where} GROUP BY k ORDER BY cnt DESC LIMIT {int(limit)}", params)
@@ -747,6 +766,7 @@ _DETAIL_COLUMNS = {
     "request": ("idx AS _id, created_at AS create_time, method, uri, ip,"
                 " status_code, duration_ms, headers, body"),
     "voucher": "_id, created_time AS create_time, request, response",
+    "ec": "_id, created_time AS create_time, request, response",
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -763,6 +783,7 @@ _PAYLOAD_COLUMNS = {
     "request": ("idx AS _id, created_at AS create_time, headers, body,"
                 " response_headers, response_body"),
     "voucher": "_id, created_time AS create_time, request, response",
+    "ec": "_id, created_time AS create_time, request, response",
 }
 
 
@@ -818,6 +839,28 @@ def _json_col(r: dict, col: str) -> dict:
     except (ValueError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _first_hop(value: str | None) -> str | None:
+    """`"client, proxy1, proxy2"` → `"client"`。
+
+    CloudFront 的 x-forwarded-for 會帶整條代理鏈。排名的 SQL 取第一段
+    （`splitByChar(',')[1]`），明細必須用同一個收斂方式 ——
+    否則排名裡看到的 IP 貼回篩選器不會命中。
+    """
+    if not value:
+        return None
+    return value.split(",")[0].strip() or None
+
+
+def _ec_user(resp: dict):
+    """`response.authUser._user`（會員 ID）。
+
+    `0` 或缺值回 None 而不是 0 —— 「這個請求沒有登入會員」與「會員編號 0」
+    是不同的事，而後者不存在。
+    """
+    user = (resp.get("authUser") or {}).get("_user")
+    return user or None
 
 
 def _first(value) -> str | None:
@@ -987,6 +1030,32 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "params": masking.payload_summary(r.get("request")),
             "resource": None,
         })
+    elif source == "ec":
+        req = _json_col(r, "request")
+        resp = _json_col(r, "response")
+        url_path = str(req.get("url") or "").split("?")[0]
+        out.update({
+            # 與排名同一個收斂方式（url path 第 2–4 段），排名裡看到的值
+            # 貼回篩選器就一定命中。
+            "endpoint": "/".join(url_path.split("/")[3:6]),
+            # **與排名同一個收斂方式**：x-forwarded-for 可能是
+            # "client, proxy1, proxy2" 的鏈，排名取第一段（真正的 client），
+            # 明細也必須取第一段 —— 否則排名裡看到的 IP 貼回篩選器不會命中，
+            # 而那是這個專案的不變量。
+            "source_ip": masking.src(
+                _first_hop(_first(req.get("header", {}).get("x-forwarded-for")))),
+            # 會員 ID。0 是「未登入的訪客請求」，不是會員 0 號 —— 回 None
+            # 讓前端渲染成「—」（同 api 對 _admin = 0 的做法）。
+            "actor": masking.resource(_ec_user(resp)),
+            "result": "—",          # 沒有統一的成功／失敗欄位
+            # request 與 response 各含一份有效的 JWT，兩坨都收斂
+            "params": masking.payload_summary(r.get("request")),
+            "resource": None,
+        })
+        # 品牌從 response.ouput.ec._brand 補（**上游拼字就是 ouput**）——
+        # 這張表沒有 _brand 真欄位，前面通用的 out["brand"] 會是 None。
+        ec_brand = ((resp.get("ouput") or {}).get("ec") or {}).get("_brand")
+        out["brand"] = int(ec_brand) if ec_brand else None
     elif source == "auth":
         out.update({
             "endpoint": str(r.get("action")),

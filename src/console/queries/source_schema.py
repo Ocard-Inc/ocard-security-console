@@ -99,6 +99,22 @@ SCHEMAS["console"] = SourceSchema(
 
 # ods_voucher_request_log / ods_ec_request_log：created_at 是 UTC（分區鍵），
 # created_time 是台北牆鐘的真欄位。兩者各自獨立寫入，不可互相推導。
+SCHEMAS["ec"] = SourceSchema(
+    key="ec",
+    table=settings()["data_sources"]["ec"]["table"],
+    time_col="created_at",
+    time_tz="Asia/Taipei",
+    time_expr="created_time",
+    dedup_col="_id",
+    # **品牌是運算式而不是欄位名** —— 它埋在 response JSON 裡。
+    # where_clause() 的 f"{brand_col} = %(brand)s"、ranking() 的
+    # uniq({brand_col})、GROUP_BY 的 toString({brand_col}) 三處字串插值
+    # 天生成立，不需要特例。上游的鍵就叫 `ouput`（拼錯），照抄。
+    brand_col=("JSONExtractInt(JSONExtractRaw("
+               "JSONExtractRaw(response, 'ouput'), 'ec'), '_brand')"),
+    store_col=None,
+)
+
 SCHEMAS["voucher"] = SourceSchema(
     key="voucher",
     table=settings()["data_sources"]["voucher"]["table"],

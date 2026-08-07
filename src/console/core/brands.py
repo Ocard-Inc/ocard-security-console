@@ -27,6 +27,18 @@ from console.core.config import MysqlConfig, mysql_config, settings
 logger = logging.getLogger(__name__)
 
 UNKNOWN_NAME = "（查無品牌）"
+# `_brand = 0` 是「這筆記錄沒有品牌」的哨兵值，**不是「查無此品牌」**。
+#
+# 兩者在畫面上差很多：「查無」讀起來像「有一個品牌編號，但我們查不到它的名字」
+# （資料問題，值得追），而 0 是「這個請求本來就與品牌無關」（正常）。
+# MySQL 從來沒有編號 0 的品牌，所以說「查無」是錯的。
+#
+# 同 `explorer.NON_ADMIN_ACCOUNT` 對 `_admin = 0` 的判斷 ——
+# 0 從來就不是一個曾經存在又被刪掉的編號。
+#
+# 2026-08-07 接 ec 時現形：那張表非購物車類的請求 `response.ouput.ec._brand`
+# 是 0，實測 7 天有 2,495 筆（最大宗），品牌排名第一列顯示「（查無品牌）（0）」。
+NO_BRAND_NAME = "（無品牌）"
 UNAVAILABLE_NAME = "（品牌名稱查詢失敗）"
 
 # 「涉及品牌 N 個」展開時列出的品牌數上限
@@ -71,7 +83,12 @@ def coerce_id(value: object) -> int | None:
 
 
 def format_label(brand_id: int, name: str | None) -> str:
-    """「品牌名稱（品牌編號）」；名稱為空字串時視同查無。"""
+    """「品牌名稱（品牌編號）」；名稱為空字串時視同查無。
+
+    編號 0 是「沒有品牌」的哨兵值（見 `NO_BRAND_NAME`），與「查無」分開講。
+    """
+    if brand_id == 0:
+        return f"{NO_BRAND_NAME}（0）"
     return f"{name or UNKNOWN_NAME}（{brand_id}）"
 
 

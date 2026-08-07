@@ -898,6 +898,12 @@ _LIMITATIONS_BY_SOURCE = {
                 "它代表哪一支整合程式，不是哪個人。",
                 "Voucher API Log 的 input.brand 是雜湊 token 而非品牌編號，"
                 "無法對照品牌名稱。"],
+    "ec": ["EC API Log 的來源 IP 來自 CloudFront 的 x-forwarded-for，"
+           "屬「未驗證來源」，不可作為可信來源證據。",
+           "EC API Log 的品牌只在購物車與訂單類請求上有值，其餘請求為 0 —— "
+           "那是「這個請求與品牌無關」，不是「品牌 0」。",
+           "EC API Log 的操作者是會員 ID，0 代表未登入的訪客請求。",
+           "EC API Log 沒有分店欄位。"],
 }
 
 

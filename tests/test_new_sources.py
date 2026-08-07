@@ -347,3 +347,126 @@ def test_voucher_channel_secret_never_reaches_the_response(client):
     r = _explore(client, "voucher", "detail")
     assert r.status_code == 200, r.text
     assert "AHtCAkV" not in r.text, "channel secret 的值原樣外流"
+
+
+# ── ec（ods_ec_request_log）───────────────────────────────────────────────────
+
+def test_ec_source_works(client):
+    """api-ec.ocard.co 的購物請求紀錄。五張裡唯一有真實消費者 IP 與品牌的一張。"""
+    assert_source_works(
+        client, "ec",
+        expect_analyses={"trend", "endpoint", "brand", "source", "actor", "detail"})
+
+
+def test_ec_endpoint_is_derived_from_url_not_function():
+    """`request.function` 對 ec 是 cart id（`2Rb7xl`）。
+
+    拿它當 endpoint 會生出上萬個一次性選項，而且完全看不出是什麼操作。
+    """
+    expr = explorer.GROUP_BY["endpoint"]["ec"][0]
+    assert "'function'" not in expr, (
+        f"ec 的 endpoint 不可以用 request.function（那是 cart id）：{expr}")
+    assert "url" in expr
+
+
+def test_ec_brand_uses_the_upstream_typo():
+    """上游的鍵就叫 `ouput`（不是 `output`）。
+
+    改成正確拼字會靜靜回 0 筆 —— 品牌維度整個變空，而畫面完全正常。
+    """
+    expr = explorer.GROUP_BY["brand"]["ec"][0]
+    assert "'ouput'" in expr, (
+        f"上游的鍵是 ouput（拼錯但那是事實），寫成 output 會永遠取不到值：{expr}")
+
+
+def test_ec_bearer_token_never_reaches_the_response(client):
+    """JWT 在 `request.header.authorization` 與 `response.authUser.bearer` 各一份。
+
+    只清 header 會漏掉第二份，而症狀是「看起來清乾淨了」。
+    """
+    r = _explore(client, "ec", "detail", days=30)
+    assert r.status_code == 200, r.text
+    assert "eyJ0eXAiOiJKV1Qi" not in r.text, (
+        'JWT 原樣外流（eyJ0eXAiOiJKV1Qi 是 {"typ":"JWT" 的 base64 前綴）')
+
+
+# ── 五個來源一起過的跨來源守門 ────────────────────────────────────────────────
+
+NEW_SOURCES = ("batch", "console", "request", "voucher", "ec")
+
+
+@pytest.mark.parametrize("source", NEW_SOURCES)
+def test_new_sources_detail_never_ships_raw_payload(client, source):
+    """五張新表的內容幾乎全是 payload 欄位，逐筆明細只能給 `payload_summary()`。
+
+    要看原文有專門的路徑：`POST /api/explorer/payload`，一次一筆並寫入
+    `audit_log`。明細直接吐原文的話，那條留痕路徑等於被繞過。
+    """
+    start, end = _recent_window(days=30)
+    rows = explorer.detail(
+        explorer.ExplorerFilter(source=source, start=start, end=end))["rows"]
+    if not rows:
+        pytest.skip(f"{source} 在最近 30 天沒有資料")
+
+    payload_fields = {"request", "response", "body", "response_headers",
+                      "response_body", "input", "header", "headers",
+                      "requester", "authentication", "params"}
+    for row in rows[:20]:
+        for key, value in row.items():
+            if key not in payload_fields or not isinstance(value, str):
+                continue
+            # payload_summary() 給的是「N bytes · 欄位：…」，不是可解析的原文
+            assert not value.lstrip().startswith(("{", "[")), (
+                f"{source} 的明細把 {key} 原樣吐出來了（開頭是 JSON）："
+                f"{value[:120]}")
+
+
+@pytest.mark.parametrize("source", NEW_SOURCES)
+def test_new_sources_pass_the_masking_audit(client, source):
+    """把五個新來源納入既有的遮罩稽核：不該外流的沒外流。
+
+    `_scan()` 檢查手機、消費者 Email、未清洗的憑證值三種樣式。
+    """
+    from tests.test_masking_audit import _scan
+
+    for analysis in ("detail", "endpoint", "trend"):
+        r = _explore(client, source, analysis, days=30)
+        assert r.status_code == 200, f"{source}/{analysis} → {r.status_code}"
+        _scan(r.text, f"POST /api/explorer source={source} analysis={analysis}")
+
+
+def test_brand_zero_is_no_brand_not_lookup_failure():
+    """`_brand = 0` 是「沒有品牌」，不是「查無品牌」。
+
+    兩者在畫面上差很多：「查無」讀起來像「有一個品牌編號，但我們查不到它的
+    名字」（資料問題，值得追），而 0 是「這個請求本來就與品牌無關」（正常）。
+    MySQL 從來沒有編號 0 的品牌，所以說「查無」是錯的 ——
+    同 explorer.NON_ADMIN_ACCOUNT 對 `_admin = 0` 的判斷。
+
+    2026-08-07 接 ec 時現形：非購物車類請求的品牌是 0，實測 7 天 2,495 筆
+    （最大宗），品牌排名第一列顯示「（查無品牌）（0）」。
+    """
+    from console.core import brands
+    assert brands.format_label(0, None) == f"{brands.NO_BRAND_NAME}（0）"
+    # 真的查無（非 0 的編號但 MySQL 沒有）仍然要說「查無」
+    assert brands.UNKNOWN_NAME in brands.format_label(999999999, None)
+
+
+def test_ec_detail_source_ip_matches_the_ranking_value(client):
+    """排名裡看到的 IP，貼回篩選器就一定要命中。
+
+    CloudFront 的 x-forwarded-for 會帶整條代理鏈
+    （`"client, proxy1, proxy2"`）。排名的 SQL 取第一段，明細必須用同一個
+    收斂方式 —— 不然使用者從明細複製一個帶逗號的字串貼回篩選器，會查到 0 筆
+    而畫面上完全看不出為什麼。
+    """
+    start, end = _recent_window(days=7)
+    rows = explorer.detail(
+        explorer.ExplorerFilter(source="ec", start=start, end=end))["rows"]
+    if not rows:
+        pytest.skip("ods_ec_request_log 在最近 7 天沒有資料")
+    ips = [r["source_ip"] for r in rows if r["source_ip"]]
+    assert ips, "沒有任何一列有來源 IP"
+    assert not any("," in ip for ip in ips), (
+        f"明細的來源 IP 帶著整條代理鏈，與排名的值不一致："
+        f"{[ip for ip in ips if ',' in ip][:2]}")

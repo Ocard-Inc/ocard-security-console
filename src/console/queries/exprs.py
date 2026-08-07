@@ -25,7 +25,24 @@ API_SRC_IP = (
 # (品牌編號陣列, 次數陣列)，不必為了展開明細多跑一次查詢或改寫成子查詢；
 # 排序與取前 N 名交給 Python（見 core/brands.py 的 breakdown()）。
 # 值明寫 UInt64，避免 UInt8 累加後型別不足。
-BRAND_MAP = "sumMap([_brand], [toUInt64(1)])"
+def brand_map(col: str = "_brand") -> str:
+    """逐品牌次數的 sumMap。`col` 可以是欄位名，也可以是運算式。
+
+    2026-08-07 接入 ec 時加的參數：那張表的品牌埋在 `response.ouput.ec._brand`
+    這個 JSON 裡，不是 `_brand` 真欄位 —— 寫死 `_brand` 會讓它的排名在
+    ClickHouse 端拋「Unknown expression or function identifier」→ 502。
+
+    唯一需要傳參的呼叫端是 `explorer.ranking()`（它要支援任意來源）。
+    其餘呼叫端（trends / quick_templates / sweep / 規則 SQL）都只跑在有
+    `_brand` 真欄位的表上，繼續用下面的 `BRAND_MAP` 常數。
+    """
+    return f"sumMap([{col}], [toUInt64(1)])"
+
+
+# **這個常數的字面值不可以變。** `checker/backfill_brands.py` 用
+# `exprs.BRAND_MAP not in rule.sql` 做字串比對來判斷一條規則有沒有逐品牌次數，
+# 而規則 SQL 是 YAML 裡的字面文字。
+BRAND_MAP = brand_map()
 
 # 同上，但分組是分店（`_store`）。`-1` 代表品牌層級操作、不屬於任何分店 ——
 # 那不是「查不到分店」，展開時由 core/stores.py 標成「（品牌層級，非特定分店）」。

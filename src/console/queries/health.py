@@ -40,6 +40,7 @@ _MISSING_EXPR = {
     "ods_request_log": ("status_code = 0", "尚未寫回完成狀態"),
     # request 是這張表唯一的分析來源，不是合法 JSON 就什麼維度都算不出來。
     "ods_voucher_request_log": ("NOT isValidJSON(request)", "request 無法解析"),
+    "ods_ec_request_log": ("NOT isValidJSON(request)", "request 無法解析"),
 }
 
 _NOTES = {
@@ -68,6 +69,11 @@ _NOTES = {
     "voucher": "完全沒有來源 IP（全部是伺服器對伺服器呼叫），不可做任何單一來源判斷；"
                "操作者是呼叫通道（x-ocard-channel-id），代表哪一支整合程式、"
                "不是哪個人；input.brand 是雜湊 token 而非 _brand，所以沒有品牌維度",
+    "ec": "五張新表裡唯一有真實消費者 IP 的一張（CloudFront 的 x-forwarded-for，"
+          "屬未驗證來源）；操作者是會員 ID，0 代表未登入的訪客請求、不是會員 0 號；"
+          "品牌在 response.ouput.ec._brand，非購物車類請求為 0（那是「與品牌無關」"
+          "不是「品牌 0」）；沒有分店維度；本表流量低（約 700–1,000 筆/日），"
+          "夜間的資料間隔實測可達 12.5 小時，R12 的門檻已另外放寬",
 }
 
 
