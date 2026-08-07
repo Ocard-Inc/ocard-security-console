@@ -2939,7 +2939,7 @@ GROUP_BY 三處的字串插值天生成立，不需要特例。
 - Modify: `src/console/queries/trends.py`（`request_trend()` 的 series 清單）
 - Modify: `web/pages/overview.js`（`PANELS` 與版面）
 - Modify: `web/charts/charts.css`（`.panel-grid` 從固定 2 欄改成自動換行）
-- Modify: `web/app.css`（來源健康卡的 grid，從 5 張變 10 張）
+- Modify: `web/pages/health.js`（來源健康卡的**行內** grid，從 5 張變 10 張）
 - Test: `tests/test_trend_buckets.py` 或新建 `tests/test_overview_panels.py`
 
 **Interfaces:**
@@ -3091,14 +3091,23 @@ const hasBaseline = (points) => points.some(p => p.baseline_median != null);
 
 - [ ] **Step 6: 版面改成自動換行（面板與健康卡都要）**
 
-趨勢面板的 grid 在 **`web/charts/charts.css`**（不是 `app.css`），健康卡的在 `web/app.css`：
+**兩個 grid 在兩個不同的地方，而且都不在 `web/app.css`**（實測 `app.css`
+裡一個 `grid-template-columns` 都沒有）：
+
+| 什麼 | 在哪 | 現值 |
+|---|---|---|
+| 趨勢面板 | `web/charts/charts.css` 的 `.panel-grid` | `repeat(2, minmax(0, 1fr))`，另有 media query 在窄螢幕降成 1 欄 |
+| 來源健康卡 | **`web/pages/health.js` 的行內樣式**（第 51、56 行） | `repeat(3,1fr)` |
 
 ```bash
 grep -n 'panel-grid' -A 6 web/charts/charts.css
-grep -n 'grid-template-columns' web/app.css
+grep -n 'grid-template-columns' web/pages/health.js
 ```
 
-兩者都改成自動換行：
+**來源健康卡是獨立頁面（`web/pages/health.js`），不在 overview。**
+`data.sources` 的 `v-for` 只有那一個地方。
+
+兩處都改成自動換行：
 
 ```css
 grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -3107,8 +3116,13 @@ grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 **`.panel` 的 `min-width: 0` 不可以拿掉** —— `charts.css` 的註解寫著
 「沒有這行，grid 子項會被 SVG 撐開而不縮」。
 
-十個面板留在 2 欄會排成 5 列、把頁面拉得很長；健康卡從 5 張變 10 張，
-固定欄數會變成兩排半、最後一排孤零零一張。
+**健康卡的載入骨架也要改。** `health.js` 第 51 行是
+`<div v-for="i in 6" ...>` —— 寫死 6 個佔位（給 5 個來源用）。
+來源變 10 個之後骨架只出現 6 格，載入完突然變 10 格，畫面會跳。
+改成由來源數決定，或至少改成 10。
+
+十個面板留在 2 欄會排成 5 列、把頁面拉得很長；健康卡 10 張配 3 欄會是
+3+3+3+1，最後一排孤零零一張。
 
 - [ ] **Step 7: 測試 + 手動驗收**
 
@@ -3129,8 +3143,8 @@ uv run uvicorn console.api.app:app --host 127.0.0.1 --port 8600 --app-dir src
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/console/queries/trends.py web/pages/overview.js web/app.css \
-        tests/test_overview_panels.py
+git add src/console/queries/trends.py web/pages/overview.js \
+        web/charts/charts.css web/pages/health.js tests/test_overview_panels.py
 git commit -m "feat: 總覽趨勢從 5 個面板擴成 10 個（含五張新表）
 
 request_trend 的 interval 原本寫死 create_time，改成逐來源取
@@ -3163,7 +3177,8 @@ source_schema 的 time_expr。
 
 **Files:**
 - Modify: `src/console/queries/health.py`（`source_health()` 加 `data_since`）
-- Modify: `web/pages/overview.js`（健康卡與面板標頭顯示）
+- Modify: `web/pages/health.js`（來源健康卡顯示）
+- Modify: `web/pages/overview.js`（趨勢面板標頭顯示）
 - Test: `tests/test_new_sources.py`
 
 **Interfaces:**
@@ -3265,7 +3280,9 @@ for t in ('ods_voucher_request_log','ods_api_log'):
 
 - [ ] **Step 4: 前端顯示**
 
-`web/pages/overview.js`，健康卡與趨勢面板標頭共用一個判斷：
+健康卡在 `web/pages/health.js`、趨勢面板標頭在 `web/pages/overview.js`
+（**兩個不同的頁面**）。兩邊共用同一個判斷，各自複製一份即可 ——
+它只有三行，抽成共用模組反而要多一個 import 路徑：
 
 ```javascript
 // 只在「資料起始晚於查詢區間左界」時提示 —— 那正是
@@ -3301,7 +3318,8 @@ startsAfterWindow(since) {
 
 ```bash
 uv run pytest -q
-git add src/console/queries/health.py web/pages/overview.js tests/test_new_sources.py
+git add src/console/queries/health.py web/pages/health.js web/pages/overview.js \
+        tests/test_new_sources.py
 git commit -m "feat: 每個來源標明「資料自 X 起」
 
 十張裡有三張是 2026-08-06／08-07 才開始的（console / request / batch）。
