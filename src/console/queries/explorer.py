@@ -36,7 +36,7 @@ MAX_TREND_BUCKETS = 20_000
 # 但 Order Log 實測**只有 `0`（未填，0.016%）、沒有 `-1`**，不需要改 `stores.py`
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
-_ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch")
+_ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch", "console")
 
 # 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
 # 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
@@ -75,6 +75,8 @@ GROUP_BY = {
         # import_coupon / sendReviewRemind 這類固定名稱），所以不像 backend
         # 那樣截前 2 段。
         "batch": ("route", None, "批次工作"),
+        "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))",
+                    None, "Controller/Method"),
     },
     # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
     # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
@@ -93,6 +95,12 @@ GROUP_BY = {
         "backend": ("ip", "src", "來源"),
         "admin": ("ip", "src", "來源"),
         "auth": ("ip", "src", "來源"),
+        # **只取 xForwardedForRaw，空就是空。** 實測 53% 的列沒有它，而那些列的
+        # `requester.ipAddress` 全部是 10.100.0.173（我方 LB）、全部是
+        # Welcome/index 健康檢查。coalesce 進來的話它會穩居每一份來源排名
+        # 第一名，而它不是任何「來源」——「查不到」不可以偷換成一個看起來
+        # 合理的值。空的比例由 `health._NOTES` 說明。
+        "console": ("JSONExtractString(requester, 'xForwardedForRaw')", "src", "來源"),
     },
     # admin 的操作者來自三層 fallback：
     #
@@ -119,6 +127,14 @@ GROUP_BY = {
         # 就貼不回篩選器了（同 core/stores.py 開頭「名稱刻意不在這裡查」的教訓）。
         # 帳號名由 `core/admins.py` 在呈現層補（見 ranking() 與 detail()）。
         "order": ("toString(_admin)", "actor", "操作者"),
+        # 兩層 fallback。`authentication.account` 是上游「應該」寫入身分的地方，
+        # 但實測 2026-08-07 全部是空字串（連 tokenPresent=1 的 2,120 筆也是）。
+        # `body.account` 只有 /admin/login 有，但那正好是資安上最需要的子集
+        # （實測 rxingmanage 620 次、admin@ocard.co 17 次）。少了 fallback 的話，
+        # 這張表最有價值的那件事完全看不到，而畫面上是一個 100% 都是「（空）」
+        # 的操作者排名。
+        "console": ("coalesce(nullIf(JSONExtractString(authentication, 'account'), ''), nullIf(JSONExtractString(body, 'account'), ''), '')",
+                    "actor", "操作者"),
     },
 }
 
@@ -127,6 +143,7 @@ GROUP_BY = {
 # 對 auth 會生出 `startsWith(function, ...)` 而在 ClickHouse 端拋
 # 「Unknown expression or function identifier `function`」→ API 回 502。
 FILTER_COLUMN = {
+    "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "batch": "route",           # 真欄位、無動態段
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
@@ -146,6 +163,9 @@ FILTER_COLUMN = {
 # orderlist/detail/12345 這類含動態段的值會產生上千個一次性選項。
 # ROUTE2 的輸出是 route 的前綴，所以拿去 startsWith 仍然成立。
 SUGGEST_EXPR = {
+    # 與 FILTER_COLUMN 同一個運算式 —— 「建議值必須是篩選欄位的合法前綴」
+    # 這個不變量因此天生成立。
+    "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
     "batch": "route",
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
@@ -240,7 +260,12 @@ _ENTITY_FILTER_UNSUPPORTED = {
 # **欄位在、但上游沒有寫入值**。兩者要分開講：前者永遠不會有，後者是上游
 # 可以修好的 —— 只說「不支援」會讓人去等一個不會來的功能，或反過來以為
 # 資料結構天生如此而不去追上游。
-_DIMENSION_UNSUPPORTED: dict[tuple[str, str], str] = {}
+_DIMENSION_UNSUPPORTED: dict[tuple[str, str], str] = {
+    ("brand", "console"): "Console API Log 的品牌在 authentication.brandIdx，"
+                          "但上游目前完全沒有寫入（實測 100% 為 null），"
+                          "所以沒有品牌維度。這是上游的缺口，"
+                          "不是資料結構的限制 —— 修好之後這個維度就會出現。",
+}
 
 
 def filter_support(field: str, source: str) -> str | None:
@@ -332,6 +357,7 @@ ENDPOINT_FILTER_META = {
     "admin": ("Function 前綴", "Boss_initial/auth_v2"),
     "order": ("URL 前綴", "v1/order/active/deny"),
     "batch": ("批次工作前綴", "NinexNine/import_main"),
+    "console": ("Controller/Method 前綴", "userAdmin/login"),
 }
 
 # **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
@@ -680,6 +706,12 @@ _DETAIL_COLUMNS = {
     "order": ("_id, create_time, controller, function, url,"
               " _brand, _store, _admin, platform, params"),
     "batch": "_id, create_time, route, controller, function, ip, header, input",
+    # **別名的是台北運算式，不是原始欄位。** `recordedAt` 是 UTC，直接
+    # `recordedAt AS create_time` 會讓明細的每一列都早 8 小時 —— 而畫面上
+    # 只是「時間怪怪的」，不會報錯。這正是 source_schema 存在的理由。
+    "console": ("_id, recordedAt + INTERVAL 8 HOUR AS create_time,"
+                " kind, environment, requestId,"
+                " requester, request, authentication, response, body"),
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -691,6 +723,8 @@ _PAYLOAD_COLUMNS = {
     "auth": "_id, create_time, headers, params, response",
     "order": "_id, create_time, params",
     "batch": "_id, create_time, header, input",
+    "console": ("_id, recordedAt + INTERVAL 8 HOUR AS create_time,"
+                " requester, request, authentication, response, body"),
 }
 
 
@@ -729,6 +763,48 @@ def detail(f: ExplorerFilter) -> dict:
                        "params 只顯示大小與欄位名稱；token 為不可逆指紋。"
                        "需要 params／headers 原文請用每列的「調閱原文」（會寫入操作稽核）。",
     }
+
+
+def _json_col(r: dict, col: str) -> dict:
+    """JSON 字串欄位 → dict。壞掉或空的回 `{}`，不讓明細整列失敗。
+
+    2026-08-07 接入的三張表（console / voucher / ec）的內容幾乎全在 JSON 欄位裡，
+    在 Python 端解析比在 SQL 端對同一坨字串抽五次便宜，而且讀得懂。
+    """
+    import json
+    raw = r.get(col)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _console_endpoint(r: dict) -> str:
+    req = _json_col(r, "request")
+    return f"{req.get('controllerClass') or ''}/{req.get('controllerMethod') or ''}"
+
+
+def _console_src(r: dict) -> str | None:
+    """**只取 xForwardedForRaw。** 不可以退回 `requester.ipAddress` ——
+    那是我方 LB（10.100.0.173），53% 的列會變成它。"""
+    return _json_col(r, "requester").get("xForwardedForRaw") or None
+
+
+def _console_actor(r: dict) -> str | None:
+    """`authentication.account` → `body.account` 兩層 fallback（同 GROUP_BY）。"""
+    return (_json_col(r, "authentication").get("account")
+            or _json_col(r, "body").get("account") or None)
+
+
+def _console_result(r: dict) -> str:
+    code = _json_col(r, "response").get("statusCode")
+    if code is None:
+        return "—"
+    code = int(code)
+    return "成功" if 200 <= code < 400 else f"失敗（{code}）"
 
 
 def _mask_detail_row(source: str, r: dict) -> dict:
@@ -809,6 +885,18 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "actor": None,          # 排程觸發，沒有操作者
             "result": "—",          # 沒有 status 欄位，無法區分成功與失敗
             "params": masking.payload_summary(r.get("input")),
+            "resource": None,
+        })
+    elif source == "console":
+        out.update({
+            "endpoint": _console_endpoint(r),
+            "source_ip": masking.src(_console_src(r)),
+            "actor": masking.actor(_console_actor(r)),
+            # statusCode 是這張表少數真的能區分成敗的欄位
+            "result": _console_result(r),
+            # requester / request / authentication / response / body 五欄都是
+            # JSON 原文，一律收斂。要看原文走 POST /api/explorer/payload。
+            "params": masking.payload_summary(r.get("request")),
             "resource": None,
         })
     elif source == "auth":

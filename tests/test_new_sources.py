@@ -63,6 +63,22 @@ def assert_source_works(client, source: str, *, expect_analyses: set[str]) -> No
         assert reason and len(reason) > 10, (
             f"{source} 的 {field} 不支援，但原因寫得太短：{reason!r}")
 
+    # ⑦ **明細的時間必須落在查詢區間內（台北牆鐘）。**
+    #
+    # 實測踩到過：console 的 `_DETAIL_COLUMNS` 寫成
+    # `recordedAt AS create_time`，別名的是**原始 UTC 欄位**而不是台北運算式，
+    # 於是每一列都早 8 小時 —— 而排名、趨勢、健康卡全部正常，只有明細的時間
+    # 「怪怪的」。上面 ①–⑥ 一則都抓不到。
+    start, end = _recent_window()
+    rows = explorer.detail(
+        explorer.ExplorerFilter(source=source, start=start, end=end))["rows"]
+    if rows:
+        times = [r["time"] for r in rows[:20]]
+        assert all(start <= t <= end for t in times), (
+            f"{source} 的明細時間落在查詢區間 [{start}, {end}] 之外："
+            f"{[t for t in times if not (start <= t <= end)][:3]} —— "
+            "多半是 _DETAIL_COLUMNS 別名了原始的 UTC 欄位而不是台北運算式")
+
 
 # ── batch（ods_batch_request_log）─────────────────────────────────────────────
 
@@ -115,3 +131,57 @@ def test_unknown_source_fails_loudly_in_detail_rows():
     """未註冊的來源必須大聲失敗，不可以靜靜渲染成別的表的形狀。"""
     with pytest.raises((KeyError, ValueError)):
         explorer._mask_detail_row("nonexistent_source", {"create_time": None})
+
+
+# ── console（ods_console_backend_sys_log）─────────────────────────────────────
+
+def test_console_source_works(client):
+    """api-console.ocard.co（PHP 後台 API）的請求紀錄。"""
+    assert_source_works(
+        client, "console",
+        expect_analyses={"trend", "endpoint", "source", "actor", "detail"})
+
+
+def test_console_source_ip_never_falls_back_to_the_load_balancer():
+    """`xForwardedForRaw` 空的時候就是空，不可以退回 `requester.ipAddress`。
+
+    實測 53% 的列沒有 xForwardedFor，而那些列的 ipAddress 全部是
+    10.100.0.173（我方 LB）、全部是 Welcome/index 健康檢查。coalesce 進來的話
+    它會穩居每一份來源排名第一名 —— 而它不是任何「來源」。
+    「查不到」不可以偷換成一個看起來合理的值。
+    """
+    expr = explorer.GROUP_BY["source"]["console"][0]
+    assert "ipAddress" not in expr, (
+        "來源 IP 運算式不可以引用 requester.ipAddress —— "
+        f"那是我方 LB，53% 的列會變成它：{expr}")
+    assert "xForwardedForRaw" in expr
+
+
+def test_console_actor_falls_back_to_login_body(client):
+    """`authentication.account` 目前全空，登入帳號只在 `body.account` 裡。
+
+    少了 fallback 的話，這張表最有價值的那件事（誰在登入後台）完全看不到，
+    而畫面上是一個 100% 都是「（空）」的操作者排名。
+    """
+    expr = explorer.GROUP_BY["actor"]["console"][0]
+    assert "body" in expr and "account" in expr, (
+        f"actor 運算式必須帶 body.account 的 fallback：{expr}")
+
+    r = _explore(client, "console", "actor")
+    assert r.status_code == 200, r.text
+    names = [row["name"] for row in r.json()["rows"]]
+    assert any(n and n != "（空）" for n in names), (
+        f"操作者排名全部是空的 —— body.account 的 fallback 沒有生效：{names[:5]}")
+
+
+def test_console_has_no_brand_dimension():
+    """`authentication.brandIdx` 實測 100% null，不可以做成一個永遠空白的維度。
+
+    拒絕理由要與「這張表沒有這個欄位」分開講：前者永遠不會有，
+    後者是上游可以修好的 —— 只說「不支援」會讓人去等一個不會來的功能，
+    或反過來以為資料結構天生如此而不去追上游。
+    """
+    assert "console" not in explorer.GROUP_BY["brand"]
+    reason = explorer.filter_support("brand", "console")
+    assert reason and "brandIdx" in reason, (
+        f"拒絕理由必須說出是 brandIdx 沒有被寫入：{reason!r}")

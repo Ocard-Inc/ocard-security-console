@@ -83,6 +83,20 @@ SCHEMAS: dict[str, SourceSchema] = {
 
 # ── 2026-08-07 接入的五張表 ─────────────────────────────────────────────────
 
+# ods_console_backend_sys_log：只有 recordedAt，而且是 **UTC** ——
+# 五張新表裡唯一沒有台北牆鐘欄位的一張，所以 time_expr 要自己加 8 小時。
+# 過濾仍打在 recordedAt（分區鍵）上，經 toDateTime(…, 'Asia/Taipei') 轉換。
+SCHEMAS["console"] = SourceSchema(
+    key="console",
+    table=settings()["data_sources"]["console"]["table"],
+    time_col="recordedAt",
+    time_tz="Asia/Taipei",
+    time_expr="recordedAt + INTERVAL 8 HOUR",
+    dedup_col="_id",
+    brand_col=None,
+    store_col=None,
+)
+
 # ods_batch_request_log：時間欄位就叫 create_time、就是台北牆鐘，與既有五張表
 # 同名同語意，所以時間那三個欄位直接沿用。沒有 _brand / _store 真欄位。
 SCHEMAS["batch"] = SourceSchema(

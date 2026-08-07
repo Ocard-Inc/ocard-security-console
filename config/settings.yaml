@@ -85,6 +85,34 @@ data_sources:
   batch:
     label: Batch Import Log
     table: ods_batch_request_log
+  # 2026-08-07 接入。api-console.ocard.co（PHP 後台 API）的請求紀錄。
+  #
+  # 五張新表裡欄位最結構化的一張：requester.{ipAddress, xForwardedForRaw,
+  # userAgent}、request.{method, path, controllerClass, controllerMethod}、
+  # response.{statusCode, durationMilliseconds}、authentication.{tokenPresent,
+  # tokenValid, tokenFingerprint, account, brandIdx, role} 都已經拆好。
+  #
+  # **兩個空洞（2026-08-07 實測，上游問題）：**
+  #   ① authentication.account 全部是空字串、tokenValid 全部 false，
+  #      連 2,120 筆 tokenPresent=1 也一樣 —— 身分解析沒有寫入。
+  #      登入帳號改由 body.account 取得（那一段上游有寫），所以 actor 是兩層
+  #      fallback。修好之後這張表會是唯一「誰、從哪、做了什麼、成功還是失敗」
+  #      四件齊全的表。
+  #   ② authentication.brandIdx 全部 null → 沒有品牌維度。
+  #
+  # **requester.ipAddress 不可以當來源 IP**：實測 53% 的列沒有
+  # xForwardedForRaw，而那些列的 ipAddress 全部是 10.100.0.173（我方 LB）、
+  # 全部是 Welcome/index 健康檢查。coalesce 進來的話它會穩居每一份來源排名
+  # 第一名，而它不是任何「來源」。
+  #
+  # body 的密碼上游已指紋化（password: "fingerprint:…"）。
+  # 時間只有 recordedAt 而且是 **UTC**；expiresAt = recordedAt + 90 天。
+  #
+  # 實測（2026-08-07 03:00，剛上線）：9,806 列、505 KiB、
+  # 2026-08-06 18:25（台北）起、約 3.3 萬筆/日。
+  console:
+    label: Console API Log
+    table: ods_console_backend_sys_log
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，

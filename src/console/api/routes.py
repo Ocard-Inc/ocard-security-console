@@ -879,6 +879,14 @@ _LIMITATIONS_BY_SOURCE = {
               "Batch Import Log 是可靠度紀錄而非行為紀錄 —— "
               "它能顯示批次有沒有跑、量有沒有突變，"
               "不適合作為攻擊判斷的依據。"],
+    "console": ["Console API Log 的 authentication.account 目前完全沒有被寫入"
+                "（實測 100% 為空），操作者只有登入請求看得到（取自 body.account）"
+                "—— 其餘請求無法判斷是誰做的。",
+                "Console API Log 的 authentication.tokenValid 目前恆為 false，"
+                "不可以用它判斷「這個請求有沒有通過驗證」。",
+                "Console API Log 約 53% 的列沒有來源 IP"
+                "（內部健康檢查與 LB 直連），那些列不可納入單一來源判斷。",
+                "Console API Log 只保留 90 天（expiresAt = recordedAt + 90 天）。"],
 }
 
 

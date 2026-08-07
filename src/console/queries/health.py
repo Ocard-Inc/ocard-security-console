@@ -30,6 +30,11 @@ _MISSING_EXPR = {
     # 批次工作沒有 status 也沒有 payload，唯一有意義的缺漏指標是 route 未填。
     # 實測目前 0%，但 route 是這張表唯一的分析維度，空了就完全看不出是哪個工作。
     "ods_batch_request_log": ("route = ''", "批次工作名稱未填"),
+    # 53% 的列沒有 xForwardedFor（內部健康檢查與 LB 直連）。這**不是** 100% 的
+    # 結構事實而是會浮動的比率，所以放進 missing_rate 是有意義的 ——
+    # 比率大幅變化代表流量組成變了。
+    "ods_console_backend_sys_log": (
+        "JSONExtractString(requester, 'xForwardedForRaw') = ''", "來源 IP 不可用"),
 }
 
 _NOTES = {
@@ -43,6 +48,12 @@ _NOTES = {
     "batch": "這是可靠度 log 不是行為 log —— 它回答「批次有沒有跑、量有沒有突變」，"
              "不適合用來找攻擊；ip 欄位恆為 0.0.0.0（內部排程直接呼叫）、"
              "input 實測全部是空的，因此沒有來源、操作者、品牌與分店維度",
+    "console": "上游的身分解析目前沒有寫入 —— authentication.account 全部是空、"
+               "tokenValid 全部是 false、brandIdx 全部是 null，所以沒有品牌維度，"
+               "操作者只有登入請求看得到（取自 body.account）；"
+               "約 53% 的列沒有來源 IP（內部健康檢查與 LB 直連，"
+               "刻意不退回 requester.ipAddress —— 那是我方 LB 不是來源）；"
+               "本表只保留 90 天",
 }
 
 
