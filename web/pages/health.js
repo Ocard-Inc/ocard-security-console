@@ -48,12 +48,15 @@ export default {
   watch: { reloadToken() { this.load(); } },
   template: `
 <div>
-  <div v-if="loading" class="grid" style="grid-template-columns:repeat(3,1fr)">
-    <div v-for="i in 6" :key="i" class="skel" style="height:220px"></div>
+  <!-- 骨架的格數要與實際卡片數接近，否則載入完會從 6 格跳成 10 格、畫面彈一下 -->
+  <div v-if="loading" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+    <div v-for="i in 10" :key="i" class="skel" style="height:220px"></div>
   </div>
   <div v-else-if="error" class="banner banner-danger">{{ error }}</div>
   <template v-else>
-    <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <!-- 2026-08-07：來源從 5 個變 10 個。固定 3 欄會排成 3+3+3+1、
+         最後一排孤零零一張，所以改成自動換行。 -->
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:16px">
       <div v-for="c in data.sources" :key="c.key" class="card"
            :style="{borderTop:'3px solid '+c.status_color, padding:'14px 16px', fontSize:'12.5px'}">
         <div style="display:flex;align-items:center;margin-bottom:8px">
@@ -63,6 +66,19 @@ export default {
                          color: c.status_color}">{{ c.status }}</span>
         </div>
         <div class="mono" style="font-size:11px;color:#98A2B3;margin-bottom:8px">{{ c.table }}</div>
+        <!-- 「資料自 X 起」。audit-mode.js 對稽查人員承諾「各來源的資料起始日在
+             這一頁逐一列出」，這裡是那個承諾的實作。
+             三張表是 2026-08-06／07 才開始的，不標的話查最近 7 天會看到
+             一整段 0，而那與「這個來源掛了又復活」長得一樣。 -->
+        <div v-if="c.data_since" class="muted" style="font-size:11px;margin-bottom:8px">
+          資料自 {{ c.data_since.slice(0, 10) }} 起
+          <!-- 擋掉時間戳零值之後要說出擋了幾列 —— 靜靜排除就是把一個資料品質
+               訊號藏起來（同 missing_rate 的用意）。 -->
+          <span v-if="c.invalid_time_rows" class="pill warn" style="margin-left:6px"
+                :title="'另有 ' + c.invalid_time_rows + ' 列的時間戳是零值（1970-01-01），已排除在起始時間之外。那是上游寫入的問題，不是查詢範圍。'">
+            {{ c.invalid_time_rows }} 列時間戳異常
+          </span>
+        </div>
         <!-- 迷你趨勢線傳達的是「形狀」，精確數字在下方表格；因此不掛 tooltip，
              改用 title 屬性給摘要，SVG 本身對輔助技術隱藏。 -->
         <div v-if="hasSpark(c.key)" class="chart-spark" :title="sparkTitle(c.key)" aria-hidden="true">

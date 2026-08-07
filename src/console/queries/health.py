@@ -1,6 +1,8 @@
 """資料來源健康：新鮮度、今日量、重複率、欄位缺漏率。"""
 from __future__ import annotations
 
+import threading
+import time
 from datetime import timedelta
 
 from console.core import timewin
@@ -77,13 +79,99 @@ _NOTES = {
 }
 
 
-def _status(lag_min: float) -> tuple[str, str]:
+# 「本表資料自 X 起」。**由查詢期取得，不可寫死** —— 上游隨時可能回填更早的
+# 資料，寫死的值會靜靜過時。一天變化不了幾次，所以快取 6 小時
+# （同 brands 的 cache_ttl_seconds 量級）。實測十個來源合計 1.25 秒。
+_SINCE_TTL_SECONDS = 21600
+
+# 時間戳零值的下限。**實測 `ods_admin_log` 有 42 列（1,623 萬中）的
+# `create_time` 是 1970-01-01**，真正的起始是 2017-04-12。
+#
+# 不擋的話健康卡會寫「Admin Log 資料自 1970-01-01 起」—— 那是一句假話，而且
+# 它會讓整個標註失去可信度：看到 1970 的人不會再相信 Console API Log 那個
+# 真實的「自 2026-08-06 起」。
+#
+# 但**擋掉之後要說出擋了幾列**（`invalid_time_rows`）—— 靜靜排除就是這個專案
+# 一再警告的「把沒有資料說成沒有發生」。它與 `missing_rate` 是同一類東西：
+# 異常的比率本身就是訊號。
+_MIN_VALID_TIME = "2000-01-01 00:00:00"
+
+_since_lock = threading.Lock()
+_since_cache: tuple[float, dict[str, dict]] | None = None
+
+
+def _data_since() -> dict[str, dict]:
+    """每個來源的 `{"since": 台北牆鐘字串 | None, "invalid_rows": int}`。
+
+    `since` 排除時間戳零值；`invalid_rows` 是被排除的列數（0 是常態）。
+    查詢失敗時整筆回 None／0 —— 這是輔助標示，不該讓整張健康卡失敗。
+    """
+    global _since_cache
+    with _since_lock:
+        if _since_cache and _since_cache[0] > time.monotonic():
+            return _since_cache[1]
+
+    out: dict[str, dict] = {}
+    for key in settings()["data_sources"]:
+        schema = source_schema.get(key)
+        try:
+            df = query(
+                f"SELECT minIf({schema.time_expr},"
+                f" {schema.time_expr} >= %(floor)s) AS since,"
+                f" countIf({schema.time_expr} < %(floor)s) AS invalid"
+                f" FROM {schema.table}",
+                {"floor": _MIN_VALID_TIME})
+            r = df.iloc[0]
+            val = r["since"]
+            out[key] = {
+                "since": (timewin.fmt(val.to_pydatetime())
+                          if val is not None and hasattr(val, "to_pydatetime")
+                          else None),
+                "invalid_rows": int(r["invalid"] or 0),
+            }
+        except ChQueryError:
+            out[key] = {"since": None, "invalid_rows": 0}
+
+    with _since_lock:
+        _since_cache = (time.monotonic() + _SINCE_TTL_SECONDS, out)
+    return out
+
+
+def freshness_scale(key: str) -> float:
+    """這個來源的新鮮度門檻要放寬幾倍。
+
+    **「距離最後一筆多久」同時混著兩件事**：管線延遲，以及這段時間本來就沒有
+    流量。高流量的表兩者分得開，低流量的分不開 —— 實測 2 天內
+    `ods_ec_request_log` 有 12 個資料間隔超過 20 分鐘、最長 **752 分**
+    （整晚沒有購物流量），`ods_request_log` 有 11 個、最長 152 分。
+
+    那些來源在 `data_sources` 用 `freshness_alert_minutes` 放寬了 R12 的門檻
+    （見 `rules/engine._eval_freshness`），而**健康卡的狀態帶必須跟著放寬** ——
+    否則規則不誤報了，畫面卻還在誤報：EC API Log 常駐顯示「異常」，
+    而 `freshness_summary()` 會把它推到總覽頂部的橫幅上，寫著
+    「此期間的異常判斷可能不完整」。那句話是假的，而且它會常駐。
+
+    把值班的人訓練成忽略一個永遠亮著的警示，等於把這個控制拆掉。
+    """
     cfg = settings()["freshness"]
-    if lag_min <= cfg["ok"]:
+    default_alert = float(cfg["alert_minutes"])
+    # 未知／缺席的 key 一律不放寬（回 1.0）—— 合成的卡片與尚未註冊的來源
+    # 都走這一支，而「不放寬」是安全的方向。
+    src = settings()["data_sources"].get(key) or {}
+    override = src.get("freshness_alert_minutes")
+    if not override or default_alert <= 0:
+        return 1.0
+    return float(override) / default_alert
+
+
+def _status(lag_min: float, scale: float = 1.0) -> tuple[str, str]:
+    """延遲分鐘數 → (狀態, 顏色)。`scale` 是逐來源的放寬倍數。"""
+    cfg = settings()["freshness"]
+    if lag_min <= cfg["ok"] * scale:
         return "正常", "#12B76A"
-    if lag_min <= cfg["notice"]:
+    if lag_min <= cfg["notice"] * scale:
         return "注意", "#DC6803"
-    if lag_min <= cfg["stale"]:
+    if lag_min <= cfg["stale"] * scale:
         return "異常", "#B42318"
     return "停更", "#98A2B3"
 
@@ -92,13 +180,20 @@ def source_health() -> list[dict]:
     """各來源卡的資料（設計稿 14.1；卡片數量依 `data_sources` 的數量，非固定值）。"""
     now = timewin.taipei_now()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    since_map = _data_since()
     cards: list[dict] = []
 
     for key, src in settings()["data_sources"].items():
         table = src["table"]
+        # `data_since` / `invalid_time_rows` 放在**兩個分支之前**的共用部分，
+        # 這樣查詢失敗的卡也帶得到這兩個鍵 —— 前端 `c.data_since` 若在失敗時
+        # 是 undefined，那一格會靜靜不渲染。
+        since = since_map.get(key, {"since": None, "invalid_rows": 0})
         card = {
             "key": key, "label": src["label"], "table": f"ocard.{table}",
             "sensitive": bool(src.get("sensitive")), "note": _NOTES.get(key, ""),
+            "data_since": since["since"],
+            "invalid_time_rows": since["invalid_rows"],
         }
         try:
             miss_cond, miss_label = _MISSING_EXPR[table]
@@ -122,7 +217,7 @@ def source_health() -> list[dict]:
                    if latest is not None else 9999)
             today_rows = int(r["today_rows"])
             uniq_ids = int(r["uniq_ids"])
-            status, color = _status(lag)
+            status, color = _status(lag, freshness_scale(key))
 
             y_start = today - timedelta(days=1)
             y_end = y_start + (now - today)
@@ -161,7 +256,14 @@ def freshness_summary(cards: list[dict]) -> dict:
         if worst is None or c["lag_minutes"] > worst["lag_minutes"]:
             worst = c
     failed = [c["label"] for c in cards if c["status"] == "查詢失敗"]
-    delayed = [c for c in cards if (c.get("lag_minutes") or 0) > cfg["notice"]]
+    # 門檻逐來源放寬（同 `_status`）—— 低流量的表用全域門檻會讓橫幅常駐，
+    # 而那句「此期間的異常判斷可能不完整」是假的。
+    # `c.get("key")` 而不是 `c["key"]`：`freshness_summary()` 也被測試以合成的
+    # 卡片呼叫（只帶 lag_minutes / status），而 `freshness_scale(None)` 回 1.0
+    # —— 未知來源就是不放寬，那是安全的方向。
+    delayed = [c for c in cards
+               if (c.get("lag_minutes") or 0)
+               > cfg["notice"] * freshness_scale(c.get("key"))]
     return {
         "worst_label": worst["label"] if worst else None,
         "worst_lag": worst["lag_minutes"] if worst else None,

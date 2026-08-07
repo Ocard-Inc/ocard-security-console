@@ -470,3 +470,107 @@ def test_ec_detail_source_ip_matches_the_ranking_value(client):
     assert not any("," in ip for ip in ips), (
         f"明細的來源 IP 帶著整條代理鏈，與排名的值不一致："
         f"{[ip for ip in ips if ',' in ip][:2]}")
+
+
+# ── 資料起始時間 ─────────────────────────────────────────────────────────────
+
+def test_every_health_card_says_when_the_data_starts(client):
+    """十張裡有三張是 2026-08-06／07 才開始的。
+
+    不標的話，查「最近 7 天」會畫出 6.9 天的 0 再突然跳起 ——
+    那與「這個來源掛了又復活」在畫面上長得一樣。
+    """
+    cards = client.get("/api/health").json()["sources"]
+    assert cards, "健康卡是空的"
+    for c in cards:
+        assert "data_since" in c, f"{c['key']} 的健康卡沒有 data_since 欄位"
+
+    recent = {c["key"]: c["data_since"] for c in cards
+              if c["key"] in ("console", "request", "batch")}
+    assert len(recent) == 3
+    for key, since in recent.items():
+        assert since and since.startswith("2026-08-0"), (
+            f"{key} 的資料起始應該是 2026-08-06 或之後，實際 {since!r}")
+
+
+def test_data_since_ignores_the_epoch_sentinel(client):
+    """`create_time` 的零值不可以被當成「資料起始」。
+
+    實測 `ods_admin_log` 有 **42 列**（1,623 萬中）的 create_time 是
+    1970-01-01（epoch 哨兵），真正的起始是 2017-04-12。不擋的話健康卡會寫
+    「Admin Log 資料自 1970-01-01 起」—— 那是一句假話，而且它會讓整個
+    「資料自 X 起」的標註失去可信度（看到 1970 就不會再相信 console 那個
+    真實的 2026-08-06）。
+    """
+    cards = {c["key"]: c for c in client.get("/api/health").json()["sources"]}
+    for key, card in cards.items():
+        since = card.get("data_since")
+        if since is None:
+            continue
+        assert since >= "2000-01-01", (
+            f"{key} 的資料起始是 {since} —— 那是時間戳的零值哨兵，不是真的起始")
+
+
+def test_admin_epoch_rows_are_not_silently_dropped(client):
+    """擋掉哨兵值之後，「有幾列是零值」本身要說得出來。
+
+    把 42 列靜靜排除掉，就是這個專案一再警告的「把沒有資料說成沒有發生」。
+    它與健康卡的 missing_rate 是同一類東西：異常的比率本身就是訊號。
+    """
+    cards = {c["key"]: c for c in client.get("/api/health").json()["sources"]}
+    admin = cards["admin"]
+    assert "invalid_time_rows" in admin, (
+        "健康卡要回報時間戳零值的列數 —— 擋掉它們卻不說，"
+        "等於把一個資料品質訊號藏起來")
+
+
+def test_health_status_band_scales_with_the_per_source_threshold():
+    """健康卡的狀態帶必須跟著 `freshness_alert_minutes` 一起放寬。
+
+    R12 的門檻放寬了但健康卡沒有的話，症狀是：**規則不誤報了，畫面卻還在
+    誤報**。實測畫面：EC API Log 常駐顯示「異常（延遲 24.6 分）」，而
+    `freshness_summary()` 把它推到總覽頂部的橫幅，寫著「此期間的異常判斷
+    可能不完整」—— 那句話是假的（EC 只是週五晚上沒有購物流量），而且會常駐。
+
+    把值班的人訓練成忽略一個永遠亮著的警示，等於把這個控制拆掉。
+    """
+    from console.core.config import settings
+    from console.queries import health
+
+    cfg = settings()["freshness"]
+    for key, src in settings()["data_sources"].items():
+        scale = health.freshness_scale(key)
+        override = src.get("freshness_alert_minutes")
+        if override:
+            assert scale > 1, f"{key} 有覆寫門檻，狀態帶卻沒有跟著放寬"
+            # **斷言比例一致**，不是斷言「R12 門檻內一律正常」。
+            #
+            # 全域的關係是 alert_minutes(20) 落在 notice(10)–stale(30) 之間 ——
+            # 也就是卡片**本來就設計成比告警更敏感**（先變色、才發告警）。
+            # 放寬只是把整條帶等比例拉長，不改變那個相對關係。
+            for probe in (0.5, 1.5, 3.0, 8.0):
+                assert (health._status(cfg["ok"] * probe * scale, scale)[0]
+                        == health._status(cfg["ok"] * probe)[0]), (
+                    f"{key} 在 {probe}× 的位置與全域來源不同帶 —— 放寬不是等比例的")
+        else:
+            assert scale == 1.0
+    # 沒有覆寫的來源行為完全不變
+    assert health._status(cfg["ok"] - 0.1)[0] == "正常"
+    assert health._status(cfg["notice"] - 0.1)[0] == "注意"
+    assert health._status(cfg["stale"] - 0.1)[0] == "異常"
+    assert health._status(cfg["stale"] + 1)[0] == "停更"
+
+
+def test_low_volume_sources_do_not_raise_the_delay_banner(client):
+    """低流量來源不可以讓總覽頂部的「資料延遲」橫幅常駐。
+
+    那個橫幅會說「此期間的異常判斷可能不完整」—— 對一張只是沒有流量的表，
+    那是假的。
+    """
+    payload = client.get("/api/health").json()
+    low = [c for c in payload["sources"] if c["key"] in ("ec", "request")]
+    assert len(low) == 2
+    for c in low:
+        assert c["status"] in ("正常", "注意"), (
+            f"{c['key']} 的健康卡顯示 {c['status']}（延遲 {c['lag_minutes']} 分）——"
+            "它是低流量表，這是沒有流量而不是管線延遲")
