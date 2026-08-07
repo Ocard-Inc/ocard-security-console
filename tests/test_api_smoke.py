@@ -345,6 +345,37 @@ def _pick(client, **params):
     return r["events"]
 
 
+@pytest.fixture(scope="module")
+def closable_evt(state_db) -> str:
+    """一筆可以安全走完 close → reopen 往返的事件編號。**不可以寫死。**
+
+    兩個條件都由真實資料決定：
+
+    ① **同一個 `entity_key` 沒有其他 `active` 事件。** 有的話 reopen 依約回 409
+       —— 那是 `store/events.py` 刻意的保護（同一個去重鍵有兩筆 active 時，
+       狀態機的 `db.one` 只拿到其中一筆，另一筆從此不再更新並在三個 tick 後
+       被標 resolved，而那是靜靜發生的）。實測 EVT-0001 在 2026-08-07 就有
+       一筆兄弟 EVT-0047。
+    ② **優先挑 `resolved`。** `closed_from` 會回到關閉當下的值，挑 resolved 的話
+       復原之後狀態機不會因此發一則假的「已恢復」。挑不到就退而求其次拿 active。
+
+    module 範圍：這個檔案裡數則測試共用同一筆，彼此的 close/reopen 互相抵銷。
+    依賴 `state_db` 是為了保證 `db.DB_PATH` 已經被指到 tmp 複本
+    （見 conftest 的說明：連線是 thread-local，順序錯了會查到真實的 DB）。
+    """
+    from console.store import db
+    row = db.one(
+        "SELECT evt_no FROM events e"
+        " WHERE (SELECT count(*) FROM events sib"
+        "        WHERE sib.entity_key = e.entity_key AND sib.status = 'active') = 0"
+        " ORDER BY CASE e.status WHEN 'resolved' THEN 0 ELSE 1 END, e.evt_no"
+        " LIMIT 1")
+    assert row is not None, (
+        "DB 裡找不到任何「同對象沒有 active 兄弟」的事件 —— "
+        "close/reopen 的往返測試無法進行")
+    return str(row["evt_no"])
+
+
 def _not_closed(client, evt):
     """確保這一筆不是「已處理完畢」。
 
@@ -354,6 +385,29 @@ def _not_closed(client, evt):
     """
     if client.get(f"/api/events/{evt}").json()["status"] == "closed":
         client.post(f"/api/events/{evt}/reopen", json={})
+
+
+def test_close_reopen_tests_do_not_hardcode_an_event(closable_evt):
+    """結案／復原的測試必須挑一筆「同對象沒有 active 兄弟」的事件。
+
+    實測 2026-08-07 的 DB：EVT-0001 與 EVT-0047 是同一個去重鍵
+    （`R13|1180|27681`）而後者是 active —— 那是「結案後再犯會另開新事件」的
+    正常結果。此時 `/reopen` 依約回 409（復原會讓同一個對象有兩筆進行中的
+    事件，其中一筆會停止更新），於是寫死 EVT-0001 的測試全部連鎖失敗，
+    而**程式完全正常**。
+
+    這一則守的是挑選邏輯本身：把 `closable_evt` 改回寫死的編號、
+    或拿掉「沒有 active 兄弟」這個條件，都必須在這裡失敗。
+    """
+    from console.store import db
+    row = db.one(
+        "SELECT (SELECT count(*) FROM events sib"
+        "        WHERE sib.entity_key = e.entity_key AND sib.status = 'active') AS siblings"
+        " FROM events e WHERE e.evt_no = ?", (closable_evt,))
+    assert row is not None, f"{closable_evt} 不在 DB 裡"
+    assert row["siblings"] == 0, (
+        f"{closable_evt} 的同對象還有 {row['siblings']} 筆 active —— "
+        "對它 reopen 會回 409，這一筆不適合用來測 close/reopen 往返")
 
 
 def test_close_requires_a_judgement(client):
@@ -367,9 +421,9 @@ def test_close_requires_a_judgement(client):
     assert "判定" in r.json()["detail"]
 
 
-def test_close_and_reopen_round_trip(client):
+def test_close_and_reopen_round_trip(client, closable_evt):
     """結案 → 狀態變 closed 且退出狀態機；復原 → 回到關閉當下的值。"""
-    evt = "EVT-0001"
+    evt = closable_evt
     _not_closed(client, evt)
     judged = client.post(f"/api/events/{evt}/judge", json={"judgement": "誤報"})
     assert judged.status_code == 200, judged.text
@@ -399,9 +453,9 @@ def test_close_and_reopen_round_trip(client):
     assert after["closed_at"] is None and after["closed_from"] is None
 
 
-def test_close_twice_is_409(client):
+def test_close_twice_is_409(client, closable_evt):
     """回 200 + changed:false 的話畫面會顯示「已標記完成」而什麼都沒發生。"""
-    evt = "EVT-0001"
+    evt = closable_evt
     _not_closed(client, evt)
     client.post(f"/api/events/{evt}/judge", json={"judgement": "誤報"})
     first = client.post(f"/api/events/{evt}/close", json={})
@@ -411,15 +465,15 @@ def test_close_twice_is_409(client):
     client.post(f"/api/events/{evt}/reopen", json={})       # 還原給其他測試
 
 
-def test_reopen_when_not_closed_is_409(client):
-    evt = "EVT-0001"
+def test_reopen_when_not_closed_is_409(client, closable_evt):
+    evt = closable_evt
     _not_closed(client, evt)
     assert client.get(f"/api/events/{evt}").json()["status"] != "closed"
     r = client.post(f"/api/events/{evt}/reopen", json={})
     assert r.status_code == 409
 
 
-def test_closing_an_active_event_warns_about_the_blind_spot(client):
+def test_closing_an_active_event_warns_about_the_blind_spot(client, closable_evt):
     """關閉仍在命中的事件是允許的，但不可以安靜。
 
     它會從「持續中」與資安總覽的待處理清單消失（兩處都查 status='active'），
@@ -431,7 +485,7 @@ def test_closing_an_active_event_warns_about_the_blind_spot(client):
     """
     from console.store import db
 
-    evt = "EVT-0001"
+    evt = closable_evt
     _not_closed(client, evt)
     client.post(f"/api/events/{evt}/judge", json={"judgement": "誤報"})
     before = db.one("SELECT status FROM events WHERE evt_no = ?", (evt,))["status"]
@@ -453,9 +507,9 @@ def test_closing_an_active_event_warns_about_the_blind_spot(client):
                          (before, evt))
 
 
-def test_closing_a_settled_event_has_no_warning(client):
+def test_closing_a_settled_event_has_no_warning(client, closable_evt):
     """回落之後才結案沒有盲區，就不該掛一則警告 —— 每次都警告等於沒有警告。"""
-    evt = "EVT-0001"
+    evt = closable_evt
     _not_closed(client, evt)
     client.post(f"/api/events/{evt}/judge", json={"judgement": "誤報"})
     if client.get(f"/api/events/{evt}").json()["status"] != "resolved":
