@@ -98,164 +98,27 @@ created_at >= toDateTime(%(start)s, 'Asia/Taipei') AND created_at < toDateTime(%
 
 ---
 
-### Task 0: 帳號維度的豁免補上 PHONE（`162fe95` 只做了 EMAIL）
+### Task 0：**已取消**（2026-08-07，使用者決定）
 
-**這個 task 在 2026-08-07 merge main 之後大幅縮小了。** 原本的計畫是
-「斷言出處取代樣式斷言」，但 main 的 `162fe95` 已經用更好的方式解決了主要問題：
-**豁免改成掛在維度上**（`_pop_labels()` 依 `ACTOR_FIELDS` 把標籤分成
-`accounts` 與 `others` 兩堆），`actor` 維度的標籤不限 Email 網域，
-其他維度仍只放行內部網域。那比查 ClickHouse 對帳更好 —— 不需要額外查詢，
-而且語意更準（「這一格顯示的是帳號欄位」才是豁免的真正依據）。
+原本要把「帳號維度的豁免」從只放寬 EMAIL 擴大到也放寬 PHONE，理由是實測 365 天內
+`ods_backend_sys_log` 與 `ods_admin_log` 的 26,518 個相異帳號裡，**149 個的名字
+就是台灣手機號碼**（`0900480856`、`0972723297`…），而母體排名列的是**其他**對象，
+所以它們遲早會出現在帳號標籤裡並造成一則假警報。
 
-**剩下的缺口只有一個**：那個豁免只放寬了 EMAIL，PHONE 仍然是無條件的
+**取消的兩個理由：**
 
-```python
-assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"
-```
+1. **與一則既有的刻意測試直接衝突。**
+   `tests/test_masking_audit.py::test_entity_panel_exemption_does_not_cover_phones_or_credentials`
+   明確斷言「帳號維度只豁免 email，手機與憑證值照樣要炸」。拿掉那個 PHONE 斷言
+   不是修 bug，是推翻一個已經寫成測試的決定。
+2. **這個失敗目前是潛伏的，不是進行中的。** 基準測試裡
+   `test_event_entity_panels_are_clean` 是綠的 —— 那 149 個帳號目前沒有出現在
+   任何一個事件的母體排名裡。
 
-而實測 365 天內 `ods_backend_sys_log` 與 `ods_admin_log` 的 26,518 個相異帳號裡，
-**149 個的名字就是台灣手機號碼**（`0900480856`、`0972723297`、`0983062108`…）。
-母體排名（`entity.peers()`）列的是**其他**對象，所以那些帳號名遲早出現在
-`accounts` 那一堆裡 —— 到時候會是一則看起來像「洩漏消費者手機」的假警報，
-而下一個人最可能的反應是放寬 `PHONE` regex，那正好把這個檔案的價值抽掉。
-
-**修法沿用 `162fe95` 的形狀**：同一個手機號碼，在 `actor` 維度是帳號（放行），
-在別的維度是外流（失敗）。**不要碰 `ACCOUNT_DOMAIN`，不要動 `EMAIL_ALLOW`，
-不要加 provenance fixture** —— 前兩者有反向測試守著，第三者現在是多餘的。
-
-**Files:**
-- Modify: `tests/test_masking_audit.py`（`_scan_entity_panel` 的 PHONE 斷言）
-- Test: `tests/test_masking_audit.py`（同一個檔案）
-
-**Interfaces:**
-- Consumes: `_pop_labels()` 回傳的 `(accounts, others, cleaned)`（main 上已存在）
-- Produces: 無新介面。後續 task 不依賴這個 task 的產出。
-
-- [ ] **Step 1: 先確認 PHONE 這一格真的還沒被放寬**
-
-```bash
-grep -n 'PHONE.search(acct)' tests/test_masking_audit.py
-```
-
-預期：找得到 `assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"`。
-**找不到的話停下來** —— 代表已經有人處理過了，這個 task 不必做。
-
-- [ ] **Step 2: 寫失敗的測試**
-
-加在 `tests/test_masking_audit.py` 的
-`test_account_exemption_is_keyed_on_the_dimension_not_on_the_string` 之後
-（跟它放在一起，那一區是「對象標籤豁免的反向測試」，不需要 ClickHouse）：
-
-```python
-def test_account_exemption_covers_phone_shaped_account_names():
-    """同一個手機號碼：在 `actor` 維度是帳號（放行），在別的維度是外流（失敗）。
-
-    實測 365 天內 backend + admin 共 26,518 個相異帳號，其中 **149 個的名字
-    就是台灣手機號碼**（0900480856、0972723297…）。母體排名列的是其他對象，
-    所以它們遲早出現在帳號標籤裡。
-
-    不處理的話那會是一則看起來像「洩漏消費者手機」的假警報，而下一個人最可能
-    的反應是放寬 PHONE regex —— 那正好把這個檔案的價值抽掉。所以豁免掛在
-    維度上（同 162fe95 對 Email 的做法），不是掛在號碼長什麼樣。
-    """
-    import pytest
-    phone = "0900480856"
-    ok = {"peers": {"dims": [{"field": "actor"}],
-                    "top": [{"label": phone}]}}
-    _scan_entity_panel(ok, "帳號維度的手機形狀帳號")      # 不該拋
-
-    leaked = {"peers": {"dims": [{"field": "endpoint"}],
-                        "top": [{"label": f"Api2/GetProfile · {phone}"}]}}
-    with pytest.raises(AssertionError, match="洩漏消費者手機號碼"):
-        _scan_entity_panel(leaked, "非帳號維度的手機號碼")
-```
-
-**`dims` 的形狀要與 `_pop_labels()` 實際讀的一致。** 先確認：
-
-```bash
-sed -n '/^def _pop_labels/,/^def _scan_entity_panel/p' tests/test_masking_audit.py
-```
-
-照它實際判斷 `ACTOR_FIELDS` 的方式構造上面兩個假 body ——
-猜錯的話測試會因為「兩堆都分到 others」而以錯誤的理由通過或失敗。
-
-- [ ] **Step 3: 跑它，確認第一個斷言就失敗**
-
-```bash
-uv run pytest tests/test_masking_audit.py::test_account_exemption_covers_phone_shaped_account_names -q
-```
-
-預期：FAIL，訊息是「帳號標籤洩漏消費者手機號碼」——
-**那正是問題本身**（一個真的帳號名被當成洩漏）。
-
-- [ ] **Step 4: 把 PHONE 的斷言從帳號那一堆移除**
-
-`_scan_entity_panel()` 裡，把
-
-```python
-    # 帳號標籤：email 不限網域（帳號本來就是它），其餘規則完全不變
-    acct = " · ".join(accounts)
-    assert not PHONE.search(acct), f"{where} 的帳號標籤洩漏消費者手機號碼"
-    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的帳號標籤含未清洗的憑證值"
-```
-
-換成
-
-```python
-    # 帳號標籤：email 與手機形狀都不限（**帳號本來就可能長成那樣**），
-    # 憑證值仍然一個都不能有。
-    #
-    # 實測 365 天內 backend + admin 共 26,518 個相異帳號，其中 892 個是外部
-    # Email、**149 個的名字就是台灣手機號碼**（0900480856、0972723297…）。
-    # 兩者都是帳號身分本身，2026-08 的政策要求原樣顯示。
-    #
-    # 豁免掛在**維度**上而不是掛在字串長什麼樣（同 162fe95 對 Email 的做法）：
-    # 同一個號碼出現在 endpoint 或品牌維度的標籤裡仍然是外流，
-    # 由下面 `others` 那一段擋住。帳號名不可能是憑證，所以 CREDENTIAL_LEAK 留著。
-    acct = " · ".join(accounts)
-    assert CREDENTIAL_LEAK.search(acct) is None, f"{where} 的帳號標籤含未清洗的憑證值"
-```
-
-- [ ] **Step 5: 新測試轉綠、既有的反向測試不可以變紅**
-
-```bash
-uv run pytest tests/test_masking_audit.py -q
-```
-
-預期：全部 PASS。特別確認這三則仍是綠的 ——
-它們守著「豁免不可以再放寬」：
-
-- `test_entity_panel_exemption_still_rejects_a_consumer_email`
-- `test_account_exemption_is_keyed_on_the_dimension_not_on_the_string`
-- `test_account_exemption_covers_phone_shaped_account_names`（新增的）
-
-- [ ] **Step 6: 全套測試**
-
-```bash
-uv run pytest -q
-```
-
-預期：0 failed。
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add tests/test_masking_audit.py
-git commit -m "test: 帳號維度的豁免補上手機形狀的帳號名
-
-162fe95 把對象標籤的豁免改成掛在維度上（actor 維度不限 Email 網域），
-但只放寬了 EMAIL，PHONE 仍然是無條件斷言。
-
-實測 365 天內 ods_backend_sys_log 與 ods_admin_log 共 26,518 個相異帳號，
-其中 149 個的名字就是台灣手機號碼（0900480856、0972723297…）。
-母體排名列的是其他對象，所以那些帳號名遲早出現在帳號標籤裡 ——
-到時候會是一則看起來像「洩漏消費者手機」的假警報，而下一個人最可能的反應
-是放寬 PHONE regex，那正好把這個檔案的價值抽掉。
-
-沿用 162fe95 的形狀：同一個號碼在 actor 維度是帳號（放行）、在別的維度是
-外流（失敗）。憑證值的檢查留著 —— 帳號名不可能是憑證。
-加一則兩個方向都驗的反向測試。"
-```
+**真的碰上時再處理**，那時會多一個實際案例可以判斷（是哪個帳號、在哪個維度、
+使用者看到那一格時想知道什麼）。屆時的選項有三個，記在這裡免得重新推導：
+維持嚴格、放寬到帳號維度、或改成白名單（查一次 `acc` 欄位、實測 1.6 秒，
+號碼真的是某個帳號才放行）。
 
 ---
 
