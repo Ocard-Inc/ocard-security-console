@@ -41,6 +41,27 @@
          "#175CD3,#027A48,#9E77ED,#B42318,#DD2590" \
          --mode light --surface "#FFFFFF" --pairs all
      動到任何序列色都必須重跑。 */
+  /* ── 總覽小倍數面板的單一序列色（2026-08-07）──────────────────────────
+     十個面板**共用這一個色**，不是十個類別色。
+
+     理由是 dataviz 的規則：「第 9 個序列永遠不拿新色，改用 small multiples」——
+     而總覽本來就是 small multiples：每個面板自己一個 y 軸、只有一條線、
+     標頭已經寫了名字，所以**顏色沒有在編碼任何資訊**。
+
+     實測十個類別色通不過 validator，而且不是勉強：
+       #175CD3,#9E77ED,#027A48,#B42318,#DD2590,#0E7090,#B54708,#5925DC,#3538CD,#C4320A
+       → normal-vision 最差配對 ΔE 4.1（門檻 15）—— 色覺正常的人也分不出來。
+     換一組候選同樣 FAIL（ΔE 5.6）。那不是挑色技巧的問題，是十個類別色擠不進
+     可用的色彩空間。
+
+     單色驗證：
+       <dataviz skill 的 scripts/validate_palette.js> "#175CD3" --mode light
+       → ALL PASS（深色模式對比 2.91 是 WARN，需可見標籤 —— 面板標頭本來就有）
+
+     順帶好處：統一單色讓「面板的縱軸各自獨立、不可跨面板比較高度」這句話更明確
+     —— 不同顏色會暗示它們是同一組可比的序列。 */
+  --chart-panel:      #175CD3;   /* 總覽十個小倍數面板共用 */
+
   --chart-api:        #175CD3;   /* API request */
   --chart-login-ok:   #027A48;   /* 登入成功 */
   --chart-backend:    #9E77ED;   /* Backend request。舊值 #7A5AF8 與 --chart-api

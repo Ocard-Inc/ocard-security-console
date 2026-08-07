@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from console.core import brands, timewin
 from console.core.ch import query
 from console.core import masking
-from console.queries import exprs
+from console.queries import exprs, source_schema
 from console.rules import baseline
 
 
@@ -79,19 +79,42 @@ def request_trend(
     """
     start, end, bucket_minutes = resolve_window(minutes, start, end, bucket_minutes)
     params = {"start": timewin.fmt(start), "end": timewin.fmt(end)}
-    interval = f"toStartOfInterval(create_time, INTERVAL {bucket_minutes} MINUTE)"
-    tf = exprs.time_filter()
+    def _interval(source: str) -> str:
+        """該來源的分桶運算式。**用 time_expr（台北牆鐘）不是 time_col** ——
+        UTC 的表拿 time_col 分桶會讓整條線平移 8 小時而且不報錯。"""
+        return (f"toStartOfInterval({source_schema.get(source).time_expr},"
+                f" INTERVAL {bucket_minutes} MINUTE)")
+
+    def _total(source: str) -> tuple[str, str]:
+        """「這張表這個桶有幾筆」的通用查詢。"""
+        schema = source_schema.get(source)
+        return (source,
+                f"SELECT {_interval(source)} AS b, count() AS c"
+                f" FROM {schema.table} WHERE {exprs.time_filter_for(source)}"
+                f" GROUP BY b")
+
+    admin_iv = _interval("admin")
+    admin_tf = exprs.time_filter_for("admin")
 
     series: dict[str, dict[str, int]] = {}
     for name, sql in [
-        ("api", f"SELECT {interval} AS b, count() AS c FROM ods_api_log WHERE {tf} GROUP BY b"),
-        ("backend", f"SELECT {interval} AS b, count() AS c FROM ods_backend_sys_log WHERE {tf} GROUP BY b"),
-        ("login_success", f"SELECT {interval} AS b, count() AS c FROM ods_admin_log"
-                          f" WHERE {tf} AND {exprs.ANY_LOGIN_SUCCESS} GROUP BY b"),
-        ("login_failed", f"SELECT {interval} AS b, count() AS c FROM ods_admin_log"
-                         f" WHERE {tf} AND {exprs.ANY_LOGIN_FAILED} GROUP BY b"),
-        ("order", f"SELECT {interval} AS b, count() AS c FROM ods_order_api_log"
-                  f" WHERE {tf} GROUP BY b"),
+        _total("api"),
+        _total("backend"),
+        ("login_success", f"SELECT {admin_iv} AS b, count() AS c FROM ods_admin_log"
+                          f" WHERE {admin_tf} AND {exprs.ANY_LOGIN_SUCCESS} GROUP BY b"),
+        ("login_failed", f"SELECT {admin_iv} AS b, count() AS c FROM ods_admin_log"
+                         f" WHERE {admin_tf} AND {exprs.ANY_LOGIN_FAILED} GROUP BY b"),
+        _total("order"),
+        # 2026-08-07 接入的五張表。**這五條沒有基線** —— 它們的資料是同一天
+        # 回填／上線的，現在跑 calibrate 會拿那批資料當 28 天歷史，算出來的
+        # 門檻不是錯得離譜就是剛好等於現況。baseline_keys 因此沒有它們的條目，
+        # `base_of()` 回 None → 前端不畫 median 虛線（既有的正確降級），
+        # 而面板標頭必須明說「尚無基線」（見 web/pages/overview.js）。
+        _total("voucher"),
+        _total("ec"),
+        _total("console"),
+        _total("request"),
+        _total("batch"),
     ]:
         df = query(sql, params)
         series[name] = {timewin.fmt(r["b"].to_pydatetime()): int(r["c"])
@@ -111,6 +134,9 @@ def request_trend(
         # 否則 baseline.get() 回 None、前端不畫 median 虛線（正確的降級）。
         "order": f"table_{bucket_minutes}m:order",
     }
+    # 2026-08-07 接入的五張表**刻意不在這裡** —— 見上面 series 的說明。
+    # `base_of()` 對它們回 None，前端據此顯示「尚無基線」而不是畫一條假的線。
+    NO_BASELINE = ("voucher", "ec", "console", "request", "batch")
     # baseline.get() 每次都是一趟 SQLite。7 天視窗 × 5 條線 = 5,040 次呼叫，
     # 但相異鍵最多 5 × 24 × 2 = 240 個，memoize 起來。
     base_cache: dict[tuple[str, int, str], object] = {}
@@ -119,7 +145,9 @@ def request_trend(
         dc = baseline.day_class_of(at)
         key = (name, at.hour, dc)
         if key not in base_cache:
-            base_cache[key] = baseline.get(baseline_keys[name], hour=at.hour, day_class=dc)
+            mk = baseline_keys.get(name)
+            base_cache[key] = (baseline.get(mk, hour=at.hour, day_class=dc)
+                               if mk else None)
         return base_cache[key]
 
     # 跨日的視窗只寫 %H:%M 是看不懂的：7 天 × 120 分桶會產生 84 個標籤，
@@ -131,7 +159,7 @@ def request_trend(
     while cursor < end:
         label = timewin.fmt(cursor)
         row = {"bucket": label, "label": cursor.strftime(label_fmt)}
-        for name in baseline_keys:
+        for name in (*baseline_keys, *NO_BASELINE):
             value = series[name].get(label, 0)
             base = base_of(name, cursor)
             row[name] = value

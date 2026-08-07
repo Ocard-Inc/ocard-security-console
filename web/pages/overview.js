@@ -32,12 +32,31 @@ const RANK_TABS = [
 // 單一 y 軸下小的那幾條永遠被壓在底部；雙軸是最容易誤導人的做法，不能用。
 // 每個面板自己一個 y 軸，再各自對照自己的 28 天同時段基線 ——
 // 這正好是本專案的核心命題（門檻 = 基線 × 倍數）。
+// 總覽的小倍數面板。**十個面板共用同一個色票**（--chart-panel）。
+//
+// 顏色在這裡沒有編碼任何資訊：每個面板自己一個 y 軸、只有一條線、標頭已經寫了
+// 名字。dataviz 的規則是「第 9 個序列永遠不拿新色，改用 small multiples」——
+// 而這裡本來就是 small multiples。
+//
+// 實測十個類別色通不過 validator（normal-vision 最差配對 ΔE 4.1，門檻 15 ——
+// 色覺正常的人也分不出來），詳見 app.css 的 --chart-panel 註解。
+//
+// **統一單色順帶讓下面那句「縱軸各自獨立、不可跨面板比較高度」更明確** ——
+// 不同顏色會暗示它們是同一組可比的序列。
 const PANELS = [
-  { key: 'api', label: 'API request', tokenName: '--chart-api' },
-  { key: 'backend', label: 'Backend request', tokenName: '--chart-backend' },
-  { key: 'login_success', label: '登入成功', tokenName: '--chart-login-ok' },
-  { key: 'login_failed', label: '登入失敗', tokenName: '--chart-login-fail' },
-  { key: 'order', label: 'Order request', tokenName: '--chart-order' },
+  { key: 'api', label: 'API request', tokenName: '--chart-panel' },
+  { key: 'backend', label: 'Backend request', tokenName: '--chart-panel' },
+  { key: 'login_success', label: '登入成功', tokenName: '--chart-panel' },
+  { key: 'login_failed', label: '登入失敗', tokenName: '--chart-panel' },
+  { key: 'order', label: 'Order request', tokenName: '--chart-panel' },
+  // 2026-08-07 接入。這五個**沒有基線**（資料是同一天回填／上線的，
+  // 現在跑 calibrate 會拿那批資料當 28 天歷史），所以圖上不會有 median 虛線，
+  // 而標頭必須明說 —— 少一條線與「這段時間剛好貼在基線上」看起來一樣。
+  { key: 'voucher', label: 'Voucher API', tokenName: '--chart-panel' },
+  { key: 'ec', label: 'EC API', tokenName: '--chart-panel' },
+  { key: 'console', label: 'Console API', tokenName: '--chart-panel' },
+  { key: 'request', label: '報表服務', tokenName: '--chart-panel' },
+  { key: 'batch', label: '批次匯入', tokenName: '--chart-panel' },
 ];
 
 // ★ 這裡刻意「不」用 ApexCharts 的 chart.group。
@@ -279,6 +298,10 @@ export default {
       this.customEnd = end;
       this.load();
     },
+    /** 這個來源在目前視窗內**曾經**有過基線值嗎？（區分兩種「沒有 median」） */
+    everHadBaseline(key) {
+      return this.buckets.some(r => r[`${key}_median`] != null);
+    },
     panelMeta(key) {
       const b = this.latestBucket;
       if (!b) return { current: '—', baseline: '', multiple: null };
@@ -286,7 +309,13 @@ export default {
       const p95 = b[`${key}_p95`];
       return {
         current: num(b[key]),
-        baseline: median != null ? `median ${num(median)} · P95 ${num(p95)}` : '無同時段基線',
+        // 「這個來源從來沒有基線」與「這一個桶剛好沒有」是兩件事，要分開講。
+        // 前者是 2026-08-07 接入的五張表（未累積 28 天歷史，calibrate 還沒算），
+        // 後者是資料太稀疏。兩者都不畫 median 虛線，但原因完全不同 ——
+        // 只寫「無基線」會讓人以為是資料出了問題。
+        baseline: median != null
+          ? `median ${num(median)} · P95 ${num(p95)}`
+          : (this.everHadBaseline(key) ? '此時段無基線樣本' : '尚無基線（2026-08 接入，未滿 28 天）'),
         multiple: b[`${key}_multiple`],
       };
     },
@@ -488,7 +517,10 @@ export default {
         <div class="muted" style="font-size:11px;margin-top:8px">
           灰虛線 = 該序列自己的 28 天同時段 median（逐時間桶）。P95 在標頭與 hover 的
           tooltip 裡 —— 它比實際流量高一個量級，畫進圖裡會把線壓扁到看不見。
-          五個面板的縱軸各自獨立，不可跨面板比較高度。
+          十個面板的縱軸各自獨立，**不可跨面板比較高度** —— 量級差可達千倍
+          （API 每分鐘數百筆 vs 報表服務每小時 20 筆），這也是它們共用同一個
+          顏色的理由：顏色在這裡不編碼任何資訊，標頭的名字才是。
+          2026-08 接入的五張表尚未累積 28 天歷史，所以沒有 median 虛線。
         </div>
       </template>
 
