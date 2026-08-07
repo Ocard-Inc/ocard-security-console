@@ -468,6 +468,13 @@ export default {
   },
   template: `
 <div>
+  <!-- 查詢中的轉圈。條件是 reloading 而不是 loading —— loading 只在結果結構真的
+       換掉（換分析方式）時才是 true，而「同一種分析改條件重查」正是最常按的那一種，
+       那時畫面沿用上一版資料、完全沒有任何在跑的跡象，看起來就像按鈕沒反應。
+       aria-live 讓讀螢幕的人也收得到（純視覺的轉圈對他們等於沒有指示器）。 -->
+  <div v-if="reloading" class="busy-overlay" role="status" aria-live="polite">
+    <div class="busy-box"><span class="spinner"></span><span>查詢中…</span></div>
+  </div>
   <!-- 時間控制放在內容最上方的一列，而不是塞在左欄的 Filter Builder 裡：
        這是整頁最常動的控制項，藏在側欄找不到。（dataviz：篩選器排成一列、
        放在它所影響的內容上方。） -->
