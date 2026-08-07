@@ -66,6 +66,25 @@ data_sources:
   order:
     label: Order Log
     table: ods_order_api_log
+  # 2026-08-07 接入。im.ocard.co 的批次匯入排程（NinexNine／Olivo／Pigeon／
+  # PosTrans／GoogleMyBusiness 等 import_* 工作）。
+  #
+  # **這是可靠度 log，不是行為 log。** 實測 297 列全部是內部排程用 curl 打進來的：
+  #   - `ip` 100% 是 `0.0.0.0`（不是「有時候」，是全部）→ 沒有來源維度
+  #   - `input` 100% 是空的（`[]`）→ 沒有 payload 維度
+  #   - 沒有 `_brand` / `_store` / `acc`
+  # 所以不該對它抱有「抓到攻擊」的期待。它回答的是「這個批次有沒有跑、
+  # 量有沒有突然變化」，而批次整個停掉或突然爆量都是真實訊號。
+  #
+  # 欄位形狀幾乎等同 ods_backend_sys_log（route／controller／function 都是
+  # 真欄位），而且**時間欄位就叫 create_time、就是台北牆鐘** ——
+  # 五張新表裡唯一不需要任何時間處理改動的一張。
+  #
+  # 實測（2026-08-07 03:00，剛上線）：297 列、8.78 KiB、2026-08-07 01:46 起、
+  # 約 290 筆/小時 ≈ 7,000 筆/日。
+  batch:
+    label: Batch Import Log
+    table: ods_batch_request_log
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，

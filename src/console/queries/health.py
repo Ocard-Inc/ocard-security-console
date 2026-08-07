@@ -27,6 +27,9 @@ _MISSING_EXPR = {
     # 產生）、routes._LIMITATIONS_BY_SOURCE，以及 explorer._ENTITY_FILTER_UNSUPPORTED
     # 本身的拒絕理由。
     "ods_order_api_log": ("_store <= 0", "分店未填"),
+    # 批次工作沒有 status 也沒有 payload，唯一有意義的缺漏指標是 route 未填。
+    # 實測目前 0%，但 route 是這張表唯一的分析維度，空了就完全看不出是哪個工作。
+    "ods_batch_request_log": ("route = ''", "批次工作名稱未填"),
 }
 
 _NOTES = {
@@ -37,6 +40,9 @@ _NOTES = {
     "order": "此表沒有 ip 也沒有 headers 欄位，完全沒有來源 IP，"
              "不可做任何單一來源判斷；操作者是 _admin，實測全部是 POS 或串接金鑰帳號"
              "（代表哪一支整合程式，不是哪個人）；歷史資料可能重複，已以事件 ID 去重後顯示",
+    "batch": "這是可靠度 log 不是行為 log —— 它回答「批次有沒有跑、量有沒有突變」，"
+             "不適合用來找攻擊；ip 欄位恆為 0.0.0.0（內部排程直接呼叫）、"
+             "input 實測全部是空的，因此沒有來源、操作者、品牌與分店維度",
 }
 
 

@@ -27,9 +27,20 @@ from console.queries import explorer, health
 
 SOURCES = tuple(settings()["data_sources"])
 
-# 這四個維度每一張表都做得到（`_brand` / `_store` 五張表都有，endpoint 與
-# actor 各表的欄位不同但都有得對）。`source` 不在這裡，理由見模組說明。
-REQUIRED_DIMENSIONS = ("endpoint", "brand", "store", "actor")
+# **只有 `endpoint` 是每張表都做得到的。**
+#
+# 原本這裡還有 `brand` / `store` / `actor`，前提是「每張表都有 _brand 與
+# _store，而 endpoint 與 actor 各表欄位不同但都有得對」。2026-08-07 接入的
+# 五張表把這個前提打破了：一張都沒有 _brand / _store，而 batch 是排程觸發的、
+# 根本沒有操作者。
+#
+# 那三個維度改由**綱要**與**逐維度的反向測試**守著（見下方
+# test_brand_and_store_dimensions_follow_the_schema 與
+# test_dimensions_that_are_missing_say_why）—— 要求每張表都有，會逼下一個人
+# 為沒有那個欄位的表編一個假運算式，而那正是這個專案一再警告的錯誤。
+#
+# `source` 不在這裡的理由見模組說明（同一件事，只是更早就發生了）。
+REQUIRED_DIMENSIONS = ("endpoint",)
 
 
 def test_there_is_more_than_one_source():
@@ -106,17 +117,23 @@ def test_brand_and_store_dimensions_follow_the_schema():
             f"{key} 的 GROUP_BY['store'] 與 source_schema.store_col 不一致")
 
 
-def test_sources_without_brand_say_why():
-    """沒有品牌維度的來源，`filter_support` 必須說出原因而不是回 None。
+@pytest.mark.parametrize("field", ("brand", "store", "actor", "source_ip"))
+def test_dimensions_that_are_missing_say_why(field):
+    """某個維度不可用時，`filter_support` 必須說出**原因**而不是回 None。
 
-    回 None 的話 Explorer 會顯示品牌輸入框，填進去查到 0 筆 ——
-    而「這張表沒有品牌欄位」與「這個品牌沒有活動」在畫面上一模一樣。
+    回 None 的話 Explorer 會顯示那個輸入框，填進去查到 0 筆 ——
+    而「這張表沒有這個欄位」與「這個值沒有活動」在畫面上一模一樣。
+
+    這則測試取代了原本 `REQUIRED_DIMENSIONS` 裡的 brand/store/actor：
+    從「每張表都必須有」改成「沒有的話必須說得出為什麼」。
     """
-    from console.queries import source_schema
+    dim = {"source_ip": "source"}.get(field, field)
     for key in SOURCES:
-        if source_schema.get(key).brand_col is None:
-            reason = explorer.filter_support("brand", key)
-            assert reason, f"{key} 沒有品牌欄位，filter_support 必須說出原因"
+        if key in explorer.GROUP_BY[dim]:
+            continue
+        reason = explorer.filter_support(field, key)
+        assert reason and len(reason) > 10, (
+            f"{key} 沒有 {field} 維度，但 filter_support 沒有說出原因：{reason!r}")
 
 
 def test_health_endpoint_lists_every_source(client):

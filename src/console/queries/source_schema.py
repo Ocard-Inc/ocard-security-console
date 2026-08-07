@@ -81,6 +81,21 @@ SCHEMAS: dict[str, SourceSchema] = {
     key: _legacy(key) for key in ("api", "backend", "admin", "auth", "order")
 }
 
+# ── 2026-08-07 接入的五張表 ─────────────────────────────────────────────────
+
+# ods_batch_request_log：時間欄位就叫 create_time、就是台北牆鐘，與既有五張表
+# 同名同語意，所以時間那三個欄位直接沿用。沒有 _brand / _store 真欄位。
+SCHEMAS["batch"] = SourceSchema(
+    key="batch",
+    table=settings()["data_sources"]["batch"]["table"],
+    time_col="create_time",
+    time_tz=None,
+    time_expr="create_time",
+    dedup_col="_id",
+    brand_col=None,
+    store_col=None,
+)
+
 
 def get(source: str) -> SourceSchema:
     """來源代碼 → 綱要。未知來源拋 KeyError（呼叫端不該吞掉）。"""

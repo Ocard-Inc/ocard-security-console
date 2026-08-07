@@ -873,6 +873,12 @@ _LIMITATIONS_BY_SOURCE = {
               "Order Log 沒有 status／error 欄位，無法區分成功與失敗的操作。",
               "Order Log 的操作者是 _admin，實測全部是 POS 或串接金鑰帳號 —— "
               "它代表哪一支整合程式，不是哪個人。"],
+    "batch": ["Batch Import Log 的 ip 欄位恆為 0.0.0.0（內部排程直接呼叫），"
+              "完全沒有來源資訊。",
+              "Batch Import Log 是排程觸發的，沒有操作者，也沒有品牌與分店。",
+              "Batch Import Log 是可靠度紀錄而非行為紀錄 —— "
+              "它能顯示批次有沒有跑、量有沒有突變，"
+              "不適合作為攻擊判斷的依據。"],
 }
 
 

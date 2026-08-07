@@ -36,7 +36,7 @@ MAX_TREND_BUCKETS = 20_000
 # 但 Order Log 實測**只有 `0`（未填，0.016%）、沒有 `-1`**，不需要改 `stores.py`
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
-_ALL_SOURCES = ("api", "backend", "admin", "auth", "order")
+_ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch")
 
 # 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
 # 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
@@ -71,6 +71,10 @@ GROUP_BY = {
         # backend 把 `route` 截成前 2 段（exprs.ROUTE2）是因為動態段會生出上千個
         # 一次性選項；`url` 在 180 天只有 46 個相異值、**沒有動態段**，所以不截。
         "order": ("url", None, "Endpoint"),
+        # 批次工作的 route 是真欄位、沒有動態段（實測只有 import_main /
+        # import_coupon / sendReviewRemind 這類固定名稱），所以不像 backend
+        # 那樣截前 2 段。
+        "batch": ("route", None, "批次工作"),
     },
     # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
     # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
@@ -123,6 +127,7 @@ GROUP_BY = {
 # 對 auth 會生出 `startsWith(function, ...)` 而在 ClickHouse 端拋
 # 「Unknown expression or function identifier `function`」→ API 回 502。
 FILTER_COLUMN = {
+    "batch": "route",           # 真欄位、無動態段
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
     "admin": "function",
@@ -141,6 +146,7 @@ FILTER_COLUMN = {
 # orderlist/detail/12345 這類含動態段的值會產生上千個一次性選項。
 # ROUTE2 的輸出是 route 的前綴，所以拿去 startsWith 仍然成立。
 SUGGEST_EXPR = {
+    "batch": "route",
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
     "admin": "function",
@@ -215,6 +221,17 @@ _ENTITY_FILTER_UNSUPPORTED = {
     ("source_ip", "order"): "Order Log 沒有 ip 也沒有 headers 欄位，"
                             "無法推導來源 IP —— 這是資料本身的限制，"
                             "不是本主控台未支援。請改用操作者、品牌或分店篩選。",
+    # `ods_batch_request_log` **有** `ip` 欄位，但實測 297/297 全部是 `0.0.0.0`
+    # —— 內部排程用 curl 打 im.ocard.co，沒有「來源」這個概念。
+    #
+    # 這與 order 的「根本沒有欄位」不同，所以理由要說出是**值**的問題：
+    # 不講的話，下一個人看到有 ip 欄位會以為只是漏掉對照表而「順手補齊」，
+    # 於是來源排名出現一個佔 100% 的 0.0.0.0，被讀成「所有請求都來自同一個 IP」。
+    ("source_ip", "batch"): "Batch Import Log 的 ip 欄位恆為 0.0.0.0"
+                            "（內部排程直接呼叫，不經過網路來源），"
+                            "無法作為來源判斷。請改用批次工作名稱篩選。",
+    ("actor", "batch"): "Batch Import Log 是排程觸發的，沒有操作者 —— "
+                        "這是資料本身的限制，不是本主控台未支援。",
 }
 
 # 品牌／分店「不支援」的**逐來源**理由。
@@ -314,6 +331,7 @@ ENDPOINT_FILTER_META = {
     "backend": ("Route 前綴", "orderlist/detail"),
     "admin": ("Function 前綴", "Boss_initial/auth_v2"),
     "order": ("URL 前綴", "v1/order/active/deny"),
+    "batch": ("批次工作前綴", "NinexNine/import_main"),
 }
 
 # **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
@@ -661,6 +679,7 @@ _DETAIL_COLUMNS = {
     "auth": "_id, create_time, ip, _brand, _store, action, token, params, response",
     "order": ("_id, create_time, controller, function, url,"
               " _brand, _store, _admin, platform, params"),
+    "batch": "_id, create_time, route, controller, function, ip, header, input",
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -671,6 +690,7 @@ _PAYLOAD_COLUMNS = {
     "admin": "_id, create_time, params",
     "auth": "_id, create_time, headers, params, response",
     "order": "_id, create_time, params",
+    "batch": "_id, create_time, header, input",
 }
 
 
@@ -779,7 +799,19 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             # 沒有 order_number 欄位
             "resource": None,
         })
-    else:  # auth
+    elif source == "batch":
+        out.update({
+            "endpoint": str(r.get("route") or ""),
+            # ip 恆為 0.0.0.0（內部排程直接呼叫），顯示它只會讓人以為
+            # 「所有請求都來自同一個 IP」。None 讓前端渲染成「—」，
+            # 而「為什麼沒有」由 _ENTITY_FILTER_UNSUPPORTED 說出來。
+            "source_ip": None,
+            "actor": None,          # 排程觸發，沒有操作者
+            "result": "—",          # 沒有 status 欄位，無法區分成功與失敗
+            "params": masking.payload_summary(r.get("input")),
+            "resource": None,
+        })
+    elif source == "auth":
         out.update({
             "endpoint": str(r.get("action")),
             "source_ip": masking.src(r.get("ip")),
@@ -788,6 +820,15 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             "params": masking.payload_summary(r.get("params")),
             "resource": None,
         })
+    else:
+        # **刻意大聲失敗。** 這裡原本是 `else:  # auth` 的 catch-all，
+        # 已註冊但沒有分支的新來源會靜靜掉進去：endpoint 取 `action`、
+        # 操作者取 `token`，新表兩個欄位都沒有，於是整張明細變成一列列的
+        # None —— 而畫面看起來只是「這些欄位剛好是空的」。
+        # 漏一個分支要在第一次查詢時就炸開，不是產生一張看起來正常的空表。
+        raise ValueError(
+            f"_mask_detail_row 沒有 {source!r} 的分支 —— "
+            "新增資料來源時必須同時加上，否則明細會靜靜渲染成 Auth Log 的形狀")
     return out
 
 
