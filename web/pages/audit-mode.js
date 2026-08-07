@@ -3,8 +3,9 @@ import { api } from '../lib.js';
 
 const STEPS = [
   ['資料來源與保存範圍', [
-    '七個 ClickHouse 資料來源：Admin Log（ocard.ods_admin_log）、Backend System Log（ods_backend_sys_log）、API Log（ods_api_log）、Auth Log（ods_auth_log）、Order Log（ods_order_api_log，2026-08 接入）、Batch Import Log（ods_batch_request_log，2026-08-07 接入）、Console API Log（ods_console_backend_sys_log，2026-08-07 接入）。',
+    '八個 ClickHouse 資料來源：Admin Log（ocard.ods_admin_log）、Backend System Log（ods_backend_sys_log）、API Log（ods_api_log）、Auth Log（ods_auth_log）、Order Log（ods_order_api_log，2026-08 接入）、Batch Import Log（ods_batch_request_log，2026-08-07 接入）、Console API Log（ods_console_backend_sys_log，2026-08-07 接入）、Report Service Log（ods_request_log，2026-08-07 接入）。',
     'Console API Log（ods_console_backend_sys_log，2026-08-07 接入）只保留 90 天，且上游的身分解析目前沒有寫入：authentication.account 全部是空、tokenValid 恆為 false，操作者只有登入請求看得到（取自 body.account）。約 53% 的列沒有來源 IP。',
+'Report Service Log 是報表下載服務（dlc.ocard.co），與資料外流最直接相關：它記錄誰下載了哪一份報表。沒有帳號欄位（身分只在 headers.authorization 的憑證裡），只能以來源 IP 追查。',
     'Batch Import Log 是可靠度紀錄而非行為紀錄：它回答「批次匯入有沒有跑、量有沒有突變」，ip 欄位恆為 0.0.0.0（內部排程直接呼叫）、沒有操作者，不適合作為攻擊判斷的依據。',
     '各來源的用途、資料起始日與敏感等級在「資料健康」頁逐一列出。',
     'Auth Log 為最高敏感等級，可能含 token 與登入 secret，僅提供遮罩摘要。',

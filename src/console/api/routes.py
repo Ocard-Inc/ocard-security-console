@@ -887,6 +887,11 @@ _LIMITATIONS_BY_SOURCE = {
                 "Console API Log 約 53% 的列沒有來源 IP"
                 "（內部健康檢查與 LB 直連），那些列不可納入單一來源判斷。",
                 "Console API Log 只保留 90 天（expiresAt = recordedAt + 90 天）。"],
+    "request": ["Report Service Log 沒有帳號欄位 —— 身分只在 "
+                "headers.authorization 的憑證裡，無法反查成操作者。",
+                "Report Service Log 的同一個 idx 會短暫有「請求開始」與「完成」"
+                "兩列，資料落地後由 ReplacingMergeTree 合併；合併前的計數會略高。",
+                "Report Service Log 沒有品牌與分店欄位。"],
 }
 
 

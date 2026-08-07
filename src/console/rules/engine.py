@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from console.core import brands, masking, stores, timewin
 from console.core.ch import query
 from console.core.config import settings
+from console.queries import exprs, source_schema
 from console.rules import baseline
 from console.rules.model import Finding, Rule, Suppression
 from console.store import allowlist, db, sensitive_routes
@@ -262,15 +263,28 @@ def _eval_new_source(rule: Rule, start: str, end: str, end_dt: datetime,
 def _eval_freshness(rule: Rule, end_dt: datetime) -> list[Finding]:
     findings: list[Finding] = []
     cfg = settings()
-    alert_min = cfg["freshness"]["alert_minutes"]
+    default_alert_min = cfg["freshness"]["alert_minutes"]
     lookback = timewin.fmt(end_dt - timedelta(hours=2))
     now = timewin.taipei_now()
     for key, src in cfg["data_sources"].items():
+        # **時間欄位逐來源取，不可寫死 create_time。** 2026-08-07 接入的表裡，
+        # console 用 `recordedAt`（UTC）、request 用 `created_at`。寫死的話會在
+        # 第一張不存在該欄位的表拋 Unknown identifier，而這個迴圈在
+        # `evaluate()` 的 per-rule try 之內 —— 例外一拋，**R12 對所有表
+        # 一起停止運作**，而畫面上規則仍顯示啟用中。
+        schema = source_schema.get(key)
         df = query(
-            f"SELECT max(create_time) AS mx FROM {src['table']}"
-            f" WHERE create_time >= %(start)s", {"start": lookback})
+            f"SELECT max({schema.time_expr}) AS mx FROM {src['table']}"
+            f" WHERE {exprs.time_filter_for(key)}",
+            {"start": lookback, "end": timewin.fmt(now)})
         mx = df.iloc[0]["mx"]
         lag_min = (now - mx.to_pydatetime()).total_seconds() / 60 if mx is not None else 999
+        # **門檻逐來源可覆寫。** R12 量的是「距離最後一筆多久」，那個值同時混著
+        # 「管線延遲」與「這段時間本來就沒有流量」。高流量的表兩者分得開，
+        # 低流量的表分不開 —— 實測 ods_request_log 兩天內有 11 個間隔超過
+        # 20 分鐘（最長 152 分），全部是正常的沒有流量。用同一個門檻會讓那張表
+        # 每天發好幾則假的 P2，而把值班的人訓練成忽略告警等於把控制拆掉。
+        alert_min = int(src.get("freshness_alert_minutes") or default_alert_min)
         if lag_min <= alert_min:
             continue
         findings.append(Finding(

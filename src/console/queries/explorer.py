@@ -36,7 +36,8 @@ MAX_TREND_BUCKETS = 20_000
 # 但 Order Log 實測**只有 `0`（未填，0.016%）、沒有 `-1`**，不需要改 `stores.py`
 # （`0` 本來就被歸在同一支），但如果日後有人依賴「-1 一定代表品牌層級」，
 # Order Log 是個反例。
-_ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch", "console")
+_ALL_SOURCES = ("api", "backend", "admin", "auth", "order", "batch", "console",
+                "request")
 
 # 操作者是 `_admin` 整數的來源。這兩張表都沒有 `acc` 欄位，所以排名與明細
 # 要另外對照帳號名（`core/admins.py`）。backend 的 actor 本來就是 `acc`、
@@ -77,6 +78,12 @@ GROUP_BY = {
         "batch": ("route", None, "批次工作"),
         "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))",
                     None, "Controller/Method"),
+        # **先切掉 query string 再取前 2 段。** 不切的話
+        # `/api/reports/1aQARJ?download=1` 與 `/api/reports/1aQARJ` 是兩個值；
+        # 不收斂的話報表 id 會生出上百個一次性選項（實測 165 個相異 uri 收斂成
+        # `api/reports` 一格），理由同 backend 的 ROUTE2。
+        # **逐筆明細仍保留完整 uri** —— 「誰下載了哪一份報表」是這張表存在的理由。
+        "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')", None, "路由"),
     },
     # 品牌／分店的來源集合**由綱要決定，不是「每張表都有」**。
     # 2026-08-07 接入的五張表沒有一張有這兩個真欄位；無條件套用的話
@@ -101,6 +108,8 @@ GROUP_BY = {
         # 第一名，而它不是任何「來源」——「查不到」不可以偷換成一個看起來
         # 合理的值。空的比例由 `health._NOTES` 說明。
         "console": ("JSONExtractString(requester, 'xForwardedForRaw')", "src", "來源"),
+        # 真欄位，實測與 headers 的 x-real-ip 一致。
+        "request": ("ip", "src", "來源"),
     },
     # admin 的操作者來自三層 fallback：
     #
@@ -144,6 +153,7 @@ GROUP_BY = {
 # 「Unknown expression or function identifier `function`」→ API 回 502。
 FILTER_COLUMN = {
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
+    "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
     "batch": "route",           # 真欄位、無動態段
     "api": exprs.ENDPOINT,      # controller/function
     "backend": "route",         # 完整 route（含動態段）
@@ -166,6 +176,7 @@ SUGGEST_EXPR = {
     # 與 FILTER_COLUMN 同一個運算式 —— 「建議值必須是篩選欄位的合法前綴」
     # 這個不變量因此天生成立。
     "console": ("concat(JSONExtractString(request, 'controllerClass'), '/', JSONExtractString(request, 'controllerMethod'))"),
+    "request": ("arrayStringConcat(arraySlice(splitByChar('/', splitByChar('?', uri)[1]), 2, 2), '/')"),
     "batch": "route",
     "api": exprs.ENDPOINT,
     "backend": exprs.ROUTE2,
@@ -252,6 +263,9 @@ _ENTITY_FILTER_UNSUPPORTED = {
                             "無法作為來源判斷。請改用批次工作名稱篩選。",
     ("actor", "batch"): "Batch Import Log 是排程觸發的，沒有操作者 —— "
                         "這是資料本身的限制，不是本主控台未支援。",
+    ("actor", "request"): "Report Service Log 沒有帳號欄位 —— 身分只在 "
+                          "headers.authorization 的憑證裡，而憑證不可反查成帳號。"
+                          "請改用來源 IP 篩選。",
 }
 
 # 品牌／分店「不支援」的**逐來源**理由。
@@ -358,6 +372,7 @@ ENDPOINT_FILTER_META = {
     "order": ("URL 前綴", "v1/order/active/deny"),
     "batch": ("批次工作前綴", "NinexNine/import_main"),
     "console": ("Controller/Method 前綴", "userAdmin/login"),
+    "request": ("路由前綴", "api/reports"),
 }
 
 # **刻意沒有 `SOURCE_LIMITS`。** 原本計畫要把前端 `explorer.js` 的 `LIMITS`
@@ -712,6 +727,10 @@ _DETAIL_COLUMNS = {
     "console": ("_id, recordedAt + INTERVAL 8 HOUR AS create_time,"
                 " kind, environment, requestId,"
                 " requester, request, authentication, response, body"),
+    # `uri` 保留**完整值**（含 ?download=1 與報表 id）—— 排名收斂成
+    # `api/reports`，明細不收斂：「誰下載了哪一份報表」是這張表存在的理由。
+    "request": ("idx AS _id, created_at AS create_time, method, uri, ip,"
+                " status_code, duration_ms, headers, body"),
 }
 
 # 逐筆調閱回傳的欄位（完整原文）。與 _DETAIL_COLUMNS 分開：預設明細給摘要，
@@ -725,6 +744,8 @@ _PAYLOAD_COLUMNS = {
     "batch": "_id, create_time, header, input",
     "console": ("_id, recordedAt + INTERVAL 8 HOUR AS create_time,"
                 " requester, request, authentication, response, body"),
+    "request": ("idx AS _id, created_at AS create_time, headers, body,"
+                " response_headers, response_body"),
 }
 
 
@@ -804,6 +825,21 @@ def _console_result(r: dict) -> str:
     if code is None:
         return "—"
     code = int(code)
+    return "成功" if 200 <= code < 400 else f"失敗（{code}）"
+
+
+def _request_result(r: dict) -> str:
+    """`status_code = 0` 是「請求開始」那一列，還沒寫回完成狀態。
+
+    顯示成「失敗（0）」會是錯的 —— 那不是一個 HTTP 狀態碼。
+    ReplacingMergeTree 合併後這種列會消失，但合併前的視窗內看得到。
+    """
+    code = r.get("status_code")
+    if code is None:
+        return "—"
+    code = int(code)
+    if code == 0:
+        return "處理中"
     return "成功" if 200 <= code < 400 else f"失敗（{code}）"
 
 
@@ -897,6 +933,17 @@ def _mask_detail_row(source: str, r: dict) -> dict:
             # requester / request / authentication / response / body 五欄都是
             # JSON 原文，一律收斂。要看原文走 POST /api/explorer/payload。
             "params": masking.payload_summary(r.get("request")),
+            "resource": None,
+        })
+    elif source == "request":
+        out.update({
+            # **完整 uri**，含 ?download=1 與報表 id。
+            "endpoint": str(r.get("uri") or ""),
+            "source_ip": masking.src(r.get("ip")),
+            # 沒有帳號欄位；身分只在 headers.authorization 的憑證裡，不可反查
+            "actor": None,
+            "result": _request_result(r),
+            "params": masking.payload_summary(r.get("body")),
             "resource": None,
         })
     elif source == "auth":

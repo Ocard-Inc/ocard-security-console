@@ -185,3 +185,118 @@ def test_console_has_no_brand_dimension():
     reason = explorer.filter_support("brand", "console")
     assert reason and "brandIdx" in reason, (
         f"拒絕理由必須說出是 brandIdx 沒有被寫入：{reason!r}")
+
+
+# ── request（ods_request_log）────────────────────────────────────────────────
+
+def test_request_source_works(client):
+    """報表下載服務（dlc.ocard.co）。五張裡與資料外流最直接相關的一張。"""
+    assert_source_works(client, "request",
+                        expect_analyses={"trend", "endpoint", "source", "detail"})
+
+
+def test_request_created_at_is_taipei_not_utc():
+    """`created_at` 在這張表是**台北牆鐘**，與 voucher/ec 的同名欄位語意相反。
+
+    猜錯的症狀是整條時間軸平移 8 小時、不報錯。實測依據：
+    `created_at = 2026-08-07 01:30:12` 那列的 `response_headers.date`
+    是 `Thu, 06 Aug 2026 17:30:12 GMT`。
+    """
+    schema = source_schema.get("request")
+    assert schema.time_tz is None, (
+        "ods_request_log.created_at 是台北牆鐘，不可以再做時區轉換 —— "
+        "轉了會讓整條時間軸平移 8 小時")
+    assert schema.time_expr == "created_at"
+
+
+def test_request_dedups_the_in_flight_row(client):
+    """同一個 `idx` 有 in-flight 與完成兩列，計數與狀態分析都必須去重。
+
+    請求開始時先寫一列（`status_code = 0`、`response_*` 空），完成後再寫一列，
+    兩列 `created_at` 相同、靠 `updated_at` 區分。不處理的話
+    `GROUP BY status_code` 會生出一格幽靈的 0（「有一筆請求的狀態碼是 0」）。
+    """
+    schema = source_schema.get("request")
+    assert schema.dedup_col == "idx", "ods_request_log 的去重鍵是 idx 不是 _id"
+    assert schema.dedup_order == "updated_at", (
+        "同一個 idx 的多個版本要靠 updated_at 挑最新的")
+
+
+def test_request_detail_keeps_the_full_uri(client):
+    """排名把路由收斂成 `api/reports`，但明細必須看得到是**哪一份**報表。
+
+    「誰下載了哪一份報表」是 ods_request_log 存在的理由 ——
+    明細也收斂的話這張表就只剩「有人下載了東西」，等於沒有接。
+    """
+    start, end = _recent_window()
+    rows = explorer.detail(
+        explorer.ExplorerFilter(source="request", start=start, end=end))["rows"]
+    if not rows:
+        pytest.skip("ods_request_log 在最近 3 天沒有資料")
+    uris = [r["endpoint"] for r in rows]
+    assert any(u.count("/") >= 3 or "?" in u for u in uris), (
+        f"明細的 uri 全部被收斂了 —— 看不出是哪一份報表：{uris[:5]}")
+
+
+def test_request_has_no_actor_dimension():
+    """沒有帳號欄位；身分只在 headers.authorization 的憑證裡，不可反查。"""
+    assert "request" not in explorer.GROUP_BY["actor"]
+    reason = explorer.filter_support("actor", "request")
+    assert reason and len(reason) > 10
+
+
+# ── R12 新鮮度：逐來源門檻 ────────────────────────────────────────────────────
+
+def test_freshness_uses_the_per_source_threshold():
+    """R12 的門檻可以逐來源覆寫，而且覆寫值真的被讀到。
+
+    R12 量的是「距離最後一筆多久」，那個值同時混著「管線延遲」與「這段時間
+    本來就沒有流量」。高流量的表兩者分得開（實測 batch 的 15,622 個間隔裡只有
+    1 個超過 20 分鐘），低流量的表分不開 —— 實測 2 天內 ods_request_log 有
+    11 個間隔超過 20 分（最長 152 分）、ods_ec_request_log 有 12 個（最長 752 分）。
+
+    用同一個 20 分鐘門檻，那兩張表每天會發好幾則假的 P2「資料管線失速」，
+    而把值班的人訓練成忽略告警等於把這個控制拆掉。
+
+    **這則測試守的是「覆寫真的生效」** —— 寫在 settings 裡卻沒被讀到的話，
+    症狀是假告警照發而設定看起來已經改好了。
+    """
+    from console.core.config import settings
+
+    default = settings()["freshness"]["alert_minutes"]
+    overridden = {k: int(v["freshness_alert_minutes"])
+                  for k, v in settings()["data_sources"].items()
+                  if v.get("freshness_alert_minutes")}
+    assert overridden, "至少 request 應該有覆寫（它 20 筆/小時，一定會誤報）"
+    for key, val in overridden.items():
+        assert val > default, (
+            f"{key} 的覆寫值 {val} 不大於預設 {default} —— "
+            "覆寫的用途是放寬低流量表的門檻，設得更嚴沒有意義")
+
+
+def test_freshness_query_works_for_every_source():
+    """R12 的查詢對**每一個**來源都跑得起來。
+
+    `_eval_freshness` 原本寫死 `SELECT max(create_time)`，而 console 用
+    `recordedAt`、request 用 `created_at`。寫死的話會在第一張不存在該欄位的表
+    拋 Unknown identifier —— 而那個迴圈在 `evaluate()` 的 per-rule try 之內，
+    例外一拋 **R12 對所有表一起停止運作**，畫面上規則卻仍顯示啟用中。
+
+    排程器在測試裡不啟動（TestClient 沒有進 context manager），所以這個 bug
+    不會被任何既有測試抓到 —— 這則測試就是那個缺口的補丁。
+    """
+    from datetime import timedelta
+
+    from console.core.ch import query
+    from console.core.config import settings
+    from console.queries import exprs
+
+    now = timewin.taipei_now()
+    params = {"start": timewin.fmt(now - timedelta(hours=2)),
+              "end": timewin.fmt(now)}
+    for key, src in settings()["data_sources"].items():
+        schema = source_schema.get(key)
+        df = query(
+            f"SELECT max({schema.time_expr}) AS mx FROM {src['table']}"
+            f" WHERE {exprs.time_filter_for(key)}", params)
+        assert "mx" in df.columns, f"{key} 的新鮮度查詢沒有回 mx"

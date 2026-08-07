@@ -35,6 +35,9 @@ _MISSING_EXPR = {
     # 比率大幅變化代表流量組成變了。
     "ods_console_backend_sys_log": (
         "JSONExtractString(requester, 'xForwardedForRaw') = ''", "來源 IP 不可用"),
+    # in-flight 的那一列 status_code 是 0。它不是「缺漏」而是「還沒完成」，
+    # 但比率異常升高代表有大量請求沒有寫回完成狀態 —— 那是真的訊號。
+    "ods_request_log": ("status_code = 0", "尚未寫回完成狀態"),
 }
 
 _NOTES = {
@@ -54,6 +57,12 @@ _NOTES = {
                "約 53% 的列沒有來源 IP（內部健康檢查與 LB 直連，"
                "刻意不退回 requester.ipAddress —— 那是我方 LB 不是來源）；"
                "本表只保留 90 天",
+    "request": "報表下載服務；同一個 idx 會短暫有「請求開始」與「完成」兩列"
+               "（靠 updated_at 區分，ReplacingMergeTree 合併後只剩一列），"
+               "所以合併前的視窗內重複率會短暫上升，那不是資料重複；"
+               "沒有帳號欄位（身分只在 headers.authorization 的憑證裡）、"
+               "沒有品牌與分店；排名的路由收斂成 api/reports，"
+               "要看是哪一份報表請用逐筆明細",
 }
 
 

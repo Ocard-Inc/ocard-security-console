@@ -18,7 +18,7 @@ from console.core.ch import ChQueryError, query
 from console.core.config import settings
 from console.core.logging_setup import setup_logging
 from console.core import masking
-from console.queries import exprs
+from console.queries import exprs, source_schema
 from console.rules import baseline
 from console.store import db
 
@@ -146,9 +146,16 @@ def calibrate() -> dict:
     #    拿錯粒度的基線去比就會產生假的倍數。
     for n in GRANULARITIES:
         for key, src in settings()["data_sources"].items():
+            # 時間欄位逐來源取（同 `rules/engine._eval_freshness`）——
+            # 寫死 create_time 的話新來源每天固定失敗一次。`_segment` 會逐段
+            # 吞掉 ChQueryError 所以不會全毀，但那是**每天一筆錯誤 log**、
+            # 而且那個來源的基線永遠不會出現。
+            schema = source_schema.get(key)
             inner = (
-                f"SELECT toStartOfInterval(create_time, INTERVAL {n} MINUTE) AS b,"
-                f" count() AS c FROM {src['table']} WHERE {tf}{excl} GROUP BY b"
+                f"SELECT toStartOfInterval({schema.time_expr},"
+                f" INTERVAL {n} MINUTE) AS b,"
+                f" count() AS c FROM {src['table']}"
+                f" WHERE {exprs.time_filter_for(key)}{excl} GROUP BY b"
             )
             mk = f"table_{n}m:{key}"
             with _segment(skipped, mk):

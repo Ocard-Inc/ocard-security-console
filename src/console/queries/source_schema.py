@@ -97,6 +97,23 @@ SCHEMAS["console"] = SourceSchema(
     store_col=None,
 )
 
+# ods_request_log：`created_at` 是**台北牆鐘**（與 voucher/ec 的同名欄位語意
+# 相反，那兩張是 UTC），所以 time_tz 是 None、不做任何轉換。
+#
+# dedup_order 只有這張表需要：同一個 idx 會短暫有 in-flight（status_code = 0、
+# response 全空）與完成兩列，兩列 created_at 相同、靠 updated_at 區分。
+SCHEMAS["request"] = SourceSchema(
+    key="request",
+    table=settings()["data_sources"]["request"]["table"],
+    time_col="created_at",
+    time_tz=None,
+    time_expr="created_at",
+    dedup_col="idx",
+    dedup_order="updated_at",
+    brand_col=None,
+    store_col=None,
+)
+
 # ods_batch_request_log：時間欄位就叫 create_time、就是台北牆鐘，與既有五張表
 # 同名同語意，所以時間那三個欄位直接沿用。沒有 _brand / _store 真欄位。
 SCHEMAS["batch"] = SourceSchema(

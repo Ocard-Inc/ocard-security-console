@@ -113,6 +113,39 @@ data_sources:
   console:
     label: Console API Log
     table: ods_console_backend_sys_log
+  # 2026-08-07 接入。dlc.ocard.co 的報表服務 —— console.ocard.co 從這裡
+  # 列出與下載報表。
+  #
+  # **五張裡與資料外流最直接相關的一張**：報表下載就是把資料帶走。
+  # 路由只有三種：GET /api/reports（清單）、POST /api/reports（建立）、
+  # GET /api/reports/{id}?download=1（實際下載）。
+  #
+  # 欄位全部是真欄位（五張新表裡唯一的）：idx / method / uri / ip / headers /
+  # body / status_code / duration_ms / response_headers / response_body /
+  # created_at / updated_at。
+  #
+  # **兩個陷阱：**
+  #   ① `created_at` 是**台北牆鐘**，與 ods_voucher_request_log /
+  #      ods_ec_request_log 的同名欄位語意相反（那兩張是 UTC）。實測依據：
+  #      created_at = 2026-08-07 01:30:12 那列的 response_headers.date
+  #      是 Thu, 06 Aug 2026 17:30:12 GMT。
+  #   ② 同一個 `idx` 會短暫有兩列 —— 請求開始寫一列（status_code = 0、
+  #      response 空），完成後再寫一列，兩列 created_at 相同、靠 updated_at
+  #      區分。ReplacingMergeTree 合併後只剩一列（實測 2026-08-07 20:35 已是
+  #      986 列 / 986 個相異 idx、0 筆 status_code = 0），但**合併前的視窗內
+  #      計數會多算**。綱要的 dedup_order 記著這件事，健康卡的重複率會顯示它。
+  #
+  # headers.cookie 上游已 ***REDACTED***，但 headers.authorization 沒有
+  # （164/164 列都有），而且是陣列形狀 —— 靠 masking.scrub_text() 清洗。
+  #
+  # 實測（2026-08-07）：986 列、2026-08-06 18:33（台北）起、約 20 筆/小時。
+  request:
+    label: Report Service Log
+    table: ods_request_log
+    # 實測 2026-08-06~08 共 994 個間隔：p50=0、p95=5、**最長 152 分**，
+    # 11 個超過 20 分鐘。180 分鐘涵蓋實測的最長間隔並留餘裕 ——
+    # 真的失速（例如整晚沒進資料）仍然抓得到。
+    freshness_alert_minutes: 180
 
 brands:
   # 品牌名稱對照（MySQL ocard.brand）。名稱極少變動，快取 6 小時即可，
@@ -132,7 +165,19 @@ freshness:
   ok: 5
   notice: 10
   stale: 30
-  # 規則 R12：落後超過此分鐘數告警
+  # 規則 R12：落後超過此分鐘數告警。
+  #
+  # **這是預設值；低流量的表可以在 data_sources 逐張覆寫**
+  # （`freshness_alert_minutes`）—— 見 `rules/engine._freshness_threshold()`。
+  #
+  # 為什麼需要覆寫：R12 量的是「距離最後一筆多久」，而那個值同時混著
+  # 「管線延遲」與「這段時間本來就沒有流量」。高流量的表兩者分得開
+  # （實測 batch 15,622 個間隔裡只有 1 個超過 20 分鐘），低流量的表分不開 ——
+  # 實測 2 天內 ods_request_log 有 11 個間隔超過 20 分（最長 152 分）、
+  # ods_ec_request_log 有 12 個（最長 752 分）。用同一個 20 分鐘門檻的話，
+  # 那兩張表每天會發好幾則 P2「資料管線失速」而管線完全正常。
+  #
+  # 把值班的人訓練成忽略告警，等於把這個控制拆掉。
   alert_minutes: 20
 
 baseline:
