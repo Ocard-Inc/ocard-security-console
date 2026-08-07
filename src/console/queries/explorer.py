@@ -503,8 +503,12 @@ def trend(f: ExplorerFilter, bucket: str = "auto") -> dict:
             f"{MAX_TREND_BUCKETS:,}）。請改用較大的分桶或縮短時間範圍。")
 
     where, params = where_clause(f)
+    # 分桶用**台北牆鐘運算式**（`time_expr`），不是過濾用的那一欄 ——
+    # UTC 的表（voucher / ec / console）拿 `time_col` 分桶會讓整條時間軸平移
+    # 8 小時，而且不會報錯。
+    time_expr = source_schema.get(f.source).time_expr
     df = query(
-        f"SELECT toStartOfInterval(create_time, INTERVAL {minutes} MINUTE) AS b,"
+        f"SELECT toStartOfInterval({time_expr}, INTERVAL {minutes} MINUTE) AS b,"
         f" count() AS cnt {where} GROUP BY b ORDER BY b", params)
     hits = {timewin.fmt(r["b"].to_pydatetime()): int(r["cnt"]) for _, r in df.iterrows()}
 
@@ -642,6 +646,13 @@ def error_analysis(f: ExplorerFilter) -> dict:
         for _, r in df.iterrows()]}
 
 
+# 逐筆明細的欄位清單。
+#
+# **時間欄位一律以 `create_time` 這個名字回來。** 既有五張表的欄位本來就叫它；
+# 2026-08-07 接入的五張表欄位名不同，所以在這裡就別名成 `create_time`
+# （例如 `created_time AS create_time`）。`_mask_detail_row()` 與 `payload()`
+# 的下游都用這個鍵名讀值，別名讓新來源不必在下游多一個分支。
+# 欄位真名的唯一真相仍是 `queries/source_schema.py`。
 _DETAIL_COLUMNS = {
     "api": ("_id, create_time, controller, function, _brand, _store, _admin, platform,"
             " headers, params, status, has_error, order_number"),
@@ -671,7 +682,11 @@ def detail(f: ExplorerFilter) -> dict:
     validate(f)
     where, params = where_clause(f)
     cols = _DETAIL_COLUMNS[f.source]
-    df = query(f"SELECT {cols} {where} ORDER BY create_time DESC LIMIT {int(f.limit)}", params)
+    # **排序用真運算式，不用 SELECT 的別名。** console 的 `create_time` 是
+    # `recordedAt + INTERVAL 8 HOUR` 算出來的，拿別名排序在語意上是繞一圈；
+    # 用 `time_expr` 讓 ClickHouse 直接對欄位排。
+    order_expr = source_schema.get(f.source).time_expr
+    df = query(f"SELECT {cols} {where} ORDER BY {order_expr} DESC LIMIT {int(f.limit)}", params)
     masked = [_mask_detail_row(f.source, dict(r)) for _, r in df.iterrows()]
     brand_labels = brands.labels(r["brand"] for r in masked)
     # 分店編號本身看不出是哪一家；-1 代表品牌層級操作（見 core/stores.py）
@@ -904,10 +919,11 @@ def entity_extent(source: str, field: str, value: str) -> dict | None:
     end = timewin.effective_now()
     params = {"start": timewin.fmt(end - timedelta(days=lookback)),
               "end": timewin.fmt(end), "value": str(value).strip()}
-    table = settings()["data_sources"][source]["table"]
+    schema = source_schema.get(source)
     df = query(
-        f"SELECT count() AS c, min(create_time) AS mn, max(create_time) AS mx"
-        f" FROM {table} WHERE {exprs.time_filter()} AND {expr} = %(value)s", params)
+        f"SELECT count() AS c, min({schema.time_expr}) AS mn, max({schema.time_expr}) AS mx"
+        f" FROM {schema.table}"
+        f" WHERE {exprs.time_filter_for(source)} AND {expr} = %(value)s", params)
     r = df.iloc[0]
     count = int(r["c"] or 0)
     if not count:

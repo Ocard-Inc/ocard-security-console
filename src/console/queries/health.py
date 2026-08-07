@@ -6,6 +6,7 @@ from datetime import timedelta
 from console.core import timewin
 from console.core.ch import ChQueryError, query
 from console.core.config import settings
+from console.queries import exprs, source_schema
 from console.rules import baseline
 
 # 各表的關鍵欄位缺漏定義（設計稿 4.1 的資料限制）
@@ -64,12 +65,20 @@ def source_health() -> list[dict]:
         }
         try:
             miss_cond, miss_label = _MISSING_EXPR[table]
+            schema = source_schema.get(key)
+            tf = exprs.time_filter_for(key)
+            # **右界是必要的，不是順手加的。** 原本只有 `create_time >= %(start)s`
+            # 沒有右界；改用 `time_filter_for()` 之後 SQL 裡有 `%(end)s`，
+            # 缺參數會讓 ClickHouse 直接報錯。用 `now` 而不是明天午夜 ——
+            # 「今天到目前為止」才是這張卡要講的事。
+            #
+            # 去重的鍵走綱要：`ods_request_log` 的鍵是 `idx` 不是 `_id`。
             df = query(
-                f"SELECT max(create_time) AS latest, count() AS today_rows,"
+                f"SELECT max({schema.time_expr}) AS latest, count() AS today_rows,"
                 f" countIf({miss_cond}) AS missing,"
-                f" uniqExact(_id) AS uniq_ids"
-                f" FROM {table} WHERE create_time >= %(start)s",
-                {"start": timewin.fmt(today)})
+                f" uniqExact({schema.dedup_col}) AS uniq_ids"
+                f" FROM {table} WHERE {tf}",
+                {"start": timewin.fmt(today), "end": timewin.fmt(now)})
             r = df.iloc[0]
             latest = r["latest"]
             lag = ((now - latest.to_pydatetime()).total_seconds() / 60
@@ -81,8 +90,7 @@ def source_health() -> list[dict]:
             y_start = today - timedelta(days=1)
             y_end = y_start + (now - today)
             ydf = query(
-                f"SELECT count() AS n FROM {table}"
-                f" WHERE create_time >= %(start)s AND create_time < %(end)s",
+                f"SELECT count() AS n FROM {table} WHERE {tf}",
                 {"start": timewin.fmt(y_start), "end": timewin.fmt(y_end)})
             yesterday_rows = int(ydf.iloc[0]["n"])
 

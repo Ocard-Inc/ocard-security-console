@@ -25,6 +25,7 @@ from datetime import timedelta
 from console.core import timewin
 from console.core.ch import query
 from console.core.config import settings
+from console.queries import exprs, source_schema
 
 _lock = threading.Lock()
 # (到期時間戳, payload)
@@ -47,9 +48,10 @@ def _fetch(hours: int) -> dict:
     sources = settings()["data_sources"]
     # 表名與來源 key 都來自 settings() 白名單，不是使用者輸入
     union = " UNION ALL ".join(
-        f"SELECT '{key}' AS src, toStartOfHour(create_time) AS b, count() AS c"
+        f"SELECT '{key}' AS src,"
+        f" toStartOfHour({source_schema.get(key).time_expr}) AS b, count() AS c"
         f" FROM {src['table']}"
-        f" WHERE create_time >= %(start)s AND create_time < %(end)s"
+        f" WHERE {exprs.time_filter_for(key)}"
         f" GROUP BY b"
         for key, src in sources.items()
     )
