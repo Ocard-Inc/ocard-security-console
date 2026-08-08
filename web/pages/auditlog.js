@@ -142,7 +142,7 @@ export default {
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto">
+      <div class="tscroll">
         <table style="font-size:12px" aria-label="操作稽核紀錄">
           <thead><tr style="background:#FCFCFD">
             <th>時間</th><th>操作者 / 角色</th><th>動作</th><th>目標</th>

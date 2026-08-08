@@ -173,7 +173,8 @@ export default {
     },
   },
   template: `
-<div style="display:flex;gap:14px;align-items:flex-start">
+<!-- .split：手機上步驟清單與內容改成上下堆疊（見 app.css 的手機段）。 -->
+<div class="split" style="gap:14px">
   <div class="card" style="width:260px;flex:none;padding:14px;font-size:12.5px">
     <div style="display:flex;align-items:center;margin-bottom:10px">
       <span style="font-weight:700;font-size:13.5px">稽查展示步驟</span>
@@ -195,7 +196,7 @@ export default {
     </div>
   </div>
 
-  <div style="flex:1;min-width:0">
+  <div class="split-main">
     <div style="display:flex;align-items:center;margin-bottom:12px">
       <div style="font-weight:700;font-size:16px">{{ step }}. {{ current[0] }}</div>
       <a v-if="current[2]" @click="$emit('goto', current[2])" style="margin-left:12px;font-size:13px">

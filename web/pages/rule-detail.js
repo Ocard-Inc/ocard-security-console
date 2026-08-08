@@ -114,7 +114,9 @@ export default {
       既有的進行中事件停止計時（不會被誤標「已恢復」，但也不會更新）。
     </div>
 
-    <div style="display:grid;grid-template-columns:2fr 3fr;gap:14px;align-items:start">
+    <!-- grid-split：手機上堆成一欄（見 app.css）。這個 grid 沒有 .grid 類別，
+         所以要明寫 —— 少了它會維持 2fr 3fr，左欄的規則定義表格被壓成一條。 -->
+    <div class="grid-split" style="display:grid;grid-template-columns:2fr 3fr;gap:14px;align-items:start">
       <!-- 左：唯讀定義 -->
       <div style="display:flex;flex-direction:column;gap:14px">
         <div class="card" style="font-size:12.5px">
@@ -241,7 +243,8 @@ export default {
                 {{ d.suppression.measured_since }} 開始記錄）</template><template
                 v-else>—— 抑制紀錄目前是空的，那表示「還沒有記錄」而不是「從未抑制」</template>。
             </div>
-            <table v-if="d.suppression.rows.length" style="font-size:12px;margin-top:8px">
+            <div v-if="d.suppression.rows.length" class="tscroll" style="margin-top:8px">
+            <table style="font-size:12px">
               <thead><tr><th>時間</th><th>對象</th><th class="right">量級</th>
                 <th class="right">門檻</th><th>被哪一條抑制</th></tr></thead>
               <tbody>
@@ -254,6 +257,7 @@ export default {
                 </tr>
               </tbody>
             </table>
+            </div>
           </template>
         </div>
 

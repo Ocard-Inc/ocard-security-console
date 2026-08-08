@@ -83,6 +83,11 @@ const App = {
     // 從詳細頁返回時 query 相同 → 不重建。
     eventsKey: 0,
     authError: null,   // {code, message, email, hint} — 無權限或 ROS 不可用
+    // 手機（≤860px）的側邊選單是滑出式抽屜，桌機沒有這個狀態（CSS 讓開關與
+    // 遮罩 display:none，選單本來就在畫面上）。**不用 matchMedia 判斷裝置**：
+    // 那會多一份與 CSS 斷點必然漂移的真相，而漂移的症狀是「某個寬度下選單
+    // 打不開也關不掉」。這裡永遠只是一個 class，由 CSS 決定它有沒有意義。
+    navOpen: false,
   }),
   computed: {
     navItems() {
@@ -140,6 +145,9 @@ const App = {
      *  總覽的三個連結帶它進來，側邊選單不帶（= 乾淨的預設）。 */
     goto(page, eventsQuery) {
       this.page = page; this.evtNo = null;
+      // 換頁一定要關抽屜。留著的話手機使用者點完選單看到的是同一張選單，
+      // 而下面的頁面已經換了 —— 看起來就像「點了沒反應」。
+      this.navOpen = false;
       // 一律指派（含清空）。只在「有值」時寫的話，上一次帶進來的條件會留下來，
       // 之後點側邊選單會靜靜復活它 —— 同 explorerFilter / allowlistDraft。
       if (page === 'events') {
@@ -207,6 +215,8 @@ const App = {
     },
     applyHash() {
       if (this._ignoreHash) { this._ignoreHash = false; return; }
+      // 上一頁／貼網址進來時也要關抽屜（goto 不是唯一的換頁路徑）
+      this.navOpen = false;
       // **先切掉 query 再 split 路徑。** 不切的話 `events?tab=attack` 整段會被
       // 當成 head，TITLES[head] 查不到就靜靜留在原本那一頁。
       const raw = location.hash.replace(/^#\/?/, '');
@@ -259,7 +269,10 @@ const App = {
   },
   template: `
 <div class="shell" v-if="session">
-  <div class="nav">
+  <!-- 手機的遮罩。桌機 display:none（見 app.css 的 .nav-scrim），所以這裡
+       不需要判斷寬度 —— 一份狀態、一個斷點。 -->
+  <div v-if="navOpen" class="nav-scrim" @click="navOpen=false"></div>
+  <div class="nav" :class="{'is-open': navOpen}">
     <div class="nav-brand">
       <!-- 圖是 .nav-logo 的 background（見 app.css）：CSS 的 url() 對樣式檔解析，
            掛載前綴自動跟著走，不用把 __MOUNT__ 帶進模板。旁邊就是產品名稱，
@@ -296,6 +309,10 @@ const App = {
 
   <div class="main">
     <div class="header">
+      <!-- 選單開關只在手機出現（CSS display:none）。aria-expanded 要跟著狀態，
+           不然螢幕閱讀器讀到的永遠是「收合中」。 -->
+      <button class="nav-toggle" @click="navOpen = !navOpen"
+              :aria-expanded="String(navOpen)" aria-label="開啟或關閉主選單">☰</button>
       <h1>{{ title }}</h1>
       <span class="chip-prod">{{ session.env_label }}</span>
       <div class="header-right">
@@ -364,8 +381,8 @@ const App = {
 
 <!-- 無權限（已登入但沒有 security.* feature）與 ROS 不可用，是兩種完全不同的狀況，
      必須跟「未登入」分開呈現，否則使用者會一直重複登入卻進不來。 -->
-<div v-else-if="authError" style="display:flex;height:100vh;align-items:center;justify-content:center;background:var(--page-bg)">
-  <div class="card" style="width:460px;padding:40px;text-align:center">
+<div v-else-if="authError" style="display:flex;height:100dvh;align-items:center;justify-content:center;padding:16px;background:var(--page-bg)">
+  <div class="card" style="width:min(460px,100%);padding:32px 24px;text-align:center">
     <div style="width:44px;height:44px;margin:0 auto 16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px"
          :style="authError.code === 'ros_unavailable'
                  ? {background:'var(--danger-bg)',color:'var(--danger)'}
@@ -383,7 +400,7 @@ const App = {
   </div>
 </div>
 
-<div v-else style="display:flex;height:100vh;align-items:center;justify-content:center;color:var(--text-2)">
+<div v-else style="display:flex;height:100dvh;align-items:center;justify-content:center;color:var(--text-2)">
   正在載入 Security Log Console…
 </div>`,
 };

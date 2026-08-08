@@ -295,7 +295,7 @@ export default {
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto">
+      <div class="tscroll">
         <table style="font-size:12.5px" aria-label="規則清單">
           <thead><tr style="background:#FCFCFD">
             <th style="width:64px">ID</th><th>名稱</th><th>狀態</th><th>嚴重度</th>

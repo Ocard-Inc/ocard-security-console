@@ -300,7 +300,7 @@ export default {
       <!-- 核心判定卡 -->
       <div class="card">
         <div class="card-h" style="margin-bottom:10px">核心判定</div>
-        <div class="grid" style="grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-bottom:12px">
+        <div class="grid grid-cards" style="grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-bottom:12px">
           <div style="background:#FCFCFD;border:1px solid var(--line-soft);border-radius:7px;padding:10px 4px">
             <div class="muted" style="font-size:11px">目前值</div>
             <div style="font-weight:700;font-size:22px;font-family:Montserrat,sans-serif"
@@ -420,16 +420,18 @@ export default {
           虛線 = 同時段 median · 淡帶 = median–P95 範圍（逐時間桶）
         </div>
       </template>
-      <table v-else-if="hasTrend" style="font-size:12.5px">
-        <thead><tr><th>時間桶</th><th class="right">請求量</th>
-          <th class="right">median</th><th class="right">P95</th></tr></thead>
-        <tbody>
-          <tr v-for="r in e.trend.rows" :key="r.bucket">
-            <td>{{ r.bucket }}</td><td class="right" style="font-weight:500">{{ num(r.count) }}</td>
-            <td class="right muted">{{ num(r.median) }}</td><td class="right muted">{{ num(r.p95) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else-if="hasTrend" class="tscroll">
+        <table style="font-size:12.5px">
+          <thead><tr><th>時間桶</th><th class="right">請求量</th>
+            <th class="right">median</th><th class="right">P95</th></tr></thead>
+          <tbody>
+            <tr v-for="r in e.trend.rows" :key="r.bucket">
+              <td>{{ r.bucket }}</td><td class="right" style="font-weight:500">{{ num(r.count) }}</td>
+              <td class="right muted">{{ num(r.median) }}</td><td class="right muted">{{ num(r.p95) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div v-else class="muted" style="padding:20px 0;font-size:13px">{{ e.trend.note }}</div>
       <div v-if="hasTrend" class="muted" style="font-size:11.5px;margin-top:6px">{{ e.trend.note }}</div>
     </div>

@@ -284,7 +284,10 @@ export default {
     <!-- 事件清單 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-h" style="margin-bottom:12px">事件清單（依風險排序）</div>
-      <table v-if="report.findings.length" style="width:100%;border-collapse:collapse">
+      <!-- 7 欄 + 展開的證據列。手機一律橫向捲動（見 app.css 的 .tscroll）：
+           讓它自己擠的話「發生了什麼」那一欄會剩下不到 60px。 -->
+      <div v-if="report.findings.length" class="tscroll">
+      <table style="width:100%;border-collapse:collapse">
         <thead>
           <tr style="text-align:left;font-size:12px;color:var(--text-2)">
             <th style="padding:6px 8px">#</th>
@@ -383,6 +386,7 @@ export default {
           </template>
         </tbody>
       </table>
+      </div>
       <div v-else class="muted">沒有達門檻的對象。請一併閱讀下方的可信度限制 ——
         「沒找到」與「查不到」是不同的結論。</div>
     </div>
@@ -407,6 +411,7 @@ export default {
             即將到期，屆時這些訊號會重新出現在清單上。
           </template>
         </div>
+        <div class="tscroll">
         <table style="width:100%;border-collapse:collapse;font-size:12.5px">
           <thead><tr style="text-align:left;font-size:12px;color:var(--text-2)">
             <th style="padding:6px 8px">對象</th>
@@ -441,6 +446,7 @@ export default {
             </tr>
           </tbody>
         </table>
+        </div>
         <div class="note-quote" style="margin-top:10px">
           抑制是刻意的，但它是盲區：這些來源在本次掃描中<strong>沒有被評估</strong>。
           條目過期或用途改變時，這一段是唯一看得出來的地方。
@@ -497,6 +503,7 @@ export default {
   <!-- ── 歷史 ── -->
   <div v-if="history.length" class="card">
     <div class="card-h" style="margin-bottom:12px">最近的掃描</div>
+    <div class="tscroll">
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <tbody>
         <tr v-for="h in history" :key="h.sweep_no" style="border-top:1px solid var(--line)">
@@ -515,6 +522,7 @@ export default {
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 </div>`,
 };

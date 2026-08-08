@@ -137,8 +137,12 @@ input, select, textarea { font-family: inherit; }
 ::-webkit-scrollbar-thumb { background: #D0D5DD; border-radius: 5px; border: 2px solid var(--page-bg); }
 @keyframes skpulse { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
 
-/* 版面骨架 */
-.shell { display: flex; height: 100vh; overflow: hidden; }
+/* 版面骨架。
+   高度先寫 100vh 再寫 100dvh：手機瀏覽器的 100vh 是「網址列收起時」的高度，
+   網址列還在時整個殼會比視窗高，底部的批次操作條（position:fixed）會被推到
+   畫面外 —— 使用者手上握著 30 筆選取卻按不到送出。dvh 會跟著網址列變化，
+   不支援 dvh 的舊瀏覽器退回 vh（順序不可對調）。 */
+.shell { display: flex; height: 100vh; height: 100dvh; overflow: hidden; }
 .nav {
   width: var(--nav-w); flex: none; background: var(--nav-bg); color: #98A2B3;
   display: flex; flex-direction: column;
@@ -178,6 +182,16 @@ input, select, textarea { font-family: inherit; }
   display: flex; align-items: center; gap: 14px; padding: 0 20px;
 }
 .header h1 { font-size: 16px; font-weight: 700; margin: 0; }
+/* 手機的側邊選單開關。桌機完全不存在（display:none）—— 選單本來就在畫面上，
+   多一顆按鈕只會讓人以為它會收合。 */
+.nav-toggle {
+  display: none; flex: none; width: 38px; height: 38px; padding: 0;
+  border: 1px solid #D0D5DD; border-radius: 8px; background: #fff;
+  color: var(--text-1); font-size: 17px; line-height: 1;
+}
+/* 手機選單展開時蓋住內容的那層。它同時是「點旁邊關掉」的命中區 ——
+   只靠選單裡的 × 的話，習慣點外面關閉的人會覺得選單卡住了。 */
+.nav-scrim { display: none; }
 .chip-prod {
   background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-line);
   font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 5px;
@@ -223,6 +237,26 @@ input, select, textarea { font-family: inherit; }
 .banner-warn { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn); }
 .banner-danger { background: var(--danger-bg); border: 1px solid var(--danger-line); color: var(--danger); }
 .banner-info { background: #F8F9FC; border: 1px solid #D5D9EB; color: #3E4784; }
+
+/* 寬表格的橫向捲動容器。**寬表格一律包在這裡面，不要直接放 table。**
+   桌機它什麼都不做（overflow-x:auto 在放得下時沒有作用），手機才生效。
+
+   為什麼不能讓表格自己在窄畫面「擠」進去：table 的預設行為是壓縮欄寬而不是
+   溢出，於是 12 欄的異常事件清單在 390px 的手機上每欄剩不到 30px，
+   「Api2/GetProfile」被折成六行、數字與嚴重度標籤全部疊在一起 ——
+   畫面沒有壞掉，只是完全讀不了，而使用者會以為是資料有問題。
+
+   min-width 只在手機給：桌機給了會讓原本放得下的表格憑空多出捲軸。
+   ::before 那行提示是必要的 —— 橫向捲動在觸控裝置上沒有捲軸可看，
+   不說的話右邊那幾欄等於不存在。 */
+.tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* 「側欄 + 主內容」的兩欄版面（Log Explorer 的 Filter Builder、稽查模式的
+   步驟清單、異常事件的預覽抽屜）。手機一律改成上下堆疊，見檔尾的 media query。
+   側欄的固定寬度寫在各頁的 inline style 裡，這裡只負責宣告它是同一種東西 ——
+   少了共用的類別名，日後多一個兩欄版面就會漏掉手機的堆疊。 */
+.split { display: flex; align-items: flex-start; }
+.split-main { flex: 1; min-width: 0; }
 
 th { color: var(--text-2); text-align: left; font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 /* 靠上對齊：某一格展開明細（如「涉及品牌」）撐高整列時，其餘欄位仍與標題對齊 */
@@ -475,4 +509,199 @@ label.inline { display: flex; gap: 5px; align-items: center; font-size: 12.5px; 
   .nav { width: 64px; }
   .nav-title, .nav-sub, .nav-item span:not(.nav-icon):not(.nav-badge), .nav-foot { display: none; }
   .nav-item { justify-content: center; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   手機（≤ 860px）
+   ══════════════════════════════════════════════════════════════════════
+   斷點取 860px 而不是常見的 768px：這個主控台的內容是密集表格與雙欄卡片，
+   小尺寸平板（直立 iPad 768px、Surface 912px）的實際可讀寬度與手機同一類。
+   861–1360px 仍走上面那段（選單縮成圖示），兩段刻意連續、不留空隙。
+
+   這一整段的原則與桌機版相同：**降級要看得見**。橫向捲動的表格會說出
+   「左右滑動」、被收起來的選單有一顆看得到的按鈕、堆疊後的兩欄版面保留原本的
+   閱讀順序（側欄在上、內容在下）。沒有任何功能在手機上被隱藏 ——
+   隱藏功能與「功能壞掉」在畫面上分不出來，而這是一個要在事故當下用手機打開的工具。 */
+@media (max-width: 860px) {
+  /* ── 側邊選單改成滑出式抽屜 ──────────────────────────────────────────
+     64px 的圖示列在手機上會吃掉 16% 的寬度，而那些圖示（◎▲⌕⌗）本身沒有
+     可辨識的語意 —— 換成抽屜之後文字標籤回來了，反而比平板那段好認。 */
+  .nav {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 70;
+    width: min(272px, 84vw);
+    transform: translateX(-100%);
+    transition: transform 200ms ease-out;
+    box-shadow: 4px 0 24px rgba(16, 24, 40, .28);
+  }
+  .nav.is-open { transform: none; }
+  /* 上面那段 1360px 的規則把標題與帳號區藏起來（圖示列放不下），抽屜放得下，
+     所以整組還原。選擇器要與被藏的那組逐一對應，漏一個就是一塊空白。 */
+  .nav-title, .nav-sub, .nav-foot { display: block; }
+  .nav-item span:not(.nav-icon):not(.nav-badge) { display: inline; }
+  .nav-item { justify-content: flex-start; }
+  /* 觸控目標：Apple/Google 兩邊的建議都是 44px。選單是最常按的東西，
+     不到 44px 的話點「異常事件」很容易點成「Log Explorer」。 */
+  .nav-item { padding: 12px; min-height: 44px; font-size: 14px; }
+  .nav-scrim {
+    display: block; position: fixed; inset: 0; z-index: 65;
+    background: rgba(16, 24, 40, .45);
+  }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ── Header ───────────────────────────────────────────────────────────
+     固定 60px 一列放不下標題 + 環境標籤 + 時區 + 資料時間 + 自動更新 + 重新整理，
+     所以改成可換行的兩列（高度 auto）。**刻意不隱藏任何一項** ——
+     「資料至 hh:mm」與環境標籤正是在手機上臨時查看時最需要先確認的兩件事
+     （看的是不是正式環境、資料是不是還在進來）。 */
+  .header {
+    height: auto; min-height: 52px; padding: 8px 12px;
+    flex-wrap: wrap; gap: 8px 10px;
+  }
+  .header h1 { font-size: 15px; }
+  .header-right {
+    margin-left: 0; width: 100%; flex-wrap: wrap; gap: 6px 12px; font-size: 12px;
+  }
+
+  .content { padding: 12px; }
+
+  /* ── Grid：一律單欄，明確標為卡片列的才並排 ──────────────────────────
+     各頁的 grid-template-columns 寫在 inline style 裡（repeat(5,1fr)、3fr 2fr…），
+     inline 樣式的優先序高於類別，所以這裡只能用 !important —— 這是少數
+     「不用 !important 就做不到」的情況，不是偷懶。
+
+     預設單欄；只有 .grid-cards（數字卡那種小方塊）維持並排，
+     因為一個只寫「P1 高風險事件 / 3」的卡片在半個手機寬度裡仍然讀得完，
+     而拆成一欄會讓四張卡佔掉整個第一畫面、把真正的內容推到摺線以下。 */
+  .content .grid:not(.grid-cards):not(.grid-auto),
+  .content .grid-split { grid-template-columns: minmax(0, 1fr) !important; }
+  /* .grid-auto = 已經寫成 repeat(auto-fit, minmax(…)) 的格線。它們本來就會
+     自己降欄，強制單欄反而讓 768px 的平板從兩欄退成一欄。 */
+  .content .grid-cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; }
+
+  /* ── inline 的橫向 flex 一律允許換行 ────────────────────────────────
+     各頁有大量 style="display:flex;gap:16px" 的資訊列（事件清單的
+     「共 512 筆 · P0 1 · P1 2 · 持續中 4」、總覽的 attention 列、
+     快速查詢的標題列…）。它們在桌機一行放得下，所以當初沒寫 flex-wrap ——
+     而 flex 的預設是 nowrap，放不下時**壓縮子項**而不是換行。
+     實測 390px 下那一列每一格被壓成 40px 寬，「共 512 筆事件」變成直排的
+     六行字。畫面沒有壞，只是讀不了。
+
+     用屬性選擇器是因為那些宣告寫在 inline style 裡，沒有類別可以掛；
+     逐頁加 flex-wrap 也可以，但漏一個就是一列直排的字，而新增的頁面必然會漏。
+     排除 flex-direction:column（縱向排列時 wrap 沒有意義，指定它只會多一次
+     版面計算）。
+
+     **兩種寫法都要列**：Vue 把樣板裡的靜態 style 交給 el.style 套用，瀏覽器
+     再序列化回屬性時會補上空格（實測是 "display: flex; gap: 16px;"），
+     所以只寫 "display:flex" 的選擇器一個元素都比對不到 —— 而且不會有任何錯誤，
+     症狀就只是「這條規則好像沒生效」。 */
+  .content [style*="display:flex"]:not([style*="column"]),
+  .content [style*="display: flex"]:not([style*="column"]) { flex-wrap: wrap; }
+
+  /* ── 兩欄版面堆疊 ─────────────────────────────────────────────────── */
+  .split { flex-direction: column; gap: 12px; }
+  /* 側欄的寬度是 inline style（280px / 260px），要蓋掉 */
+  .split > * { width: 100% !important; }
+
+  /* ── 寬表格 ───────────────────────────────────────────────────────── */
+  .tscroll { position: relative; }
+  /* width:max-content 而不是一個寫死的 min-width。
+     實測 min-width:640px 對 12 欄的異常事件清單完全不夠：640 ÷ 12 每欄仍只有
+     53px，「EVT-0001」被折成一個字一行、表頭的「事件編號」直排 —— 症狀與完全
+     不捲動時一樣，只是多了一條沒有用的捲軸。
+     max-content = 「每一格都不折行時的寬度」，由內容自己決定，欄少的表格不會
+     憑空變寬（再配 min-width:100% 讓窄表格仍撐滿卡片）。
+     真正很長的欄位（稽核 target、Explorer 的 params）本來就有 inline 的
+     max-width，會在那個寬度內折行，不會把表格拉成幾千 px。 */
+  .tscroll > table { width: max-content; min-width: 100%; }
+  .tscroll::before {
+    content: '← 左右滑動可看完整欄位 →';
+    display: block; position: sticky; left: 0;
+    font-size: 11px; color: var(--text-2); padding: 7px 10px 0;
+  }
+  th, td { padding: 8px; }
+
+  /* ── 表單與篩選列 ─────────────────────────────────────────────────
+     font-size 一定要 ≥16px：iOS Safari 對字級小於 16px 的輸入框會在聚焦時
+     自動放大整個頁面，而且**不會縮回去** —— 使用者打完一個關鍵字之後，
+     整個主控台就停在放大狀態，橫向捲來捲去。這是手機上最常見的「這網站很難用」
+     的實際成因，桌機完全看不到。
+     max-width 讓 inline 的 width:200px/220px 在窄畫面自動收斂（inline width 是
+     指定值，max-width 仍然壓得住它）。 */
+  select, textarea,
+  input:not([type]), input[type=text], input[type=number],
+  input[type=date], input[type=datetime-local] {
+    font-size: 16px; max-width: 100%; min-height: 40px;
+  }
+  .filter-bar { padding: 10px; gap: 8px; }
+  /* 直立分隔線在換行的篩選列裡沒有意義：它分的是「左邊那組」與「右邊那組」，
+     而換行之後它會落在某一行的行尾，看起來像一個沒畫完的框。 */
+  .filter-bar-sep { display: none; }
+  /* 篩選列上的下拉一個一行太浪費，兩個一行剛好放得下 label + 值。
+     **checkbox / radio 必須排除**（同 .field 那條規則的理由）：它們的寬度是
+     「元件本身多大」，套上 flex-basis:140px 會把勾選框撐成半行寬、
+     文字被推到旁邊，整列跑版。 */
+  .filter-bar select,
+  .filter-bar input:not([type=checkbox]):not([type=radio]) { flex: 1 1 140px; min-width: 0; }
+
+  .btn { padding: 9px 14px; min-height: 40px; }
+  .btn-sm { padding: 6px 10px; min-height: 34px; font-size: 12.5px; }
+  /* 觸控沒有 hover，所以 toggle 這種小控制項要靠尺寸而不是 hover 提示 */
+  .toggle button { padding: 8px 12px; min-height: 36px; }
+
+  /* ── 判定頁籤：橫向捲動而不是換行 ──────────────────────────────────
+     五格換行之後底線會斷成兩段，看起來像兩排不同的東西；橫捲維持「一排頁籤」
+     的語意，而且第一格（待判定）永遠在起點。 */
+  .jtabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .jtab { padding: 10px 12px; }
+
+  /* ── 固定定位的東西要讓開的是「沒有選單」的畫面 ─────────────────── */
+  .batchbar {
+    left: 0; padding: 10px 12px;
+    /* iPhone 底部的 home indicator 會蓋住最後 34px，送出鈕正好在那裡 */
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    /* 操作條展開三個輸入欄時可能比畫面還高，內部自己捲，不要把按鈕推出畫面 */
+    max-height: 70vh; overflow-y: auto;
+  }
+  .busy-overlay { left: 0; }
+  /* 操作條在手機上會換行成四到五列，桌機量的墊片（110/260px）不夠，
+     最後幾筆事件仍然被蓋住 —— 而那正是這個墊片存在的原因。 */
+  .batchbar-spacer { height: 210px !important; }
+  .batchbar-spacer.is-open { height: 440px !important; }
+
+  /* ── 抽屜改成全螢幕覆蓋 ───────────────────────────────────────────
+     版面內的 380px 抽屜在手機上等於把內容擠成一條。改成蓋住整個畫面的
+     覆蓋層（桌機刻意不這樣做的理由見 .drawer 的註解，那些理由在手機上
+     不成立：手機本來就一次只看得到一件事）。
+     inline 的 margin 要蓋掉，所以 !important。 */
+  .drawer {
+    position: fixed; inset: 0; z-index: 70; width: auto;
+    margin: 0 !important; border-left: none;
+  }
+
+  /* ── Modal ────────────────────────────────────────────────────────── */
+  .modal-mask { padding: 12px; }
+  .modal {
+    width: 100% !important; max-width: 460px;
+    max-height: calc(100dvh - 24px); overflow-y: auto; padding: 18px;
+  }
+
+  /* 抽屜與 modal 的關閉鈕、表格裡的小按鈕都要吃得到觸控 */
+  .drawer-h button, .modal button { min-height: 40px; }
+
+  /* 長字串（IP、endpoint、entity_key、稽核 target）在窄欄位會撐破版面。
+     桌機有的是寬度，手機一律允許在任意處斷行。 */
+  .mono, .fp { word-break: break-all; }
+
+  .empty-box { padding: 32px 16px; }
+  .card { padding: 14px; }
+}
+
+/* 極窄（≤ 380px，iPhone SE / mini 直立）。
+   這一段只做「再擠一次」的事，不改任何版面結構 —— 結構在上面那段已經定案，
+   兩段各自負責一件事，改動時不會互相打架。 */
+@media (max-width: 380px) {
+  .content { padding: 10px; }
+  .content .grid-cards { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)) !important; }
+  .header h1 { font-size: 14px; }
 }

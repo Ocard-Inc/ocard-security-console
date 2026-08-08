@@ -112,8 +112,10 @@ export default {
   // 條目的名稱、用途、理由都是人工輸入，來源 IP 是原始值（政策：對內調查工具
   // 原樣顯示）—— 一律 {{ }} 插值，禁用 v-html。
   template: `
-<div style="display:flex;gap:0;align-items:flex-start">
-<div style="flex:1;min-width:0">
+<!-- .split / .split-main：手機上清單與編輯抽屜改成上下堆疊；抽屜本身在手機
+     會變成全螢幕覆蓋層（見 app.css 的 .drawer）。 -->
+<div class="split" style="gap:0">
+<div class="split-main">
   <div class="filter-bar">
     <span class="filter-bar-label">狀態</span>
     <select v-model="f.status">
@@ -160,7 +162,7 @@ export default {
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto">
+      <div class="tscroll">
         <table style="font-size:12.5px" aria-label="Allowlist 例外清單">
           <thead><tr style="background:#FCFCFD">
             <!-- 「創立人」與原本的「建立者」（approved_by）合併成一欄：2026-08 起

@@ -117,7 +117,7 @@ export default {
         <div class="card-h" style="margin-bottom:10px">查詢結果</div>
         <div v-if="!result.rows.length" class="muted" style="padding:20px 0">
           此時間範圍沒有符合條件的資料。「沒有資料」不等於「沒有異常」，請確認時間範圍與參數。</div>
-        <div v-else style="overflow-x:auto">
+        <div v-else class="tscroll">
           <table style="font-size:12.5px">
             <thead><tr><th v-for="c in result.columns" :key="c">{{ c }}</th></tr></thead>
             <tbody>

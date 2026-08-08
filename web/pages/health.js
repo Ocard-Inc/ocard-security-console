@@ -49,14 +49,15 @@ export default {
   template: `
 <div>
   <!-- 骨架的格數要與實際卡片數接近，否則載入完會從 6 格跳成 10 格、畫面彈一下 -->
-  <div v-if="loading" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+  <div v-if="loading" class="grid grid-auto" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div v-for="i in 10" :key="i" class="skel" style="height:220px"></div>
   </div>
   <div v-else-if="error" class="banner banner-danger">{{ error }}</div>
   <template v-else>
     <!-- 2026-08-07：來源從 5 個變 10 個。固定 3 欄會排成 3+3+3+1、
          最後一排孤零零一張，所以改成自動換行。 -->
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:16px">
+    <!-- grid-auto：這一格已經會自己降欄，手機段不要再強制單欄（見 app.css）。 -->
+    <div class="grid grid-auto" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:16px">
       <div v-for="c in data.sources" :key="c.key" class="card"
            :style="{borderTop:'3px solid '+c.status_color, padding:'14px 16px', fontSize:'12.5px'}">
         <div style="display:flex;align-items:center;margin-bottom:8px">
@@ -112,6 +113,7 @@ export default {
     <div class="grid" style="grid-template-columns:3fr 2fr">
       <div class="card">
         <div class="card-h" style="margin-bottom:10px">監測排程狀態</div>
+        <div class="tscroll">
         <table style="font-size:12.5px">
           <thead><tr><th>檢查</th><th>最近執行</th><th>最近成功</th><th class="right">連續失敗</th><th>備註</th></tr></thead>
           <tbody>
@@ -128,6 +130,7 @@ export default {
               <td class="muted">{{ data.heartbeat.daily?.note || '—' }}</td></tr>
           </tbody>
         </table>
+        </div>
         <div class="muted" style="font-size:11.5px;margin-top:10px">
           排程失敗會在總覽顯示「監測失敗」，與「沒有異常」使用完全不同的視覺與文字。
         </div>

@@ -498,7 +498,9 @@ export default {
       {{ loading ? '查詢中…' : '執行查詢' }}</button>
   </div>
 
-<div style="display:flex;gap:14px;align-items:flex-start">
+<!-- .split：手機上左欄（Filter Builder）與右欄改成上下堆疊，順序不變 ——
+     先填條件再看結果，本來就是這一頁的操作順序。見 app.css 的手機段。 -->
+<div class="split" style="gap:14px">
   <!-- 左：Filter Builder（時間相關的已移到上方那一列） -->
   <div class="card" style="width:280px;flex:none;padding:14px 16px;font-size:12.5px">
     <div style="font-weight:700;font-size:13.5px;margin-bottom:10px">Filter Builder</div>
@@ -565,7 +567,7 @@ export default {
   </div>
 
   <!-- 中：分析結果 -->
-  <div style="flex:1;min-width:0">
+  <div class="split-main">
     <!-- 篩選條件不是使用者自己打的時候，必須說出它從哪來、以及有什麼沒帶進來。
          不說的話畫面上就是一組來歷不明的條件，看的人無法判斷數字代表什麼。
          手動改動任一條件後這一條會自己消失（見 watch.f）。 -->
@@ -651,6 +653,7 @@ export default {
                      :signature="rankingSignature" :height="rankingHeight" :reloading="reloading"
                      :aria-label="result.label + ' 排名長條圖，詳細數值見下方表格'" />
         </div>
+        <div class="tscroll">
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
             <th style="width:40px">#</th><th>{{ result.label }}</th>
@@ -676,6 +679,7 @@ export default {
               此時間範圍沒有符合條件的資料</td></tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- 錯誤分析 -->
@@ -685,6 +689,7 @@ export default {
                      signature="ex-error" :height="errorHeight" :reloading="reloading"
                      aria-label="各 endpoint 錯誤數長條圖，詳細數值見下方表格" />
         </div>
+        <div class="tscroll">
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
             <th>Endpoint</th><th class="right">總數</th><th class="right">錯誤數</th><th class="right">錯誤率</th>
@@ -700,11 +705,12 @@ export default {
               此時間範圍沒有錯誤紀錄</td></tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- Unique resource -->
       <div v-else-if="f.analysis==='unique_resource'" class="card" style="margin-bottom:12px">
-        <div class="grid" style="grid-template-columns:repeat(4,1fr);text-align:center">
+        <div class="grid grid-cards" style="grid-template-columns:repeat(4,1fr);text-align:center">
           <div v-for="m in [['總請求',num(result.total)],['含資源識別',num(result.with_resource)],
                             ['unique 資源數',num(result.unique_resources)],
                             ['unique 比例', result.unique_ratio !== null ? pct(result.unique_ratio) : '—']]"
@@ -718,7 +724,10 @@ export default {
 
       <!-- 遮罩明細 -->
       <div v-else-if="f.analysis==='detail'" class="card" style="margin-bottom:12px;padding:0;overflow:hidden">
-        <div style="overflow-x:auto">
+        <!-- 原本是 inline 的 overflow-x:auto。改用 .tscroll 是為了在手機上一併
+             拿到最小寬度與「左右滑動」提示 —— 觸控裝置沒有捲軸可看，
+             不說的話右邊那幾欄（帳號、Result、調閱原文）等於不存在。 -->
+        <div class="tscroll">
           <table style="font-size:12px">
             <thead><tr style="background:#FCFCFD">
               <th>時間</th><th>來源</th><th>品牌</th><th>分店</th><th>Endpoint</th>

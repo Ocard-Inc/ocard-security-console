@@ -1021,6 +1021,58 @@ YAML 壞掉時一條規則都沒在跑，那時更需要看見通知也送不出
 與資料庫存的台北牆鐘天生對應，不需要任何換算，也就沒有換算錯誤的可能。
 字串轉換用 `range-picker.js` 的 `toWallClock()` / `toInputValue()`。
 
+## 手機版面（2026-08 加）
+
+斷點是 **860px**，寫在 `web/app.css` 的手機段。861–1360px 仍走原本那段
+（側邊選單縮成圖示列），兩段刻意連續。**這個數字同時寫在 `charts/theme.js` 的
+`isNarrowViewport()`**（圖表的刻度數要跟著版面走），改一邊要改兩邊 ——
+不一致的症狀是「版面已經堆疊成一欄了，但圖表還在用桌機的刻度數」，
+軸標籤疊成一團而不會有任何錯誤。
+
+新增畫面時要記得的四個類別（都只在手機生效，桌機是 no-op）：
+
+- **`.tscroll`：寬表格的橫向捲動容器。** 欄數超過四欄的表格一律包一層。
+  不包的話 table 會**壓縮欄寬而不是溢出** —— 實測 12 欄的異常事件清單在 390px
+  下每欄剩 30px，「EVT-0001」變成一個字一行、表頭直排，畫面沒壞但完全讀不了。
+  手機上它給 `width:max-content`（欄少的表格不會憑空變寬）並在上方印一行
+  「左右滑動可看完整欄位」—— 觸控裝置沒有捲軸可看，不說的話右邊那幾欄等於不存在。
+- **`.split` / `.split-main`：「側欄 + 主內容」的兩欄版面**（Explorer 的
+  Filter Builder、稽查模式的步驟清單、異常事件的預覽抽屜、Allowlist 的編輯抽屜）。
+  手機改成上下堆疊，側欄的固定寬度由 `.split > *` 蓋掉。
+- **`.grid-cards` / `.grid-auto`：格線的兩個例外。** 手機預設把 `.content` 底下
+  所有 `.grid` 強制單欄（各頁的 `grid-template-columns` 寫在 inline style 裡，
+  只能用 `!important` 蓋）。只寫一個標題與一個數字的小卡片列標 `.grid-cards`
+  維持並排；已經寫成 `repeat(auto-fit, minmax(...))` 的標 `.grid-auto` 完全不動
+  —— 強制單欄會讓 768px 的平板從兩欄退成一欄。
+  沒有 `.grid` 類別的 inline `display:grid`（規則詳細頁）要自己標 `.grid-split`。
+- **inline 的橫向 flex 由屬性選擇器統一補 `flex-wrap: wrap`。**
+  各頁有大量 `style="display:flex;gap:16px"` 的資訊列，flex 預設 nowrap ——
+  放不下時壓縮子項而不是換行，實測那一列每格被壓成 40px、整句話變成直排。
+  選擇器**必須同時列 `display:flex` 與 `display: flex` 兩種寫法**：Vue 把靜態
+  style 交給 `el.style` 套用，瀏覽器序列化回屬性時會補上空格，只寫沒空格的那種
+  一個元素都比對不到（而且不會有任何錯誤，症狀只是「這條規則好像沒生效」）。
+
+三件不可以拿掉的事：
+
+- **輸入框在手機一律 `font-size: 16px`。** iOS Safari 對字級小於 16px 的輸入框
+  會在聚焦時自動放大整個頁面而且**不會縮回去** —— 打完一個關鍵字之後整個主控台
+  就停在放大狀態。這是手機上最常見的「這網站很難用」的實際成因，桌機完全看不到。
+- **`viewport-fit=cover` + `env(safe-area-inset-bottom)`。** 少了前者，
+  iPhone 上那些 env() 一律回 0，底部的批次操作條會被 home indicator 蓋掉最後
+  34px —— 送出鈕正好在那裡。同理 `.shell` 的高度是 `100vh` 後面再補一次
+  `100dvh`（順序不可對調）：100vh 是「網址列收起時」的高度，網址列還在時
+  整個殼會比視窗高，固定在底部的操作條被推到畫面外。
+- **`viewport` 刻意不加 `maximum-scale` / `user-scalable=no`。** 這一頁有大量
+  密集數字（IP、endpoint、時間戳），關掉縮放等於把「看清楚一個 IP」這件事拿掉。
+
+**手機上沒有任何功能被隱藏，只有版面改變。** 隱藏功能與「功能壞掉」在畫面上
+分不出來，而這是一個要在事故當下用手機打開的工具。
+
+驗收方式：`web/` 是靜態的，把它跑在本機 http server、用 Playwright 攔截 `/api/**`
+回假資料，就能在 390×844 逐頁截圖並斷言 `document.documentElement.scrollWidth`
+沒有超過視窗寬（`.tscroll` / `.jtabs` 這類刻意橫捲的容器要排除）。
+**只有 pytest 全綠是驗不出這一類問題的** —— 版面在手機上壞掉時後端一片正常。
+
 ## 正式部署（詳見 `docs/deploy-gcp.md`）
 
 GCP project `ocard-ai`，**Compute Engine 單台 VM**（`security-console`，asia-east1-b，

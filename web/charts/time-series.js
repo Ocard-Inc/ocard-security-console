@@ -1,7 +1,7 @@
 // 趨勢圖設定工廠。總覽（5 線 + 基準帶）、事件詳細（1 線 + 基準帶）、
 // Log Explorer（1 線）三張圖共用這一份。
 import { num } from '../lib.js';
-import { baseOptions, axisLabelStyle } from './theme.js';
+import { baseOptions, axisLabelStyle, isNarrowViewport } from './theme.js';
 import { token } from './tokens.js';
 import { tooltipHTML } from './tooltip.js';
 import { niceMax } from './format.js';
@@ -49,6 +49,7 @@ export function timeSeriesOptions(spec) {
   } = spec;
 
   const base = baseOptions();
+  const narrow = isNarrowViewport();
   return {
     ...base,
     chart: {
@@ -64,9 +65,11 @@ export function timeSeriesOptions(spec) {
                     animations: { ...base.chart.animations, enabled: false } } : {}),
     },
     colors,
-    // 小面板高度只有 120px，內距要收緊才畫得下
+    // 小面板高度只有 120px，內距要收緊才畫得下。
+    // 手機的左內距要留多一點：刻度變少之後第一個標籤落在更靠左的位置，
+    // left:2 會把「08/08 00:00」的第一個字切掉半個。
     grid: compact
-      ? { ...base.grid, padding: { top: 4, right: 8, bottom: 0, left: 2 } }
+      ? { ...base.grid, padding: { top: 4, right: 8, bottom: 0, left: narrow ? 10 : 2 } }
       : base.grid,
     // 透明度已經編在 --chart-band 的 rgba 裡，這裡不要再乘一次
     fill: { opacity: colors.map(() => 1) },
@@ -79,7 +82,15 @@ export function timeSeriesOptions(spec) {
     },
     xaxis: {
       type: 'category',
-      tickAmount: compact ? 4 : 8,
+      // 手機的刻度數要再減。標籤是「08/08 00:00」11 個等寬字（約 75px），
+      // 390px 的畫面配桌機的 8 個刻度會疊成
+      // 「08/08 00:0008/08 05:0008/08 10:00」—— 那不是難讀，是完全讀不出來
+      // 這一點是幾點（實測 2026-08 手機版）。
+      // hideOverlappingLabels 擋不住：category 軸上它只在刻度數本身就放得下時
+      // 才會生效，所以真正要改的是 tickAmount。
+      // **刻意不改成「只顯示時刻、拿掉日期」** —— 跨日的視窗（往前拉 2 天、
+      // 7 天趨勢）會出現好幾輪一模一樣的時刻，而分不出是哪一天比疊字更糟。
+      tickAmount: narrow ? (compact ? 2 : 3) : (compact ? 4 : 8),
       tooltip: { enabled: false },          // 只用底下那個共用 tooltip
       crosshairs: {
         show: true,

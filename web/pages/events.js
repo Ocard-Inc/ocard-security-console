@@ -234,8 +234,10 @@ export default {
     try { this.rules = (await api('/rules')).rules; } catch { /* 規則清單非必要 */ }
   },
   template: `
-<div style="display:flex;gap:0;height:100%">
-  <div style="flex:1;min-width:0">
+<!-- .split / .split-main：手機上改成上下堆疊（見 app.css 的手機段）。
+     這一頁的第二欄是快速預覽抽屜，手機上它會變成全螢幕覆蓋層。 -->
+<div class="split" style="gap:0;height:100%">
+  <div class="split-main">
     <!-- 頁籤在篩選卡之上，且不受 loading 影響：重載時消失會讓版面跳動，
          而「別格還有幾筆」正是等待期間最有用的資訊。 -->
     <div v-if="tabs.length" class="jtabs">
@@ -341,7 +343,10 @@ export default {
           監測仍持續執行中；「沒有事件」不等於「系統安全」。可放寬時間範圍或清除篩選條件。</div>
       </div>
 
-      <div v-else class="card" style="padding:0;overflow:hidden">
+      <!-- 12 欄的清單在手機上放不進去。**不能讓它自己擠** —— table 會壓縮欄寬
+           而不是溢出，結果是每一欄剩不到 30px、全部折成好幾行疊在一起。
+           .tscroll 讓它橫向捲動並在上方說出「左右滑動」（見 app.css）。 -->
+      <div v-else class="card tscroll" style="padding:0">
         <table style="font-size:12.5px">
           <thead><tr style="background:#FCFCFD">
             <!-- 全選的範圍**只有這張表格上的列**（見 toggleAll）。 -->
@@ -393,7 +398,10 @@ export default {
          這一頁的根 div 是 height:100%，padding-bottom 加在它身上不會延長
          .content 的捲動範圍（實測捲到底時最後一列仍被蓋住 153px）。
          實測高度：收起 79px、展開 190px、展開又選了「已確認攻擊」237px。 -->
-    <div v-if="sel.length" :style="{height: batchOpen ? '260px' : '110px'}"></div>
+    <!-- 手機上操作條會換行成好幾列，這個墊片的高度不夠就又蓋住最後幾列 ——
+         實際高度由 app.css 的手機段以類別覆寫（inline style 蓋不過 !important）。 -->
+    <div v-if="sel.length" class="batchbar-spacer" :class="{'is-open': batchOpen}"
+         :style="{height: batchOpen ? '260px' : '110px'}"></div>
 
     <!-- 批次判定操作條。勾了才升起；三個文字欄預設收起（多數批次判定就是
          「這 20 筆都是同一個誤報」，一顆按鈕就講完了）。 -->
@@ -473,7 +481,7 @@ export default {
           <template v-if="drawer.median">，為 28 天同時段 median（{{ num(drawer.median) }}）的
             {{ mult(drawer.multiple) }}</template>。
         </div>
-        <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;text-align:center">
+        <div class="grid grid-cards" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;text-align:center">
           <div v-for="m in [['目前值',num(drawer.metric)],['median',num(drawer.median)],
                             ['P95',num(drawer.p95)],['倍數',mult(drawer.multiple)]]" :key="m[0]"
                style="background:#FCFCFD;border:1px solid var(--line-soft);border-radius:7px;padding:8px 4px">

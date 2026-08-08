@@ -341,7 +341,9 @@ export default {
   <!-- 骨架只在「從來沒有拿到資料」時出現。重載時沿用上一版畫面，不換骨架、不跳版面。 -->
   <div v-if="!data && !error" style="display:flex;flex-direction:column;gap:16px">
     <div class="muted" style="font-size:13px">正在查詢原始 log…</div>
-    <div class="grid" style="grid-template-columns:repeat(5,1fr)">
+    <!-- 骨架的欄數要與真正的卡片列同一個類別（grid-cards），否則手機上骨架是
+         一欄、載入完變成兩欄，畫面會整個彈一下 -->
+    <div class="grid grid-cards" style="grid-template-columns:repeat(5,1fr)">
       <div v-for="i in 5" :key="i" class="skel" style="height:110px" :style="{animationDelay: (i*0.1)+'s'}"></div>
     </div>
     <div class="skel" style="height:260px"></div>
@@ -447,7 +449,9 @@ export default {
       <div class="card-h">事件摘要</div>
       <span class="muted" style="font-size:12px">固定近 24 小時（與下方趨勢圖的時間區間無關）</span>
     </div>
-    <div class="grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
+    <!-- grid-cards：手機上這一列維持並排（每張卡只有一個標題與一個數字，
+         半個手機寬度讀得完），其餘 .grid 一律堆成一欄。見 app.css 的手機段。 -->
+    <div class="grid grid-cards" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
       <div v-for="c in data.severity_cards" :key="c.severity" class="card"
            :style="{borderTop:'3px solid '+SEV_META[c.severity].bar, padding:'14px 16px', cursor:'pointer'}"
            @click="$emit('goto','events', severityLink(c.severity))">
@@ -524,7 +528,8 @@ export default {
         </div>
       </template>
 
-      <table v-else style="font-size:12.5px">
+      <div v-else class="tscroll">
+      <table style="font-size:12.5px">
         <thead><tr>
           <th>時間桶</th><th class="right">API</th><th class="right">Backend</th>
           <th class="right">登入成功</th><th class="right">登入失敗</th>
@@ -541,6 +546,7 @@ export default {
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- 第三列：需要注意 + 資料來源健康 -->
@@ -654,7 +660,8 @@ export default {
       <div v-else-if="!showRankTable" class="muted" style="text-align:center;padding:30px">
         此時間範圍沒有資料</div>
 
-      <table v-if="showRankTable" style="font-size:12.5px">
+      <div v-if="showRankTable" class="tscroll">
+      <table style="font-size:12.5px">
         <thead><tr>
           <th style="width:40px">#</th><th>{{ RANK_TABS[rankTab].col }}</th>
           <th class="right">目前值</th><th class="right">同時段 median</th>
@@ -679,6 +686,7 @@ export default {
             此時間範圍沒有資料</td></tr>
         </tbody>
       </table>
+      </div>
       <div class="muted" style="font-size:11.5px;margin-top:8px">
         來源為原始 IP（對內調查工具，刻意不遮罩）。API 的來源 IP 由 forwarded header 推導，屬「未驗證來源」，不可作為單一 IP 的判斷依據。
       </div>

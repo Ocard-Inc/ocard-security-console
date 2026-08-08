@@ -2,7 +2,11 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover 是 env(safe-area-inset-*) 生效的前提：沒有它，iPhone 上
+     那些變數一律回 0，而底部的批次操作條會被 home indicator 蓋掉最後 34px
+     （送出鈕正好在那裡）。**刻意不加 maximum-scale / user-scalable=no** ——
+     這一頁有大量密集數字，關掉縮放等於在手機上把「看清楚一個 IP」這件事拿掉。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Ocard Security Log Console</title>
 <!-- {{MOUNT}} 由 api/app.py 在回應時以 config.console_mount_path() 取代
      （本機沒設 CONSOLE_BASE_URL 時是空字串，所有路徑退回 /static/…、/api/…）。

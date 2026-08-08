@@ -1,6 +1,6 @@
 // 橫向長條圖設定工廠。用於總覽的風險排名、Explorer 的排名與錯誤分析。
 import { num } from '../lib.js';
-import { baseOptions, axisLabelStyle } from './theme.js';
+import { baseOptions, axisLabelStyle, isNarrowViewport } from './theme.js';
 import { token } from './tokens.js';
 import { tooltipHTML } from './tooltip.js';
 import { truncateLabel } from './format.js';
@@ -25,6 +25,7 @@ export function barHeight(rowCount) {
 export function horizontalBarOptions(spec) {
   const { rowsRef, tooltipRows, tooltipTitle, tooltipNote } = spec;
   const base = baseOptions();
+  const narrow = isNarrowViewport();
 
   return {
     ...base,
@@ -46,6 +47,10 @@ export function horizontalBarOptions(spec) {
     xaxis: {
       crosshairs: { show: false },        // 長條圖不用十字準星，每根自己是命中區
       tooltip: { enabled: false },
+      // 手機上不限刻度數的話，數值軸會排出「0 2,004,000,006,000」這種疊在一起的
+      // 千分位數字（實測 390px）。3 個刻度足夠讀出量級，精確值本來就在 tooltip
+      // 與下方表格。
+      ...(narrow ? { tickAmount: 3 } : {}),
       labels: { formatter: v => num(v), style: axisLabelStyle() },
       axisBorder: { show: false },
       axisTicks: { show: false },
@@ -54,8 +59,10 @@ export function horizontalBarOptions(spec) {
       labels: {
         // 兩層截斷都要：maxWidth 管寬度（中文品牌名同字數寬得多），
         // truncateLabel 管字數並保證有「…」。完整值一律在 tooltip 標題。
-        maxWidth: 190,
-        formatter: v => truncateLabel(v, 24),
+        // 手機上 190px 的標籤會吃掉 390px 畫面的一半，長條只剩下一小截、
+        // 排名之間的長度差看不出來 —— 而「誰比誰多」正是這張圖唯一的工作。
+        maxWidth: narrow ? 112 : 190,
+        formatter: v => truncateLabel(v, narrow ? 13 : 24),
         style: { ...axisLabelStyle(), fontSize: '11px' },
       },
     },

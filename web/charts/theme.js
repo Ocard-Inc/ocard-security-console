@@ -4,6 +4,20 @@ import { token } from './tokens.js';
 const reducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
+/**
+ * 手機寬度。**這個 860px 與 app.css 的手機 media query 是同一個斷點**，
+ * 兩邊必須一起改 —— 不一致的症狀是「版面已經堆疊成一欄了，但圖表還在用
+ * 桌機的刻度數」，於是軸標籤在窄圖上疊成一團。
+ *
+ * 只在建立 options 時讀一次（options 依契約不可依賴資料，但可以依賴視窗）。
+ * 手機轉向 844px 仍在同一側，跨過斷點的只有平板轉向，那時 ApexCharts 會用
+ * 既有 options 重繪、刻度數維持不變 —— 那是可接受的降級（多幾個刻度而已），
+ * 不值得為它把視窗寬度也放進每一頁的 signature。
+ */
+export function isNarrowViewport() {
+  return window.matchMedia?.('(max-width: 860px)').matches ?? false;
+}
+
 /** 軸標籤共用樣式：數字與時間一律等寬字，才不會每次更新都左右抖動。 */
 export function axisLabelStyle() {
   return {
